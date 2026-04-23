@@ -93,14 +93,14 @@ const {
 .agent-page {
   height: 100dvh;
   min-height: 100dvh;
-  padding: 16px;
+  padding: 0;
   background: #ffffff;
   overflow: hidden;
 }
 
 @media (max-width: 720px) {
   .agent-page {
-    padding: 12px;
+    padding: 0;
   }
 }
 </style>

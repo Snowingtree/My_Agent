@@ -1483,4 +1483,250 @@ watch(
     bottom: 14px;
   }
 }
+
+.agent-shell {
+  grid-template-columns: 292px minmax(0, 1fr) 300px;
+  gap: 0;
+  background: #ffffff;
+}
+
+.agent-shell__sidebar {
+  border-radius: 0;
+  background: #f7f7f8;
+  border-right: 1px solid #ececec;
+}
+
+.agent-shell__main {
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.agent-mainbar {
+  min-height: 60px;
+  padding: 0 24px;
+  border-bottom: 1px solid #eeeeee;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.agent-mainbar__status {
+  display: none;
+}
+
+.agent-mainbar__copy h2 {
+  color: #171717;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.agent-conversation {
+  border: 0;
+  border-radius: 0;
+  background: #ffffff;
+}
+
+.agent-conversation__messages {
+  width: min(100%, 780px);
+  margin: 0 auto;
+  padding: 28px 20px 190px;
+}
+
+.agent-conversation__welcome {
+  min-height: min(56dvh, 520px);
+  padding: 40px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.agent-conversation__welcome-tag {
+  color: #8f8f8f;
+}
+
+.agent-conversation__welcome h3 {
+  max-width: 16ch;
+  color: #171717;
+  font-size: clamp(2rem, 4vw, 2.7rem);
+  font-weight: 650;
+  letter-spacing: -0.04em;
+}
+
+.agent-conversation__welcome p {
+  color: #6b6b6b;
+}
+
+.agent-starter-card {
+  border-color: #e8e8e8;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.agent-starter-card:hover {
+  border-color: #d9d9d9;
+  background: #f7f7f7;
+}
+
+.agent-starter-card strong {
+  color: #171717;
+}
+
+.agent-starter-card span {
+  color: #6f6f6f;
+}
+
+.agent-message {
+  max-width: 100%;
+  gap: 6px;
+}
+
+.agent-message--user {
+  max-width: min(80%, 620px);
+}
+
+.agent-message--assistant {
+  width: 100%;
+}
+
+.agent-message__role {
+  color: #8a8a8a;
+  font-size: 0.75rem;
+}
+
+.agent-message__bubble {
+  border: 0;
+  box-shadow: none;
+}
+
+.agent-message--assistant .agent-message__bubble {
+  padding: 2px 0;
+  background: transparent;
+}
+
+.agent-message--user .agent-message__bubble {
+  padding: 12px 16px;
+  border-radius: 22px;
+  background: #f4f4f4;
+}
+
+.agent-message__bubble p {
+  color: #171717;
+  line-height: 1.75;
+}
+
+.agent-conversation__sending {
+  background: #f4f4f4;
+}
+
+.agent-conversation__sending span {
+  background: #8a8a8a;
+}
+
+.agent-composer {
+  width: min(calc(100% - 40px), 780px);
+  min-height: 112px;
+  left: 50%;
+  right: auto;
+  bottom: 24px;
+  transform: translateX(-50%);
+  padding: 14px 14px 12px;
+  border: 1px solid #dedede;
+  border-radius: 28px;
+  background: #ffffff;
+  box-shadow:
+    0 12px 34px rgba(0, 0, 0, 0.08),
+    0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.agent-composer__input {
+  min-height: 62px;
+  max-height: 180px;
+  padding: 2px 4px;
+  color: #171717;
+}
+
+.agent-composer__send {
+  min-width: 82px;
+  min-height: 38px;
+  border-radius: 999px;
+  background: #171717;
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.agent-shell__inspector {
+  border: 0;
+  border-left: 1px solid #eeeeee;
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.agent-inspector__card {
+  border: 1px solid #eeeeee;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.agent-inspector__eyebrow,
+.agent-inspector__field > span,
+.agent-inspector__selected-label,
+.agent-status-card span {
+  color: #8a8a8a;
+}
+
+.agent-inspector__head h3,
+.agent-inspector__selected strong,
+.agent-status-card strong {
+  color: #171717;
+}
+
+.agent-inspector__select,
+.agent-inspector__selected,
+.agent-status-card {
+  border-color: #e8e8e8;
+  background: #f9f9f9;
+}
+
+@media (max-width: 1320px) {
+  .agent-shell {
+    grid-template-columns: 292px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 920px) {
+  .agent-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-shell__sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #ececec;
+  }
+
+  .agent-shell__inspector {
+    border-left: 0;
+    border-top: 1px solid #eeeeee;
+  }
+}
+
+@media (max-width: 720px) {
+  .agent-mainbar {
+    min-height: 56px;
+    padding: 0 16px;
+  }
+
+  .agent-conversation__messages {
+    padding: 22px 14px 186px;
+  }
+
+  .agent-composer {
+    width: calc(100% - 24px);
+    bottom: 12px;
+  }
+}
 </style>
