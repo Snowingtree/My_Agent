@@ -1,0 +1,6 @@
+﻿export const AUTH_TOKEN_KEY = 'vibe-coding-auth-token'
+export const AGENT_AUTH_KEY = 'vibe-coding-agent-auth'
+export const AGENT_USERNAME_KEY = 'vibe-coding-agent-username'
+export const AGENT_ACTIVE_SESSION_KEY = 'vibe-coding-agent-active-session'
+export const AGENT_AI_ID_KEY = 'vibe-coding-agent-ai-id'
+export const AGENT_AI_MODEL_KEY = 'vibe-coding-agent-ai-model'
