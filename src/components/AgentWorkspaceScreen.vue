@@ -4,13 +4,19 @@
       :active-session-id="activeSessionId"
       :active-session-title="activeSession?.title || '新对话'"
       :ai-configs="aiConfigs"
+      :active-workspace-files="activeWorkspaceFiles"
+      :active-workspace-folder="activeWorkspaceFolder"
       :can-send="canSend"
       :chat-error="chatError"
       :draft="draft"
+      :is-loading-workspace-file="isLoadingWorkspaceFile"
       :is-creating-session="isCreatingSession"
+      :is-cancelling-task="isCancellingTask"
+      :is-agent-running="isAgentRunning"
       :is-loading-ai-configs="isLoadingAiConfigs"
       :is-loading-session="isLoadingSession"
       :is-loading-sessions="isLoadingSessions"
+      :is-refreshing-active-session="isRefreshingActiveSession"
       :is-sending="isSending"
       :load-error="loadError"
       :messages="activeMessages"
@@ -19,13 +25,23 @@
       :selected-ai-id="selectedAiId"
       :selected-model="selectedModel"
       :selected-model-label="selectedModelLabel"
+      :selected-workspace-file-content="selectedWorkspaceFileContent"
+      :selected-workspace-file-path="selectedWorkspaceFilePath"
+      :selected-workspace-file-size-bytes="selectedWorkspaceFileSizeBytes"
+      :selected-workspace-file-updated-at="selectedWorkspaceFileUpdatedAt"
       :session-error="sessionError"
       :sessions="sessions"
       :task="currentTask"
       :username="username"
+      :workspace-mode="workspaceMode"
+      :workspace-file-error="workspaceFileError"
       @create-session="createSession"
+      @cancel-task="cancelActiveTask"
+      @close-workspace-file="closeWorkspaceFile"
       @delete-session="deleteSession"
       @logout="$emit('logout')"
+      @open-workspace-file="openWorkspaceFile"
+      @refresh-session="refreshActiveSession"
       @select-session="selectSession"
       @send="sendMessage"
       @update:ai-id="setSelectedAiId"
@@ -58,30 +74,46 @@ const {
   activeMessages,
   activeSession,
   activeSessionId,
+  activeWorkspaceFiles,
+  activeWorkspaceFolder,
   aiConfigs,
+  cancelActiveTask,
   canSend,
   chatError,
+  closeWorkspaceFile,
   createSession,
   currentTask,
   deleteSession,
   draft,
+  isCancellingTask,
+  isAgentRunning,
   isCreatingSession,
   isLoadingAiConfigs,
   isLoadingSession,
   isLoadingSessions,
+  isLoadingWorkspaceFile,
+  isRefreshingActiveSession,
   isSending,
   loadError,
   modelOptions,
+  openWorkspaceFile,
+  refreshActiveSession,
   selectSession,
   selectedAgentLabel,
   selectedAiId,
   selectedModel,
   selectedModelLabel,
+  selectedWorkspaceFileContent,
+  selectedWorkspaceFilePath,
+  selectedWorkspaceFileSizeBytes,
+  selectedWorkspaceFileUpdatedAt,
   sendMessage,
   sessionError,
   sessions,
   setSelectedAiId,
-  setSelectedModel
+  setSelectedModel,
+  workspaceMode,
+  workspaceFileError
 } = useAgentWorkspace({
   storage: localStorage,
   notify,

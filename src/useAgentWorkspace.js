@@ -1,4 +1,4 @@
-﻿import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import http from './http.js'
 import {
   AGENT_ACTIVE_SESSION_KEY,
@@ -12,6 +12,12 @@ const UNSELECTED_AGENT_LABEL = '未选择 Agent 配置'
 const LOADING_REPLY_SUMMARY = '正在生成首轮回复...'
 const WAITING_FOR_GOAL_SUMMARY = '等待你给出第一个目标，我会围绕当前会话持续推进。'
 const AI_CONFIG_REQUEST_TIMEOUT = 10000
+const TASK_POLL_INTERVAL_MS = 2500
+const RUNNING_TASK_STATUSES = new Set(['queued', 'pending', 'running', 'in_progress'])
+const CODING_MODE_PATTERNS = [
+  /代码|改代码|写代码|编程|重构|修复|bug|报错|报错信息|新增文件|新建文件|创建文件|修改文件|读文件|写文件|函数|组件|接口|脚本|构建|打包|依赖|样式|css|html|js|ts|tsx|jsx|vue|react|node|npm/i,
+  /\b(code|coding|bug|fix|refactor|file|files|component|function|api|build|patch|write|read|debug|test|lint|typescript|javascript|vue|react|node|npm)\b/i
+]
 
 function resolveStorage(storage) {
   if (storage && typeof storage.getItem === 'function') {
@@ -105,6 +111,24 @@ function cloneValue(value) {
   return value ? JSON.parse(JSON.stringify(value)) : value
 }
 
+function normalizeTaskStatus(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function isTaskRunning(task) {
+  return RUNNING_TASK_STATUSES.has(normalizeTaskStatus(task?.status))
+}
+
+function detectCodingIntent(value) {
+  const normalized = String(value || '').trim()
+
+  if (!normalized) {
+    return false
+  }
+
+  return CODING_MODE_PATTERNS.some((pattern) => pattern.test(normalized))
+}
+
 export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const resolvedStorage = resolveStorage(storage)
   const emitNotify = normalizeNotify(notify)
@@ -125,20 +149,69 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const isLoadingAiConfigs = ref(false)
   const selectedAiId = ref(readStorageValue(resolvedStorage, AGENT_AI_ID_KEY))
   const selectedModel = ref(readStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY))
+  const isRefreshingActiveSession = ref(false)
+  const isCancellingTask = ref(false)
+  const selectedWorkspaceFilePath = ref('')
+  const selectedWorkspaceFileContent = ref('')
+  const selectedWorkspaceFileUpdatedAt = ref('')
+  const selectedWorkspaceFileSizeBytes = ref(null)
+  const isLoadingWorkspaceFile = ref(false)
+  const workspaceFileError = ref('')
 
-  const activeMessages = computed(() => activeSession.value?.messages || [])
+  const activeMessages = computed(() => (
+    Array.isArray(activeSession.value?.messages)
+      ? activeSession.value.messages.filter((item) => String(item?.role || '').trim().toLowerCase() !== 'tool')
+      : []
+  ))
   const currentTask = computed(() => activeSession.value?.task || null)
+  const activeWorkspaceFolder = computed(() => String(activeSession.value?.workspaceFolder || '').trim())
+  const activeWorkspaceFiles = computed(() => (
+    Array.isArray(activeSession.value?.workspaceFiles) ? activeSession.value.workspaceFiles : []
+  ))
+  const isAgentRunning = computed(() => isTaskRunning(currentTask.value))
+  const activeSkillId = computed(() => String(activeSession.value?.lastSkillId || '').trim())
   const selectedAiConfig = computed(
     () => aiConfigs.value.find((item) => item.aiId === selectedAiId.value) || null
   )
   const modelOptions = computed(() => selectedAiConfig.value?.versions || [])
   const selectedModelLabel = computed(() => selectedModel.value || UNSELECTED_MODEL_LABEL)
   const selectedAgentLabel = computed(() => selectedAiConfig.value?.label || UNSELECTED_AGENT_LABEL)
+  const hasDraftCodingIntent = computed(() => detectCodingIntent(draft.value))
+  const workspaceMode = computed(() => {
+    if (activeSkillId.value === 'coding_agent') {
+      return {
+        id: 'coding',
+        label: '编码模式',
+        tone: 'coding',
+        hint: '可直接读取、修改并验证工作区文件。'
+      }
+    }
+
+    if (hasDraftCodingIntent.value) {
+      return {
+        id: 'coding-preview',
+        label: '编码模式',
+        tone: 'coding',
+        hint: '本次请求看起来像代码或文件任务，将按编码模式处理。'
+      }
+    }
+
+    return {
+      id: 'chat',
+      label: '对话模式',
+      tone: 'chat',
+      hint: '当前更像普通问答或讨论，不一定会改动文件。'
+    }
+  })
   const canSend = computed(() => Boolean(
     draft.value.trim()
     && !isSending.value
     && !isLoadingSession.value
+    && !isAgentRunning.value
   ))
+
+  let taskPollTimer = null
+  let sessionLoadToken = 0
 
   function persistActiveSessionId() {
     writeStorageValue(resolvedStorage, AGENT_ACTIVE_SESSION_KEY, activeSessionId.value)
@@ -147,6 +220,15 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   function persistSelectedAi() {
     writeStorageValue(resolvedStorage, AGENT_AI_ID_KEY, selectedAiId.value)
     writeStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY, selectedModel.value)
+  }
+
+  function stopTaskPolling() {
+    if (typeof window === 'undefined' || taskPollTimer === null) {
+      return
+    }
+
+    window.clearTimeout(taskPollTimer)
+    taskPollTimer = null
   }
 
   function upsertSessionSummary(item) {
@@ -171,6 +253,15 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   function removeSessionSummary(sessionId) {
     sessions.value = sessions.value.filter((item) => item.sessionId !== sessionId)
+  }
+
+  function resetWorkspaceFilePreview() {
+    selectedWorkspaceFilePath.value = ''
+    selectedWorkspaceFileContent.value = ''
+    selectedWorkspaceFileUpdatedAt.value = ''
+    selectedWorkspaceFileSizeBytes.value = null
+    isLoadingWorkspaceFile.value = false
+    workspaceFileError.value = ''
   }
 
   function ensureSelectedModel() {
@@ -238,13 +329,23 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     }
   }
 
-  async function loadSessionDetail(sessionId, { silent = false } = {}) {
+  async function loadSessionDetail(
+    sessionId,
+    {
+      silent = false,
+      preserveChatError = false,
+      asBackgroundRefresh = false
+    } = {}
+  ) {
     const normalizedSessionId = String(sessionId || '').trim()
+    const requestToken = ++sessionLoadToken
 
     if (!normalizedSessionId) {
+      stopTaskPolling()
       activeSession.value = null
       activeSessionId.value = ''
       persistActiveSessionId()
+      resetWorkspaceFilePreview()
       return
     }
 
@@ -252,24 +353,74 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       isLoadingSession.value = true
     }
 
-    chatError.value = ''
+    if (!preserveChatError) {
+      chatError.value = ''
+    }
+
+    if (asBackgroundRefresh) {
+      isRefreshingActiveSession.value = true
+    }
 
     try {
       const data = await http.get(`/api/agent/sessions/${normalizedSessionId}`)
+
+      if (requestToken !== sessionLoadToken) {
+        return
+      }
+
       activeSession.value = data.item || null
       activeSessionId.value = activeSession.value?.sessionId || normalizedSessionId
       persistActiveSessionId()
+
+      if (
+        selectedWorkspaceFilePath.value
+        && !activeWorkspaceFiles.value.some((item) => item.path === selectedWorkspaceFilePath.value)
+      ) {
+        resetWorkspaceFilePreview()
+      }
 
       if (activeSession.value) {
         upsertSessionSummary(activeSession.value)
       }
     } catch (error) {
-      chatError.value = normalizeErrorMessage(error, '读取会话详情失败。')
+      if (!preserveChatError || !chatError.value) {
+        chatError.value = normalizeErrorMessage(error, '读取会话详情失败。')
+      }
     } finally {
       if (!silent) {
         isLoadingSession.value = false
       }
+
+      if (asBackgroundRefresh) {
+        isRefreshingActiveSession.value = false
+      }
     }
+  }
+
+  function scheduleTaskPolling() {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    stopTaskPolling()
+
+    if (!activeSessionId.value || !isAgentRunning.value) {
+      return
+    }
+
+    taskPollTimer = window.setTimeout(async () => {
+      taskPollTimer = null
+
+      try {
+        await loadSessionDetail(activeSessionId.value, {
+          silent: true,
+          preserveChatError: true,
+          asBackgroundRefresh: true
+        })
+      } finally {
+        scheduleTaskPolling()
+      }
+    }, TASK_POLL_INTERVAL_MS)
   }
 
   async function createSessionEntry() {
@@ -327,6 +478,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         activeSession.value = null
         activeSessionId.value = nextSessionId
         persistActiveSessionId()
+        resetWorkspaceFilePreview()
 
         if (nextSessionId) {
           await loadSessionDetail(nextSessionId)
@@ -345,6 +497,8 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       return
     }
 
+    activeSessionId.value = sessionId
+    persistActiveSessionId()
     await loadSessionDetail(sessionId)
   }
 
@@ -360,6 +514,11 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   function ensureSendReady(message) {
     if (!message) {
+      return false
+    }
+
+    if (isAgentRunning.value) {
+      chatError.value = '当前任务仍在执行，请等待 Agent 完成这一轮推进。'
       return false
     }
 
@@ -406,6 +565,15 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         title: createFallbackSessionTitle(message),
         status: 'in_progress',
         summary: LOADING_REPLY_SUMMARY,
+        steps: [
+          {
+            stepId: 'pending-step',
+            title: '理解目标',
+            status: 'in_progress',
+            summary: '正在分析你的目标并准备执行计划。',
+            updatedAt: new Date().toISOString()
+          }
+        ],
         updatedAt: new Date().toISOString()
       },
       messages: []
@@ -459,6 +627,78 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     }
   }
 
+  async function openWorkspaceFile(filePath) {
+    const normalizedPath = String(filePath || '').trim()
+
+    if (!activeSessionId.value || !normalizedPath) {
+      return
+    }
+
+    selectedWorkspaceFilePath.value = normalizedPath
+    selectedWorkspaceFileContent.value = ''
+    selectedWorkspaceFileUpdatedAt.value = ''
+    selectedWorkspaceFileSizeBytes.value = null
+    workspaceFileError.value = ''
+    isLoadingWorkspaceFile.value = true
+
+    try {
+      const data = await http.get(`/api/agent/sessions/${activeSessionId.value}/file-content`, {
+        params: {
+          path: normalizedPath
+        }
+      })
+
+      const item = data.item || {}
+      selectedWorkspaceFileContent.value = String(item.content || '')
+      selectedWorkspaceFileUpdatedAt.value = String(item.updatedAt || '')
+      selectedWorkspaceFileSizeBytes.value = Number.isFinite(item.sizeBytes) ? item.sizeBytes : null
+    } catch (error) {
+      workspaceFileError.value = normalizeErrorMessage(error, '读取会话文件失败。')
+    } finally {
+      isLoadingWorkspaceFile.value = false
+    }
+  }
+
+  function closeWorkspaceFile() {
+    resetWorkspaceFilePreview()
+  }
+
+  async function refreshActiveSession() {
+    if (!activeSessionId.value) {
+      return
+    }
+
+    await loadSessionDetail(activeSessionId.value, {
+      silent: true,
+      preserveChatError: true,
+      asBackgroundRefresh: true
+    })
+  }
+
+  async function cancelActiveTask() {
+    if (!activeSessionId.value || !isAgentRunning.value || isCancellingTask.value) {
+      return
+    }
+
+    isCancellingTask.value = true
+    chatError.value = ''
+
+    try {
+      const data = await http.post(`/api/agent/sessions/${activeSessionId.value}/cancel`)
+
+      if (data.item) {
+        activeSession.value = data.item
+        upsertSessionSummary(data.item)
+      }
+
+      await refreshActiveSession()
+    } catch (error) {
+      chatError.value = normalizeErrorMessage(error, '停止当前处理失败。')
+    } finally {
+      isCancellingTask.value = false
+    }
+  }
+
   async function refreshWorkspace() {
     await Promise.all([
       loadAiConfigs(),
@@ -480,14 +720,39 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
           title: NEW_SESSION_TITLE,
           status: 'idle',
           summary: WAITING_FOR_GOAL_SUMMARY,
+          steps: [],
           updatedAt: new Date().toISOString()
         }
       }
     }
   }
 
+  watch(
+    [activeSessionId, isAgentRunning],
+    () => {
+      scheduleTaskPolling()
+    },
+    { immediate: true }
+  )
+
+  watch(
+    () => currentTask.value?.status,
+    (nextStatus, previousStatus) => {
+      if (previousStatus && nextStatus === 'completed' && previousStatus !== 'completed') {
+        emitNotify({
+          message: '代码处理已完成，请查看最新回复和会话文件。',
+          type: 'success'
+        })
+      }
+    }
+  )
+
   onMounted(async () => {
     await refreshWorkspace()
+  })
+
+  onUnmounted(() => {
+    stopTaskPolling()
   })
 
   return {
@@ -495,20 +760,36 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     activeSession,
     activeSessionId,
     aiConfigs,
+    activeWorkspaceFiles,
+    activeWorkspaceFolder,
+    closeWorkspaceFile,
     canSend,
     chatError,
+    isLoadingWorkspaceFile,
     createSession: createSessionEntry,
     currentTask,
     deleteSession,
     draft,
+    isAgentRunning,
+    openWorkspaceFile,
+    selectedWorkspaceFileContent,
+    selectedWorkspaceFilePath,
+    selectedWorkspaceFileSizeBytes,
+    selectedWorkspaceFileUpdatedAt,
+    workspaceMode,
+    workspaceFileError,
+    isCancellingTask,
     isCreatingSession,
     isLoadingAiConfigs,
     isLoadingSession,
     isLoadingSessions,
+    isRefreshingActiveSession,
     isSending,
     loadError,
     modelOptions,
+    refreshActiveSession,
     refreshWorkspace,
+    cancelActiveTask,
     selectSession,
     selectedAgentLabel,
     selectedAiId,

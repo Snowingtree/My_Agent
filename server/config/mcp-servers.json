@@ -1,0 +1,20 @@
+{
+  "items": [
+    {
+      "serverId": "filesystem",
+      "name": "Filesystem MCP Example",
+      "enabled": false,
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ],
+      "cwd": ".",
+      "toolNamePrefix": "mcp.filesystem",
+      "includeTools": [],
+      "excludeTools": []
+    }
+  ]
+}

@@ -1,5 +1,14 @@
 <template>
-  <div class="agent-shell">
+  <div
+    ref="shellRef"
+    class="agent-shell"
+    :class="{
+      'has-file-preview': hasWorkspaceFilePreview,
+      'is-resizing-preview': isResizingPreview,
+      'is-inspector-collapsed': isInspectorCollapsed
+    }"
+    :style="shellStyle"
+  >
     <aside class="agent-shell__sidebar">
       <div class="agent-sidebar__top">
         <div class="agent-sidebar__brand">
@@ -62,6 +71,7 @@
                 <button
                   type="button"
                   class="agent-session-item__delete"
+                  title="删除会话"
                   aria-label="删除会话"
                   @click="$emit('delete-session', item.sessionId)"
                 >
@@ -89,6 +99,14 @@
           </div>
           <h2>{{ activeSessionTitle }}</h2>
         </div>
+        <div class="agent-mainbar__actions">
+          <span class="agent-mode-badge" :class="`is-${resolvedWorkspaceMode.tone}`">
+            {{ resolvedWorkspaceMode.label }}
+          </span>
+          <span class="agent-task-badge" :class="`is-${taskStatusTone}`">
+            {{ taskStatusLabel }}
+          </span>
+        </div>
       </header>
 
       <section class="agent-conversation">
@@ -102,9 +120,7 @@
             <div class="agent-conversation__welcome-copy">
               <p class="agent-conversation__welcome-tag">Agent Workspace</p>
               <h3>把目标交给 Agent，持续推进到结果</h3>
-              <p>
-                直接输入任务、问题或待办，我会围绕同一个目标持续拆解、追问、整理和补全。
-              </p>
+              <p>直接输入任务、问题或待办。启动后，Agent 会围绕同一个目标持续拆解、执行，并回写当前进展。</p>
             </div>
 
             <div class="agent-conversation__starter-grid">
@@ -130,7 +146,7 @@
                 @click="$emit('update:draft', '继续往下追问，把还没考虑到的风险和细节也补出来。')"
               >
                 <strong>继续深化</strong>
-                <span>自动追问缺口，把风险、细节和下一步补齐。</span>
+                <span>自动补齐风险、细节和下一步。</span>
               </button>
             </div>
           </div>
@@ -140,10 +156,10 @@
             :key="item.messageId"
             :class="[
               'agent-message',
-              item.role === 'user' ? 'agent-message--user' : 'agent-message--assistant'
+              `agent-message--${resolveMessageVariant(item.role)}`
             ]"
           >
-            <span class="agent-message__role">{{ item.role === 'user' ? '你' : 'Agent' }}</span>
+            <span class="agent-message__role">{{ resolveMessageLabel(item.role) }}</span>
             <div class="agent-message__bubble">
               <p>{{ item.content }}</p>
             </div>
@@ -156,200 +172,230 @@
           </div>
         </div>
 
-        <div class="agent-composer" :class="{ 'is-home': !messages.length }">
+        <div class="agent-composer">
           <textarea
             ref="composerRef"
             :value="draft"
             class="agent-composer__input"
-            :disabled="isSending"
+            :disabled="isSending || isLoadingSession"
+            :placeholder="resolvedComposerPlaceholder"
             @input="$emit('update:draft', $event.target.value)"
             @keydown="handleComposerKeydown"
           />
 
           <div class="agent-composer__actions">
             <button
+              v-if="isAgentRunning"
+              type="button"
+              class="agent-composer__stop"
+              :disabled="isCancellingTask"
+              @click="$emit('cancel-task')"
+            >
+              {{ isCancellingTask ? '正在停止...' : '停止处理' }}
+            </button>
+            <button
               type="button"
               class="agent-composer__send"
               :disabled="!canSend"
               @click="requestSend"
             >
-              {{ isSending ? '发送中...' : '发送' }}
+              {{ resolvedSendButtonLabel }}
             </button>
           </div>
         </div>
       </section>
     </section>
 
-    <aside class="agent-shell__inspector">
-      <section class="agent-inspector__card">
-        <div class="agent-inspector__head">
-          <p class="agent-inspector__eyebrow">Model</p>
-          <h3>运行配置</h3>
+    <aside class="agent-shell__inspector" :class="{ 'is-collapsed': isInspectorCollapsed }">
+      <button
+        type="button"
+        class="agent-inspector__toggle"
+        :aria-label="isInspectorCollapsed ? '展开模型信息' : '收起模型信息'"
+        @click="toggleInspectorCollapsed"
+      >
+        {{ isInspectorCollapsed ? '‹' : '›' }}
+      </button>
+
+      <section v-show="!isInspectorCollapsed" class="agent-panel">
+        <div class="agent-panel__head">
+          <p class="agent-panel__eyebrow">模型信息</p>
+          <h3>当前配置</h3>
         </div>
 
-        <label class="agent-inspector__field">
-          <span>Agent 配置</span>
-          <select
-            :value="selectedAiId"
-            class="agent-inspector__select"
-            :disabled="isLoadingAiConfigs || isSending || !aiConfigs.length"
-            @change="$emit('update:ai-id', $event.target.value)"
-          >
-            <option value="">{{ isLoadingAiConfigs ? '读取中...' : '请选择 Agent 配置' }}</option>
-            <option v-for="item in aiConfigs" :key="item.aiId" :value="item.aiId">
-              {{ item.label }}
-            </option>
-          </select>
-        </label>
+        <div class="agent-panel__stack">
+          <article class="agent-info-card">
+            <span class="agent-info-card__label">当前模式</span>
+            <strong class="agent-info-card__value">{{ resolvedWorkspaceMode.label }}</strong>
+            <small class="agent-info-card__meta">{{ resolvedWorkspaceMode.hint }}</small>
+          </article>
 
-        <label class="agent-inspector__field">
-          <span>模型版本</span>
-          <select
-            :value="selectedModel"
-            class="agent-inspector__select"
-            :disabled="isSending || !modelOptions.length"
-            @change="$emit('update:model', $event.target.value)"
-          >
-            <option value="">{{ modelOptions.length ? '请选择模型版本' : '当前配置没有可用模型' }}</option>
-            <option v-for="item in modelOptions" :key="item" :value="item">
-              {{ item }}
-            </option>
-          </select>
-        </label>
+          <article class="agent-info-card">
+            <span class="agent-info-card__label">AI 配置</span>
+            <select
+              class="agent-info-card__select"
+              :value="selectedAiId"
+              :disabled="isLoadingAiConfigs || !aiConfigs.length"
+              @change="$emit('update:ai-id', $event.target.value)"
+            >
+              <option value="">请选择配置</option>
+              <option
+                v-for="item in aiConfigs"
+                :key="item.aiId"
+                :value="item.aiId"
+              >
+                {{ item.label }}
+              </option>
+            </select>
+            <small class="agent-info-card__meta">
+              {{ isLoadingAiConfigs ? '正在读取配置...' : `共 ${aiConfigs.length} 个可用配置` }}
+            </small>
+          </article>
 
-        <p v-if="loadError" class="agent-inspector__warning">
-          {{ loadError }}
-        </p>
-        <p v-else-if="!isLoadingAiConfigs && !aiConfigs.length" class="agent-inspector__warning">
-          当前没有可用的 Agent 配置，请先补充 AI 配置。
-        </p>
+          <article class="agent-info-card">
+            <span class="agent-info-card__label">当前模型</span>
+            <select
+              class="agent-info-card__select"
+              :value="selectedModel"
+              :disabled="!modelOptions.length"
+              @change="$emit('update:model', $event.target.value)"
+            >
+              <option value="">{{ modelOptions.length ? '请选择模型' : '暂无可选模型' }}</option>
+              <option
+                v-for="item in modelOptions"
+                :key="item"
+                :value="item"
+              >
+                {{ item }}
+              </option>
+            </select>
+            <small class="agent-info-card__meta">
+              {{ modelOptions.length ? `当前配置下可选 ${modelOptions.length} 个模型` : '当前配置未提供可选模型列表' }}
+            </small>
+          </article>
 
-        <div class="agent-inspector__selected">
-          <span class="agent-inspector__selected-label">当前选择</span>
-          <strong>{{ selectedAgentLabel || '未选择配置' }}</strong>
-          <p>{{ selectedModelLabel || '未选择模型' }}</p>
+          <article class="agent-info-card agent-info-card--files">
+            <span class="agent-info-card__label">会话文件</span>
+            <strong class="agent-info-card__value">{{ activeWorkspaceFiles.length ? `${activeWorkspaceFiles.length} 个文件` : '暂无文件' }}</strong>
+            <small class="agent-info-card__meta">
+              {{ activeWorkspaceFiles.length ? `当前对话已归档 ${activeWorkspaceFiles.length} 个文件` : '当前对话还没有生成或修改文件。' }}
+            </small>
+
+            <div v-if="activeWorkspaceFiles.length" class="agent-file-list">
+              <article
+                v-for="item in activeWorkspaceFiles"
+                :key="item.artifactPath || item.path"
+                class="agent-file-item"
+                :class="{ 'is-active': item.path === selectedWorkspaceFilePath }"
+                :title="item.path"
+                @click="$emit('open-workspace-file', item.path)"
+              >
+                <span class="agent-file-item__icon" aria-hidden="true">📄</span>
+                <strong class="agent-file-item__path">{{ getFileDisplayName(item.path) }}</strong>
+              </article>
+            </div>
+          </article>
         </div>
       </section>
+    </aside>
 
-      <section class="agent-inspector__card">
-        <div class="agent-inspector__head">
-          <p class="agent-inspector__eyebrow">Status</p>
-          <h3>工作台状态</h3>
+    <div
+      v-if="hasWorkspaceFilePreview"
+      class="agent-shell__resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="调整代码预览宽度"
+      @pointerdown="startPreviewResize"
+    ></div>
+
+    <aside v-if="hasWorkspaceFilePreview" class="agent-shell__preview">
+      <section class="agent-code-viewer">
+        <div class="agent-code-viewer__head">
+          <div class="agent-code-viewer__head-copy">
+            <p class="agent-panel__eyebrow">文件预览</p>
+            <h3>{{ selectedWorkspaceFilePath }}</h3>
+            <small>{{ selectedWorkspaceFileMeta }}</small>
+          </div>
+          <button
+            type="button"
+            class="agent-code-viewer__close"
+            aria-label="关闭文件预览"
+            @click="$emit('close-workspace-file')"
+          >
+            ×
+          </button>
         </div>
 
-        <div class="agent-status-grid">
-          <article class="agent-status-card">
-            <span>会话数</span>
-            <strong>{{ sessions.length }}</strong>
-          </article>
-          <article class="agent-status-card">
-            <span>消息数</span>
-            <strong>{{ messages.length }}</strong>
-          </article>
-        </div>
+        <p v-if="workspaceFileError" class="form-error agent-code-viewer__status">{{ workspaceFileError }}</p>
+        <p v-else-if="isLoadingWorkspaceFile" class="agent-code-viewer__status">正在读取文件内容...</p>
+
+        <pre v-else class="agent-code-viewer__body"><code class="hljs" v-html="highlightedWorkspaceFileContent"></code></pre>
       </section>
     </aside>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import hljs from 'highlight.js'
+import 'highlight.js/styles/github.css'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+
+const TASK_STATUS_LABELS = {
+  idle: '待开始',
+  queued: '排队中',
+  pending: '待执行',
+  running: '执行中',
+  in_progress: '进行中',
+  waiting_for_user: '等待你的回复',
+  completed: '已完成',
+  failed: '失败',
+  cancelled: '已取消'
+}
 
 const props = defineProps({
-  activeSessionId: {
-    type: String,
-    default: ''
-  },
-  activeSessionTitle: {
-    type: String,
-    default: '当前会话'
-  },
-  aiConfigs: {
-    type: Array,
-    default: () => []
-  },
-  canSend: {
-    type: Boolean,
-    default: false
-  },
-  chatError: {
-    type: String,
-    default: ''
-  },
-  draft: {
-    type: String,
-    default: ''
-  },
-  isCreatingSession: {
-    type: Boolean,
-    default: false
-  },
-  isLoadingAiConfigs: {
-    type: Boolean,
-    default: false
-  },
-  isLoadingSession: {
-    type: Boolean,
-    default: false
-  },
-  isLoadingSessions: {
-    type: Boolean,
-    default: false
-  },
-  isSending: {
-    type: Boolean,
-    default: false
-  },
-  loadError: {
-    type: String,
-    default: ''
-  },
-  messages: {
-    type: Array,
-    default: () => []
-  },
-  modelOptions: {
-    type: Array,
-    default: () => []
-  },
-  selectedAgentLabel: {
-    type: String,
-    default: ''
-  },
-  selectedAiId: {
-    type: String,
-    default: ''
-  },
-  selectedModel: {
-    type: String,
-    default: ''
-  },
-  selectedModelLabel: {
-    type: String,
-    default: ''
-  },
-  sessionError: {
-    type: String,
-    default: ''
-  },
-  sessions: {
-    type: Array,
-    default: () => []
-  },
-  task: {
-    type: Object,
-    default: null
-  },
-  username: {
-    type: String,
-    default: '访客'
-  }
+  activeSessionId: { type: String, default: '' },
+  activeSessionTitle: { type: String, default: '当前会话' },
+  activeWorkspaceFiles: { type: Array, default: () => [] },
+  activeWorkspaceFolder: { type: String, default: '' },
+  aiConfigs: { type: Array, default: () => [] },
+  canSend: { type: Boolean, default: false },
+  chatError: { type: String, default: '' },
+  draft: { type: String, default: '' },
+  isAgentRunning: { type: Boolean, default: false },
+  isCreatingSession: { type: Boolean, default: false },
+  isCancellingTask: { type: Boolean, default: false },
+  isLoadingAiConfigs: { type: Boolean, default: false },
+  isLoadingSession: { type: Boolean, default: false },
+  isLoadingSessions: { type: Boolean, default: false },
+  isLoadingWorkspaceFile: { type: Boolean, default: false },
+  isRefreshingActiveSession: { type: Boolean, default: false },
+  isSending: { type: Boolean, default: false },
+  loadError: { type: String, default: '' },
+  messages: { type: Array, default: () => [] },
+  modelOptions: { type: Array, default: () => [] },
+  selectedAgentLabel: { type: String, default: '' },
+  selectedAiId: { type: String, default: '' },
+  selectedModel: { type: String, default: '' },
+  selectedModelLabel: { type: String, default: '' },
+  selectedWorkspaceFileContent: { type: String, default: '' },
+  selectedWorkspaceFilePath: { type: String, default: '' },
+  selectedWorkspaceFileSizeBytes: { type: Number, default: null },
+  selectedWorkspaceFileUpdatedAt: { type: String, default: '' },
+  sessionError: { type: String, default: '' },
+  sessions: { type: Array, default: () => [] },
+  task: { type: Object, default: null },
+  username: { type: String, default: '访客' },
+  workspaceMode: { type: Object, default: () => ({}) },
+  workspaceFileError: { type: String, default: '' }
 })
 
 const emit = defineEmits([
   'create-session',
+  'cancel-task',
+  'close-workspace-file',
   'delete-session',
   'logout',
+  'open-workspace-file',
+  'refresh-session',
   'select-session',
   'send',
   'update:ai-id',
@@ -359,12 +405,245 @@ const emit = defineEmits([
 
 const composerRef = ref(null)
 const messagesRef = ref(null)
+const shellRef = ref(null)
 const shouldRestoreFocus = ref(false)
+const previewWidth = ref(520)
+const isInspectorCollapsed = ref(false)
+const isResizingPreview = ref(false)
+let activeResizePointerId = null
 
 const userInitial = computed(() => {
   const normalized = String(props.username || '').trim()
   return normalized ? normalized.slice(0, 1).toUpperCase() : 'A'
 })
+
+const taskStatusLabel = computed(() => {
+  const normalizedStatus = String(props.task?.status || '').trim().toLowerCase()
+  return TASK_STATUS_LABELS[normalizedStatus] || '待处理中'
+})
+
+const taskStatusTone = computed(() => {
+  const normalizedStatus = String(props.task?.status || '').trim().toLowerCase()
+
+  if (['queued', 'pending', 'running', 'in_progress'].includes(normalizedStatus)) {
+    return 'running'
+  }
+
+  if (normalizedStatus === 'completed') {
+    return 'completed'
+  }
+
+  if (['failed', 'cancelled'].includes(normalizedStatus)) {
+    return 'danger'
+  }
+
+  return 'idle'
+})
+
+const resolvedAgentLabel = computed(() => {
+  const label = String(props.selectedAgentLabel || '').trim()
+  if (label) {
+    return label
+  }
+
+  if (props.isLoadingAiConfigs) {
+    return '正在加载...'
+  }
+
+  return '未选择配置'
+})
+
+const resolvedModelLabel = computed(() => {
+  const label = String(props.selectedModelLabel || '').trim()
+  if (label) {
+    return label
+  }
+
+  if (props.selectedModel) {
+    return props.selectedModel
+  }
+
+  return '未选择模型'
+})
+
+const resolvedWorkspaceMode = computed(() => {
+  const label = String(props.workspaceMode?.label || '').trim()
+  const tone = String(props.workspaceMode?.tone || '').trim()
+  const hint = String(props.workspaceMode?.hint || '').trim()
+
+  return {
+    label: label || '对话模式',
+    tone: tone || 'chat',
+    hint: hint || '当前以普通对话方式处理请求。'
+  }
+})
+
+const resolvedWorkspaceFolder = computed(() => {
+  const folder = String(props.activeWorkspaceFolder || '').trim()
+
+  if (folder) {
+    return folder
+  }
+
+  if (props.activeSessionId) {
+    return `session-files/${props.activeSessionId}`
+  }
+
+  return 'session-files/<current-session>'
+})
+
+const hasWorkspaceFilePreview = computed(() => (
+  Boolean(
+    String(props.selectedWorkspaceFilePath || '').trim()
+    || String(props.workspaceFileError || '').trim()
+    || props.isLoadingWorkspaceFile
+  )
+))
+
+const shellStyle = computed(() => (
+  {
+    '--agent-preview-width': `${previewWidth.value}px`,
+    '--agent-inspector-width': isInspectorCollapsed.value ? '24px' : '308px'
+  }
+))
+
+const selectedWorkspaceLanguage = computed(() => {
+  const normalizedPath = String(props.selectedWorkspaceFilePath || '').trim().toLowerCase()
+
+  if (!normalizedPath.includes('.')) {
+    return ''
+  }
+
+  const extension = normalizedPath.split('.').pop() || ''
+  const extensionMap = {
+    html: 'xml',
+    htm: 'xml',
+    vue: 'xml',
+    xml: 'xml',
+    svg: 'xml',
+    css: 'css',
+    scss: 'scss',
+    sass: 'scss',
+    less: 'less',
+    js: 'javascript',
+    mjs: 'javascript',
+    cjs: 'javascript',
+    jsx: 'javascript',
+    ts: 'typescript',
+    tsx: 'typescript',
+    json: 'json',
+    md: 'markdown',
+    markdown: 'markdown',
+    sh: 'bash',
+    bash: 'bash',
+    yml: 'yaml',
+    yaml: 'yaml'
+  }
+
+  return extensionMap[extension] || ''
+})
+
+const selectedWorkspaceFileMeta = computed(() => {
+  const sizeBytes = Number(props.selectedWorkspaceFileSizeBytes)
+  const sizeLabel = Number.isFinite(sizeBytes)
+    ? (sizeBytes >= 1024 ? `${(sizeBytes / 1024).toFixed(1)} KB` : `${sizeBytes} B`)
+    : ''
+  const updatedAt = String(props.selectedWorkspaceFileUpdatedAt || '').trim()
+  const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleString('zh-CN') : ''
+
+  return [sizeLabel, updatedLabel].filter(Boolean).join(' · ')
+})
+
+const highlightedWorkspaceFileContent = computed(() => {
+  const content = String(props.selectedWorkspaceFileContent || '')
+
+  if (!content) {
+    return ''
+  }
+
+  const language = selectedWorkspaceLanguage.value
+
+  try {
+    if (language && hljs.getLanguage(language)) {
+      return hljs.highlight(content, { language }).value
+    }
+
+    return hljs.highlightAuto(content).value
+  } catch {
+    return hljs.highlightAuto(content).value
+  }
+})
+
+const resolvedComposerPlaceholder = computed(() => {
+  if (props.isAgentRunning) {
+    return '当前还在处理中，等这一轮完成后再继续发送消息'
+  }
+
+  return '输入问题、想法或任务，Enter 发送，Shift+Enter 换行'
+})
+
+const resolvedSendButtonLabel = computed(() => {
+  if (props.isSending) {
+    return '发送中...'
+  }
+
+  if (props.isAgentRunning) {
+    return '处理中...'
+  }
+
+  return '发送消息'
+})
+
+function resolveMessageVariant(role) {
+  const normalizedRole = String(role || '').trim().toLowerCase()
+
+  if (normalizedRole === 'user') {
+    return 'user'
+  }
+
+  if (normalizedRole === 'tool') {
+    return 'tool'
+  }
+
+  return 'assistant'
+}
+
+function resolveMessageLabel(role) {
+  const normalizedRole = String(role || '').trim().toLowerCase()
+
+  if (normalizedRole === 'user') {
+    return '你'
+  }
+
+  if (normalizedRole === 'tool') {
+    return 'Tool'
+  }
+
+  return 'Agent'
+}
+
+function formatFileMeta(item) {
+  const sizeBytes = Number(item?.sizeBytes)
+  const sizeLabel = Number.isFinite(sizeBytes)
+    ? (sizeBytes >= 1024 ? `${(sizeBytes / 1024).toFixed(1)} KB` : `${sizeBytes} B`)
+    : ''
+
+  const updatedAt = String(item?.updatedAt || '').trim()
+  const timeLabel = updatedAt ? new Date(updatedAt).toLocaleString('zh-CN') : ''
+
+  return [sizeLabel, timeLabel].filter(Boolean).join(' · ')
+}
+
+function getFileDisplayName(filePath) {
+  const normalized = String(filePath || '').trim().replace(/\\/g, '/')
+
+  if (!normalized) {
+    return 'untitled'
+  }
+
+  const segments = normalized.split('/').filter(Boolean)
+  return segments[segments.length - 1] || normalized
+}
 
 function scrollMessagesToBottom(behavior = 'auto') {
   nextTick(() => {
@@ -394,6 +673,62 @@ function requestSend() {
 
   shouldRestoreFocus.value = true
   emit('send')
+}
+
+function toggleInspectorCollapsed() {
+  isInspectorCollapsed.value = !isInspectorCollapsed.value
+}
+
+function stopPreviewResize() {
+  isResizingPreview.value = false
+  activeResizePointerId = null
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+}
+
+function updatePreviewWidthFromClientX(clientX) {
+  const shellElement = shellRef.value
+
+  if (!shellElement) {
+    return
+  }
+
+  const rect = shellElement.getBoundingClientRect()
+  const inspectorWidth = isInspectorCollapsed.value ? 24 : 308
+  const horizontalGutters = 36
+  const minPreviewWidth = 320
+  const maxPreviewWidth = Math.max(minPreviewWidth, rect.width - 280 - inspectorWidth - horizontalGutters - 280)
+  const nextWidth = rect.right - inspectorWidth - horizontalGutters - clientX
+
+  previewWidth.value = Math.min(maxPreviewWidth, Math.max(minPreviewWidth, Math.round(nextWidth)))
+}
+
+function handlePreviewResizeMove(event) {
+  if (!isResizingPreview.value) {
+    return
+  }
+
+  updatePreviewWidthFromClientX(event.clientX)
+}
+
+function handlePreviewResizeUp(event) {
+  if (activeResizePointerId !== null && event.pointerId !== activeResizePointerId) {
+    return
+  }
+
+  stopPreviewResize()
+}
+
+function startPreviewResize(event) {
+  if (!hasWorkspaceFilePreview.value) {
+    return
+  }
+
+  activeResizePointerId = event.pointerId
+  isResizingPreview.value = true
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  updatePreviewWidthFromClientX(event.clientX)
 }
 
 function handleComposerKeydown(event) {
@@ -429,707 +764,163 @@ watch(
   },
   { immediate: true }
 )
+
+watch(
+  hasWorkspaceFilePreview,
+  (visible) => {
+    if (!visible && isResizingPreview.value) {
+      stopPreviewResize()
+    }
+  }
+)
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointermove', handlePreviewResizeMove)
+  window.addEventListener('pointerup', handlePreviewResizeUp)
+  window.addEventListener('pointercancel', handlePreviewResizeUp)
+}
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pointermove', handlePreviewResizeMove)
+    window.removeEventListener('pointerup', handlePreviewResizeUp)
+    window.removeEventListener('pointercancel', handlePreviewResizeUp)
+  }
+
+  stopPreviewResize()
+})
 </script>
 
 <style scoped>
 .agent-shell {
+  --agent-content-width: 880px;
+  --agent-preview-width: 520px;
+  --agent-inspector-width: 308px;
+  --agent-text: #171717;
+  --agent-subtle: #6f6f6f;
+  --agent-muted: #8a8a8a;
+  --agent-border: #ececec;
+  --agent-border-strong: #dedede;
+  --agent-surface: #ffffff;
+  --agent-sidebar-surface: #f7f7f8;
+  --agent-soft-surface: #f4f4f4;
+  --agent-soft-surface-hover: #eeeeee;
+  --agent-soft-surface-active: #e7e7e7;
+  --agent-focus: rgba(23, 23, 23, 0.14);
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr) 292px;
-  gap: 14px;
+  grid-template-columns: 280px minmax(0, 1fr) var(--agent-inspector-width);
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+  background: var(--agent-surface);
+  color: var(--agent-text);
+}
+
+.agent-shell.has-file-preview {
+  grid-template-columns: 280px minmax(0, 1fr) 14px minmax(320px, var(--agent-preview-width)) var(--agent-inspector-width);
 }
 
 .agent-shell__sidebar,
 .agent-shell__main,
-.agent-shell__inspector {
+.agent-shell__inspector,
+.agent-shell__preview,
+.agent-shell__resizer {
   min-height: 0;
-  border: 1px solid rgba(18, 52, 78, 0.08);
-  background: #ffffff;
-  box-shadow:
-    0 18px 40px rgba(24, 67, 115, 0.08),
-    0 3px 10px rgba(24, 67, 115, 0.04);
 }
 
 .agent-shell__sidebar {
+  order: 1;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px;
-  border-radius: 26px;
+  gap: 8px;
+  padding: 10px;
   overflow: hidden;
-}
-
-.agent-user-card strong {
-  display: block;
-  color: #12344e;
-}
-
-.agent-sidebar__launch {
-  display: grid;
-  gap: 10px;
-  padding: 14px;
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at top right, rgba(47, 125, 255, 0.1), transparent 32%),
-    linear-gradient(180deg, rgba(250, 252, 255, 0.98), rgba(245, 249, 255, 0.95));
-  border: 1px solid rgba(18, 52, 78, 0.07);
-}
-
-.agent-sidebar__primary,
-.agent-sidebar__logout {
-  min-height: 44px;
-  border-radius: 14px;
-  cursor: pointer;
-  font: inherit;
-  transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
-}
-
-.agent-sidebar__primary {
-  border: 0;
-  color: #f6fbff;
-  background: linear-gradient(135deg, #2f7dff 0%, #4bb6ff 100%);
-  box-shadow: 0 14px 26px rgba(47, 125, 255, 0.22);
-}
-
-.agent-sidebar__logout {
-  border: 1px solid rgba(18, 52, 78, 0.08);
-  color: #35556f;
-  background: rgba(245, 249, 255, 0.96);
-}
-
-.agent-sidebar__primary:hover,
-.agent-sidebar__logout:hover {
-  transform: translateY(-1px);
-}
-
-.agent-sidebar__primary:disabled {
-  opacity: 0.62;
-  transform: none;
-}
-
-.agent-sidebar__section {
-  display: grid;
-  gap: 10px;
-}
-
-.agent-sidebar__section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: #6f89a2;
-  font-size: 0.76rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.agent-sidebar__footer {
-  display: grid;
-  gap: 12px;
-  margin-top: auto;
-}
-
-.agent-user-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(248, 252, 255, 0.98), rgba(242, 248, 255, 0.94));
-  border: 1px solid rgba(18, 52, 78, 0.07);
-}
-
-.agent-user-card--sidebar {
-  padding: 12px 14px;
-}
-
-.agent-user-card__avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  background: rgba(47, 125, 255, 0.12);
-  color: #2565ca;
-  font-weight: 700;
-}
-
-.agent-session-list {
-  display: grid;
-  gap: 12px;
-  min-height: 0;
-}
-
-.agent-session-list__body {
-  display: grid;
-  align-content: start;
-  min-height: 220px;
-  height: clamp(220px, 34vh, 360px);
-  padding: 10px 8px 10px 0;
-  border-top: 1px solid rgba(18, 52, 78, 0.08);
-}
-
-.agent-session-list__status {
-  margin: 0;
-  padding-right: 8px;
-  color: #6c879f;
-  line-height: 1.65;
-}
-
-.agent-session-list__status--empty {
-  padding: 14px;
-  border-radius: 18px;
-  background: rgba(246, 250, 255, 0.96);
-  border: 1px dashed rgba(18, 52, 78, 0.12);
-}
-
-.agent-session-list__items {
-  display: grid;
-  gap: 8px;
-  min-height: 0;
-  height: 100%;
-  overflow-y: auto;
-  padding-right: 6px;
-  scrollbar-width: thin;
-}
-
-.agent-session-list__items::-webkit-scrollbar {
-  width: 6px;
-}
-
-.agent-session-list__items::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(18, 52, 78, 0.18);
-}
-
-.agent-session-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  min-height: 46px;
-  padding: 6px 8px 6px 10px;
-  border-radius: 14px;
-  border: 1px solid rgba(122, 190, 255, 0.55);
-  background: linear-gradient(180deg, rgba(246, 251, 255, 0.98), rgba(239, 247, 255, 0.94));
-  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease, color 160ms ease;
-}
-
-.agent-session-item:hover {
-  border-color: rgba(74, 151, 255, 0.7);
-  background: linear-gradient(180deg, rgba(244, 250, 255, 0.99), rgba(232, 244, 255, 0.96));
-  box-shadow: 0 10px 18px rgba(68, 132, 214, 0.08);
-}
-
-.agent-session-item.is-active {
-  color: #0f4ea6;
-  border-color: rgba(74, 151, 255, 0.85);
-  background: linear-gradient(180deg, rgba(240, 248, 255, 0.99), rgba(228, 241, 255, 0.97));
-  box-shadow: 0 12px 20px rgba(47, 125, 255, 0.1);
-}
-
-.agent-session-item__main {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  border: 0;
-  width: 100%;
-  min-height: 32px;
-  padding: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.agent-session-item__title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  width: 100%;
-}
-
-.agent-session-item__dot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: rgba(18, 52, 78, 0.18);
-}
-
-.agent-session-item__title {
-  min-width: 0;
-  color: #12344e;
-  font-weight: 500;
-  line-height: 1.35;
-  font-size: 0.94rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.agent-session-item.is-active .agent-session-item__title {
-  color: #0f4ea6;
-  font-weight: 700;
-}
-
-.agent-session-item.is-active .agent-session-item__dot {
-  background: rgba(47, 125, 255, 0.72);
-}
-
-.agent-session-item__delete {
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.66);
-  color: #7f98b2;
-  font-size: 0.95rem;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 160ms ease, background-color 160ms ease, color 160ms ease;
-}
-
-.agent-session-item:hover .agent-session-item__delete {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.agent-session-item__delete:hover {
-  background: rgba(18, 52, 78, 0.08);
-  color: #4c647c;
+  background: var(--agent-sidebar-surface);
+  border-right: 1px solid var(--agent-border);
 }
 
 .agent-shell__main {
+  order: 2;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 14px;
-  padding: 16px;
-  border-radius: 30px;
-  overflow: hidden;
-}
-
-.agent-mainbar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 4px 4px 10px;
-  border-bottom: 1px solid rgba(18, 52, 78, 0.08);
-}
-
-.agent-mainbar__copy {
   min-width: 0;
-}
-
-.agent-mainbar__copy h2 {
-  margin: 0;
-  color: #12344e;
-  font-size: 1.42rem;
-  line-height: 1.15;
-}
-
-.agent-mainbar__status {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-  color: #6f8ba5;
-  font-size: 0.76rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.agent-mainbar__status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #1bc47d;
-  box-shadow: 0 0 0 4px rgba(27, 196, 125, 0.12);
-}
-
-.agent-conversation {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  flex: 1 1 auto;
-  height: 100%;
-  min-height: 0;
-  padding: 16px;
   overflow: hidden;
-  border-radius: 22px;
-  background:
-    radial-gradient(circle at top right, rgba(47, 125, 255, 0.07), transparent 24%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(250, 252, 255, 0.98));
-  border: 1px solid rgba(18, 52, 78, 0.07);
-}
-
-.agent-conversation__status {
-  margin: 0;
-  flex: 0 0 auto;
-}
-
-.agent-conversation__messages {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 4px;
-  padding-bottom: 220px;
-}
-
-.agent-conversation__welcome {
-  display: grid;
-  gap: 20px;
-  align-content: center;
-  min-height: min(54dvh, 520px);
-  padding: 38px 34px;
-  border-radius: 32px;
-  background:
-    radial-gradient(circle at top right, rgba(47, 125, 255, 0.14), transparent 30%),
-    linear-gradient(180deg, rgba(252, 254, 255, 0.99), rgba(245, 250, 255, 0.97));
-  border: 1px solid rgba(18, 52, 78, 0.08);
-}
-
-.agent-conversation__welcome-copy {
-  display: grid;
-  gap: 12px;
-  justify-items: center;
-  text-align: center;
-}
-
-.agent-conversation__welcome-tag {
-  margin: 0;
-  color: #4d7dff;
-  font-size: 0.8rem;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.agent-conversation__welcome h3,
-.agent-conversation__welcome p {
-  margin: 0;
-}
-
-.agent-conversation__welcome h3 {
-  max-width: 14ch;
-  color: #12344e;
-  font-size: clamp(2rem, 3.6vw, 3rem);
-  line-height: 1.02;
-}
-
-.agent-conversation__welcome p {
-  max-width: 38rem;
-  color: #5f7c96;
-  line-height: 1.72;
-}
-
-.agent-conversation__starter-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.agent-starter-card {
-  display: grid;
-  gap: 8px;
-  min-height: 132px;
-  padding: 18px;
-  border: 1px solid rgba(18, 52, 78, 0.08);
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.96);
-  color: #35556f;
-  text-align: left;
-  cursor: pointer;
-  transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease;
-}
-
-.agent-starter-card strong,
-.agent-starter-card span {
-  display: block;
-}
-
-.agent-starter-card strong {
-  color: #12344e;
-  font-size: 1rem;
-}
-
-.agent-starter-card span {
-  color: #65819b;
-  line-height: 1.65;
-  font-size: 0.86rem;
-}
-
-.agent-starter-card:hover {
-  transform: translateY(-1px);
-  border-color: rgba(47, 125, 255, 0.24);
-  background: rgba(47, 125, 255, 0.06);
-}
-
-.agent-message {
-  display: grid;
-  gap: 8px;
-  max-width: min(100%, 78%);
-}
-
-.agent-message--user {
-  align-self: flex-end;
-  justify-items: end;
-}
-
-.agent-message--assistant {
-  align-self: flex-start;
-}
-
-.agent-message__role {
-  color: #718ca8;
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.agent-message__bubble {
-  padding: 14px 16px;
-  border-radius: 20px;
-  border: 1px solid rgba(18, 52, 78, 0.07);
-  background: #ffffff;
-  box-shadow: 0 12px 24px rgba(24, 67, 115, 0.05);
-}
-
-.agent-message--assistant .agent-message__bubble {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(249, 252, 255, 0.97));
-}
-
-.agent-message--user .agent-message__bubble {
-  background: linear-gradient(135deg, rgba(47, 125, 255, 0.14), rgba(76, 180, 255, 0.08));
-}
-
-.agent-message__bubble p {
-  margin: 0;
-  color: #23445c;
-  line-height: 1.78;
-  white-space: pre-wrap;
-}
-
-.agent-conversation__sending {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 16px;
-  width: fit-content;
-  border-radius: 999px;
-  background: rgba(244, 249, 255, 0.96);
-}
-
-.agent-conversation__sending span {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #5b95ff;
-  animation: agent-thinking 1.1s ease-in-out infinite;
-}
-
-.agent-conversation__sending span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.agent-conversation__sending span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-.agent-composer {
-  display: grid;
-  gap: 14px;
-  padding: 18px;
-  min-height: 172px;
-  border-radius: 26px;
-  border: 1px solid rgba(18, 52, 78, 0.08);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 252, 255, 0.98));
-  box-shadow: 0 16px 26px rgba(24, 67, 115, 0.05);
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: 16px;
-  z-index: 2;
-  overflow: hidden;
-}
-
-.agent-composer__input {
-  width: 100%;
-  display: block;
-  min-height: 120px;
-  max-height: 120px;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: #12344e;
-  font: inherit;
-  line-height: 1.72;
-  resize: none;
-  overflow-y: auto;
-  outline: none;
-}
-
-.agent-composer__actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
-.agent-composer__send {
-  min-width: 120px;
-  min-height: 46px;
-  border: 0;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #2f7dff 0%, #4bb6ff 100%);
-  color: #f4f8ff;
-  cursor: pointer;
-  font: inherit;
-  font-weight: 700;
-  box-shadow: 0 14px 26px rgba(47, 125, 255, 0.22);
-}
-
-.agent-composer__send:disabled {
-  cursor: not-allowed;
-  opacity: 0.56;
-  box-shadow: none;
+  background: var(--agent-surface);
 }
 
 .agent-shell__inspector {
-  display: grid;
-  gap: 12px;
-  align-content: start;
-  padding: 16px;
-  border-radius: 26px;
-  overflow: auto;
+  order: 5;
+  position: relative;
+  padding: 18px 18px 18px 0;
+  background: var(--agent-surface);
+  border-left: 1px solid var(--agent-border);
+  overflow: visible;
 }
 
-.agent-inspector__card {
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at top right, rgba(47, 125, 255, 0.08), transparent 30%),
-    #ffffff;
-  border: 1px solid rgba(18, 52, 78, 0.07);
+.agent-shell__inspector.is-collapsed {
+  padding: 18px 0 18px 0;
 }
 
-.agent-inspector__head {
-  display: grid;
-  gap: 4px;
-}
-
-.agent-inspector__eyebrow {
-  margin: 0;
-  color: #6f8ba5;
-  font-size: 0.76rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.agent-inspector__head h3 {
-  margin: 0;
-  color: #12344e;
-}
-
-.agent-inspector__field {
-  display: grid;
-  gap: 6px;
-}
-
-.agent-inspector__field > span {
-  color: #6c879f;
-  font-size: 0.9rem;
-}
-
-.agent-inspector__select {
-  width: 100%;
-  min-height: 42px;
-  border: 1px solid rgba(18, 52, 78, 0.08);
-  border-radius: 12px;
-  padding: 10px 12px;
-  background: rgba(248, 252, 255, 0.96);
-  color: #12344e;
+.agent-inspector__toggle {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  z-index: 4;
+  width: 28px;
+  height: 56px;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--agent-border);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #5f5f5f;
+  cursor: pointer;
   font: inherit;
-  outline: none;
-}
-
-.agent-inspector__warning {
-  margin: 0;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px dashed rgba(216, 126, 61, 0.28);
-  background: rgba(255, 248, 240, 0.96);
-  color: #995d24;
-  line-height: 1.7;
-}
-
-.agent-inspector__selected {
-  display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(247, 250, 255, 0.98);
-  border: 1px solid rgba(18, 52, 78, 0.06);
-}
-
-.agent-inspector__selected-label,
-.agent-status-card span {
-  color: #6f8ba5;
-  font-size: 0.76rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.agent-inspector__selected strong,
-.agent-status-card strong {
-  color: #12344e;
-}
-
-.agent-inspector__selected p {
-  margin: 0;
-  color: #5f7c96;
-}
-
-.agent-status-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.agent-status-card {
-  display: grid;
-  gap: 8px;
-  padding: 14px;
-  border-radius: 14px;
-  background: rgba(248, 252, 255, 0.98);
-  border: 1px solid rgba(18, 52, 78, 0.05);
-}
-
-.agent-status-card strong {
   font-size: 1rem;
-  line-height: 1.5;
+  line-height: 1;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+  transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.agent-shell {
-  grid-template-columns: 280px minmax(0, 1fr) 292px;
-  gap: 12px;
+.agent-inspector__toggle:hover {
+  background: #f6f7fb;
+  color: #2f4fa8;
+  border-color: #d7def7;
 }
 
-.agent-shell__sidebar {
-  gap: 8px;
-  padding: 10px;
-  border: 0;
-  border-radius: 22px;
-  background: #f7f7f7;
-  box-shadow: none;
+.agent-inspector__toggle:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 4px var(--agent-focus);
+}
+
+.agent-shell__resizer {
+  order: 3;
+  position: relative;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.agent-shell__resizer::before {
+  content: '';
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: #d7d7d7;
+  transition: background-color 0.18s ease;
+}
+
+.agent-shell__resizer:hover::before,
+.agent-shell.is-resizing-preview .agent-shell__resizer::before {
+  background: #8ea9ff;
+}
+
+.agent-shell__preview {
+  order: 4;
+  padding: 18px 18px 18px 0;
+  background: var(--agent-surface);
 }
 
 .agent-sidebar__top {
@@ -1157,7 +948,7 @@ watch(
 }
 
 .agent-sidebar__brand strong {
-  color: #111111;
+  color: var(--agent-text);
   font-size: 0.95rem;
   font-weight: 650;
   line-height: 1.2;
@@ -1166,26 +957,61 @@ watch(
 .agent-sidebar__brand small {
   max-width: 164px;
   margin-top: 2px;
-  color: #6f6f6f;
+  color: var(--agent-subtle);
   font-size: 0.78rem;
 }
 
 .agent-user-card__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  background: #111111;
+  background: var(--agent-text);
   color: #ffffff;
   font-size: 0.8rem;
+  font-weight: 700;
 }
 
 .agent-sidebar__icon-button,
 .agent-sidebar__new-chat,
 .agent-session-item__main,
 .agent-session-item__delete,
-.agent-sidebar__logout {
+.agent-sidebar__logout,
+.agent-starter-card,
+.agent-composer__send,
+.agent-composer__stop {
   border: 0;
-  background: transparent;
+  font: inherit;
+}
+
+.agent-sidebar__icon-button,
+.agent-sidebar__new-chat,
+.agent-session-item__main,
+.agent-session-item__delete,
+.agent-sidebar__logout,
+.agent-starter-card,
+.agent-composer__send,
+.agent-composer__stop {
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    opacity 150ms ease,
+    transform 150ms ease;
+}
+
+.agent-sidebar__icon-button:focus-visible,
+.agent-sidebar__new-chat:focus-visible,
+.agent-session-item__main:focus-visible,
+.agent-session-item__delete:focus-visible,
+.agent-sidebar__logout:focus-visible,
+.agent-starter-card:focus-visible,
+.agent-composer__send:focus-visible,
+.agent-composer__stop:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 4px var(--agent-focus);
 }
 
 .agent-sidebar__icon-button {
@@ -1195,37 +1021,38 @@ watch(
   align-items: center;
   justify-content: center;
   border-radius: 10px;
+  background: transparent;
   color: #303030;
   cursor: pointer;
   font-size: 1.2rem;
   line-height: 1;
-  transition: background-color 150ms ease;
 }
 
 .agent-sidebar__icon-button:hover,
 .agent-sidebar__new-chat:hover,
 .agent-sidebar__logout:hover {
-  background: #ececec;
+  background: var(--agent-border);
+}
+
+.agent-sidebar__icon-button:disabled,
+.agent-sidebar__new-chat:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
 }
 
 .agent-sidebar__new-chat {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 42px;
   width: 100%;
+  min-height: 42px;
   padding: 9px 10px;
   border-radius: 10px;
+  background: transparent;
   color: #202020;
   cursor: pointer;
   text-align: left;
   font-size: 0.94rem;
-  transition: background-color 150ms ease;
-}
-
-.agent-sidebar__new-chat:disabled,
-.agent-sidebar__icon-button:disabled {
-  opacity: 0.52;
 }
 
 .agent-sidebar__new-chat-icon {
@@ -1239,21 +1066,23 @@ watch(
 }
 
 .agent-sidebar__section {
-  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  flex: 1;
   gap: 6px;
   padding-top: 6px;
 }
 
 .agent-sidebar__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 8px 10px 4px;
   color: #8a8a8a;
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.02em;
-  text-transform: none;
 }
 
 .agent-sidebar__section-head small {
@@ -1272,19 +1101,17 @@ watch(
 }
 
 .agent-session-list__body {
-  height: auto;
-  min-height: 0;
-  border-top: 0;
-  padding: 0;
+  display: grid;
+  gap: 8px;
+  height: 100%;
 }
 
 .agent-session-list__items {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  height: 100%;
-  padding-right: 0;
   overflow-y: auto;
+  padding-right: 0;
 }
 
 .agent-session-list__items::-webkit-scrollbar {
@@ -1292,7 +1119,7 @@ watch(
 }
 
 .agent-session-list__items::-webkit-scrollbar-thumb {
-  border: 2px solid #f7f7f7;
+  border: 2px solid #f7f7f8;
   border-radius: 999px;
   background: #d1d1d1;
 }
@@ -1302,6 +1129,7 @@ watch(
   padding: 10px;
   color: #777777;
   font-size: 0.92rem;
+  line-height: 1.6;
 }
 
 .agent-session-list__status--empty {
@@ -1311,64 +1139,60 @@ watch(
 }
 
 .agent-session-item {
-  min-height: 40px;
+  display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
   gap: 0;
+  align-items: center;
+  min-height: 40px;
   padding: 0;
-  border: 0;
   border-radius: 10px;
   background: transparent;
-  box-shadow: none;
-  color: #1f1f1f;
-}
-
-.agent-session-item:hover {
-  border-color: transparent;
-  background: #eeeeee;
-  box-shadow: none;
 }
 
 .agent-session-item.is-active {
-  color: #111111;
-  border-color: transparent;
   background: #e7e7e7;
-  box-shadow: none;
 }
 
 .agent-session-item__main {
+  width: 100%;
   min-height: 40px;
   padding: 0 10px 0 12px;
   border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-session-item__main:hover {
+  background: #eeeeee;
 }
 
 .agent-session-item__title {
+  display: block;
+  overflow: hidden;
   color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.93rem;
   font-weight: 400;
   line-height: 1.35;
 }
 
-.agent-session-item.is-active .agent-session-item__title {
-  color: #111111;
-  font-weight: 500;
-}
-
 .agent-session-item__delete {
   width: 30px;
   height: 30px;
-  align-self: center;
-  justify-self: center;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  align-self: center;
+  justify-self: center;
   border-radius: 8px;
+  background: transparent;
   color: #777777;
+  cursor: pointer;
   font-size: 0.9rem;
-  letter-spacing: 0.02em;
   opacity: 0;
   pointer-events: none;
-  cursor: pointer;
-  transition: opacity 150ms ease, background-color 150ms ease, color 150ms ease;
 }
 
 .agent-session-item:hover .agent-session-item__delete,
@@ -1389,15 +1213,621 @@ watch(
 }
 
 .agent-sidebar__logout {
-  min-height: 40px;
   width: 100%;
+  min-height: 40px;
   padding: 9px 10px;
   border-radius: 10px;
+  background: transparent;
   color: #4a4a4a;
   cursor: pointer;
   text-align: left;
+  font-size: 0.92rem;
+}
+
+.agent-mainbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 68px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--agent-border);
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(8px);
+}
+
+.agent-mainbar__copy {
+  min-width: 0;
+}
+
+.agent-mainbar__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--agent-subtle);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.agent-mainbar__status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #35b36b;
+  box-shadow: 0 0 0 5px rgba(53, 179, 107, 0.14);
+}
+
+.agent-mainbar__copy h2 {
+  margin: 8px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.agent-task-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.agent-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.agent-mode-badge.is-chat {
+  background: #f2f2f2;
+  color: #565656;
+}
+
+.agent-mode-badge.is-coding {
+  background: rgba(53, 179, 107, 0.14);
+  color: #227a48;
+}
+
+.agent-task-badge.is-idle {
+  background: #f2f2f2;
+  color: #565656;
+}
+
+.agent-task-badge.is-running {
+  background: rgba(61, 118, 255, 0.12);
+  color: #244fb4;
+}
+
+.agent-task-badge.is-completed {
+  background: rgba(53, 179, 107, 0.14);
+  color: #227a48;
+}
+
+.agent-task-badge.is-danger {
+  background: rgba(209, 76, 62, 0.12);
+  color: #a6382c;
+}
+
+.agent-conversation {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  background:
+    radial-gradient(circle at top, rgba(0, 0, 0, 0.035), transparent 32%),
+    linear-gradient(180deg, #ffffff 0%, #fdfdfd 100%);
+}
+
+.agent-conversation__status {
+  position: absolute;
+  z-index: 3;
+  top: 20px;
+  left: 24px;
+  right: 24px;
+}
+
+.agent-conversation__messages {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 26px;
+  overflow-y: auto;
+  padding:
+    34px
+    max(24px, calc((100% - var(--agent-content-width)) / 2))
+    18px;
+  scroll-behavior: smooth;
+}
+
+.agent-conversation__welcome {
+  display: grid;
+  gap: 30px;
+  align-content: center;
+  min-height: 100%;
+  width: min(100%, var(--agent-content-width));
+  padding: 36px 0;
+  justify-self: center;
+}
+
+.agent-conversation__welcome-copy {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  text-align: center;
+}
+
+.agent-conversation__welcome-tag {
+  margin: 0;
+  color: var(--agent-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.agent-conversation__welcome-copy h3 {
+  margin: 0;
+  font-size: clamp(1.8rem, 3vw, 2.5rem);
+  line-height: 1.1;
+}
+
+.agent-conversation__welcome-copy p:last-child {
+  max-width: 720px;
+  margin: 0;
+  color: var(--agent-subtle);
+  line-height: 1.8;
+}
+
+.agent-conversation__starter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.agent-starter-card {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid var(--agent-border);
+  border-radius: 18px;
+  background: #ffffff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-starter-card:hover {
+  background: #f7f7f7;
+  border-color: #d9d9d9;
+  transform: translateY(-1px);
+}
+
+.agent-starter-card strong,
+.agent-starter-card span {
+  display: block;
+}
+
+.agent-starter-card strong {
+  color: var(--agent-text);
+  font-size: 1rem;
+}
+
+.agent-starter-card span {
+  color: var(--agent-subtle);
+  font-size: 0.86rem;
+  line-height: 1.65;
+}
+
+.agent-message {
+  display: grid;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.agent-message--user {
+  width: min(100%, var(--agent-content-width));
+  justify-self: center;
+  justify-items: end;
+}
+
+.agent-message--assistant,
+.agent-message--tool {
+  width: min(100%, var(--agent-content-width));
+  justify-self: center;
+}
+
+.agent-message__role {
+  color: var(--agent-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.agent-message__bubble {
+  border: 0;
   box-shadow: none;
+}
+
+.agent-message--assistant .agent-message__bubble {
+  padding: 2px 0;
+  background: transparent;
+}
+
+.agent-message--tool .agent-message__bubble {
+  padding: 12px 14px;
+  border: 1px solid #e6e6e6;
+  border-radius: 16px;
+  background: #fbfbfb;
+}
+
+.agent-message--user .agent-message__bubble {
+  padding: 12px 16px;
+  border-radius: 22px;
+  background: var(--agent-soft-surface);
+}
+
+.agent-message__bubble p {
+  margin: 0;
+  color: var(--agent-text);
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.agent-conversation__sending {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 14px 16px;
+  border-radius: 999px;
+  background: var(--agent-soft-surface);
+  justify-self: center;
+}
+
+.agent-conversation__sending span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--agent-muted);
+  animation: agent-thinking 1.1s ease-in-out infinite;
+}
+
+.agent-conversation__sending span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.agent-conversation__sending span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.agent-composer {
+  position: relative;
+  z-index: 2;
+  width: min(calc(100% - 40px), 780px);
+  min-height: 112px;
+  display: grid;
+  gap: 14px;
+  margin: 0 auto 24px;
+  padding: 14px 14px 12px;
+  overflow: hidden;
+  border: 1px solid var(--agent-border-strong);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow:
+    0 12px 34px rgba(0, 0, 0, 0.08),
+    0 2px 8px rgba(0, 0, 0, 0.04);
+  backdrop-filter: blur(10px);
+}
+
+.agent-composer__input {
+  width: 100%;
+  min-height: 62px;
+  max-height: 180px;
+  border: 0;
+  padding: 2px 4px;
+  background: transparent;
+  color: var(--agent-text);
+  font: inherit;
+  line-height: 1.72;
+  resize: none;
+  overflow-y: auto;
+  outline: none;
+}
+
+.agent-composer__input::placeholder {
+  color: #979797;
+}
+
+.agent-composer__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.agent-composer__send {
+  min-width: 82px;
+  min-height: 38px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: var(--agent-text);
+  color: #ffffff;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.agent-composer__send:hover:not(:disabled),
+.agent-composer__stop:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.agent-composer__send:disabled,
+.agent-composer__stop:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+.agent-composer__stop {
+  min-width: 96px;
+  min-height: 38px;
+  padding: 0 18px;
+  border: 1px solid rgba(209, 76, 62, 0.22);
+  border-radius: 999px;
+  background: rgba(209, 76, 62, 0.08);
+  color: #a6382c;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.agent-panel {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  height: 100%;
+  padding: 22px 20px;
+  border-radius: 24px;
+  background: #fafafa;
+}
+
+.agent-panel__head,
+.agent-panel__head h3,
+.agent-panel__head p,
+.agent-info-card__label,
+.agent-info-card__value,
+.agent-info-card__meta {
+  margin: 0;
+}
+
+.agent-panel__eyebrow {
+  color: var(--agent-muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.agent-panel__head h3 {
+  margin-top: 6px;
+  color: var(--agent-text);
+  font-size: 1.05rem;
+}
+
+.agent-panel__stack {
+  display: grid;
+  gap: 14px;
+}
+
+.agent-info-card {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--agent-border);
+  border-radius: 18px;
+  background: #ffffff;
+}
+
+.agent-info-card__label {
+  color: var(--agent-muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.agent-info-card__value {
+  color: var(--agent-text);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.agent-info-card__select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--agent-border-strong);
+  border-radius: 14px;
+  background: #ffffff;
+  color: var(--agent-text);
+  font: inherit;
+  font-size: 0.92rem;
+  line-height: 1.4;
+  outline: none;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+}
+
+.agent-info-card__select:focus {
+  border-color: #b9b9b9;
+  box-shadow: 0 0 0 4px var(--agent-focus);
+}
+
+.agent-info-card__select:disabled {
+  background: #f5f5f5;
+  color: var(--agent-muted);
+  cursor: not-allowed;
+}
+
+.agent-info-card__meta {
+  color: var(--agent-subtle);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.agent-info-card--files {
+  align-content: start;
+}
+
+.agent-info-card--files > .agent-info-card__label {
+  font-size: 0;
+  letter-spacing: 0;
+}
+
+.agent-info-card--files > .agent-info-card__label::before {
+  content: '当前对话文件';
+  font-size: 0.76rem;
+  letter-spacing: 0.04em;
+}
+
+.agent-file-list {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-file-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  padding: 4px 2px;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
   transition: background-color 150ms ease, color 150ms ease;
+}
+
+.agent-file-item:hover {
+  background: #f4f7ff;
+}
+
+.agent-file-item.is-active {
+  background: #e8f1ff;
+}
+
+.agent-file-item__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.agent-file-item__path {
+  margin: 0;
+  color: #2b63d9;
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-decoration: underline;
+  text-decoration-color: rgba(43, 99, 217, 0.28);
+  text-underline-offset: 2px;
+}
+
+.agent-file-item:hover .agent-file-item__path {
+  color: #1f4fb3;
+  text-decoration-color: rgba(31, 79, 179, 0.42);
+}
+
+.agent-code-viewer {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 14px;
+  height: 100%;
+  padding: 22px 20px;
+  border-radius: 24px;
+  background: #ffffff;
+  border: 1px solid var(--agent-border);
+}
+
+.agent-code-viewer__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-code-viewer__head-copy {
+  min-width: 0;
+}
+
+.agent-code-viewer__head-copy h3,
+.agent-code-viewer__head-copy p,
+.agent-code-viewer__head-copy small {
+  margin: 0;
+}
+
+.agent-code-viewer__head-copy h3 {
+  margin-top: 6px;
+  color: var(--agent-text);
+  font-size: 1rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.agent-code-viewer__head-copy small {
+  display: block;
+  margin-top: 8px;
+  color: var(--agent-subtle);
+  font-size: 0.78rem;
+}
+
+.agent-code-viewer__close {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 10px;
+  background: #f0f0f0;
+  color: #444444;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.agent-code-viewer__close:hover {
+  background: #e4e4e4;
+}
+
+.agent-code-viewer__status {
+  margin: 0;
+}
+
+.agent-code-viewer__body {
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--agent-border);
+  border-radius: 18px;
+  background: #ffffff;
+  color: var(--agent-text);
+  font-family: Consolas, "SFMono-Regular", Menlo, Monaco, monospace;
+  font-size: 0.86rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-code-viewer__body code {
+  display: block;
+  min-height: 100%;
+  background: transparent;
+  padding: 0;
 }
 
 @keyframes agent-thinking {
@@ -1413,288 +1843,25 @@ watch(
   }
 }
 
-@media (max-width: 1320px) {
+@media (max-width: 1180px) {
   .agent-shell {
     grid-template-columns: 280px minmax(0, 1fr);
   }
 
+  .agent-shell.has-file-preview {
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+
   .agent-shell__inspector {
-    grid-column: 1 / -1;
-  }
-}
-
-@media (max-width: 920px) {
-  .agent-shell {
-    grid-template-columns: 1fr;
-    height: 100%;
-    min-height: 0;
+    display: none;
   }
 
-  .agent-shell__sidebar,
-  .agent-shell__main,
-  .agent-shell__inspector {
-    border-radius: 24px;
+  .agent-shell__resizer {
+    display: none;
   }
 
-  .agent-mainbar {
-    display: grid;
-  }
-
-  .agent-conversation__starter-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 720px) {
-  .agent-conversation {
-    padding: 14px;
-  }
-
-  .agent-message {
-    max-width: 100%;
-  }
-
-  .agent-conversation__welcome {
-    min-height: auto;
-    padding: 24px 20px;
-  }
-
-  .agent-conversation__welcome-copy {
-    justify-items: start;
-    text-align: left;
-  }
-
-  .agent-composer__actions {
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  .agent-composer__send {
-    width: 100%;
-  }
-
-  .agent-conversation__messages {
-    padding-bottom: 236px;
-  }
-
-  .agent-composer {
-    left: 14px;
-    right: 14px;
-    bottom: 14px;
-  }
-}
-
-.agent-shell {
-  grid-template-columns: 292px minmax(0, 1fr) 300px;
-  gap: 0;
-  background: #ffffff;
-}
-
-.agent-shell__sidebar {
-  border-radius: 0;
-  background: #f7f7f8;
-  border-right: 1px solid #ececec;
-}
-
-.agent-shell__main {
-  gap: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: #ffffff;
-  box-shadow: none;
-}
-
-.agent-mainbar {
-  min-height: 60px;
-  padding: 0 24px;
-  border-bottom: 1px solid #eeeeee;
-  background: rgba(255, 255, 255, 0.92);
-}
-
-.agent-mainbar__status {
-  display: none;
-}
-
-.agent-mainbar__copy h2 {
-  color: #171717;
-  font-size: 1rem;
-  font-weight: 600;
-}
-
-.agent-conversation {
-  border: 0;
-  border-radius: 0;
-  background: #ffffff;
-}
-
-.agent-conversation__messages {
-  width: min(100%, 780px);
-  margin: 0 auto;
-  padding: 28px 20px 190px;
-}
-
-.agent-conversation__welcome {
-  min-height: min(56dvh, 520px);
-  padding: 40px 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.agent-conversation__welcome-tag {
-  color: #8f8f8f;
-}
-
-.agent-conversation__welcome h3 {
-  max-width: 16ch;
-  color: #171717;
-  font-size: clamp(2rem, 4vw, 2.7rem);
-  font-weight: 650;
-  letter-spacing: -0.04em;
-}
-
-.agent-conversation__welcome p {
-  color: #6b6b6b;
-}
-
-.agent-starter-card {
-  border-color: #e8e8e8;
-  border-radius: 16px;
-  background: #ffffff;
-  box-shadow: none;
-}
-
-.agent-starter-card:hover {
-  border-color: #d9d9d9;
-  background: #f7f7f7;
-}
-
-.agent-starter-card strong {
-  color: #171717;
-}
-
-.agent-starter-card span {
-  color: #6f6f6f;
-}
-
-.agent-message {
-  max-width: 100%;
-  gap: 6px;
-}
-
-.agent-message--user {
-  max-width: min(80%, 620px);
-}
-
-.agent-message--assistant {
-  width: 100%;
-}
-
-.agent-message__role {
-  color: #8a8a8a;
-  font-size: 0.75rem;
-}
-
-.agent-message__bubble {
-  border: 0;
-  box-shadow: none;
-}
-
-.agent-message--assistant .agent-message__bubble {
-  padding: 2px 0;
-  background: transparent;
-}
-
-.agent-message--user .agent-message__bubble {
-  padding: 12px 16px;
-  border-radius: 22px;
-  background: #f4f4f4;
-}
-
-.agent-message__bubble p {
-  color: #171717;
-  line-height: 1.75;
-}
-
-.agent-conversation__sending {
-  background: #f4f4f4;
-}
-
-.agent-conversation__sending span {
-  background: #8a8a8a;
-}
-
-.agent-composer {
-  width: min(calc(100% - 40px), 780px);
-  min-height: 112px;
-  left: 50%;
-  right: auto;
-  bottom: 24px;
-  transform: translateX(-50%);
-  padding: 14px 14px 12px;
-  border: 1px solid #dedede;
-  border-radius: 28px;
-  background: #ffffff;
-  box-shadow:
-    0 12px 34px rgba(0, 0, 0, 0.08),
-    0 2px 8px rgba(0, 0, 0, 0.04);
-}
-
-.agent-composer__input {
-  min-height: 62px;
-  max-height: 180px;
-  padding: 2px 4px;
-  color: #171717;
-}
-
-.agent-composer__send {
-  min-width: 82px;
-  min-height: 38px;
-  border-radius: 999px;
-  background: #171717;
-  color: #ffffff;
-  box-shadow: none;
-}
-
-.agent-shell__inspector {
-  border: 0;
-  border-left: 1px solid #eeeeee;
-  border-radius: 0;
-  background: #ffffff;
-  box-shadow: none;
-}
-
-.agent-inspector__card {
-  border: 1px solid #eeeeee;
-  border-radius: 16px;
-  background: #ffffff;
-  box-shadow: none;
-}
-
-.agent-inspector__eyebrow,
-.agent-inspector__field > span,
-.agent-inspector__selected-label,
-.agent-status-card span {
-  color: #8a8a8a;
-}
-
-.agent-inspector__head h3,
-.agent-inspector__selected strong,
-.agent-status-card strong {
-  color: #171717;
-}
-
-.agent-inspector__select,
-.agent-inspector__selected,
-.agent-status-card {
-  border-color: #e8e8e8;
-  background: #f9f9f9;
-}
-
-@media (max-width: 1320px) {
-  .agent-shell {
-    grid-template-columns: 292px minmax(0, 1fr);
+  .agent-shell__preview {
+    display: none;
   }
 }
 
@@ -1705,12 +1872,11 @@ watch(
 
   .agent-shell__sidebar {
     border-right: 0;
-    border-bottom: 1px solid #ececec;
+    border-bottom: 1px solid var(--agent-border);
   }
 
-  .agent-shell__inspector {
-    border-left: 0;
-    border-top: 1px solid #eeeeee;
+  .agent-conversation__starter-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -1720,13 +1886,46 @@ watch(
     padding: 0 16px;
   }
 
+  .agent-mainbar__status {
+    display: none;
+  }
+
+  .agent-conversation__status {
+    top: 16px;
+    left: 14px;
+    right: 14px;
+  }
+
   .agent-conversation__messages {
     padding: 22px 14px 186px;
   }
 
+  .agent-conversation__welcome {
+    min-height: auto;
+    padding: 28px 0;
+  }
+
+  .agent-conversation__welcome-copy {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .agent-message--user {
+    max-width: 100%;
+  }
+
   .agent-composer {
     width: calc(100% - 24px);
-    bottom: 12px;
+    margin-bottom: 12px;
+  }
+
+  .agent-composer__actions {
+    justify-content: stretch;
+  }
+
+  .agent-composer__send,
+  .agent-composer__stop {
+    width: 100%;
   }
 }
 </style>

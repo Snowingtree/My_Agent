@@ -30,6 +30,7 @@ import { AGENT_AUTH_KEY, AUTH_TOKEN_KEY } from './storage.js'
 import AgentWorkspaceScreen from './components/AgentWorkspaceScreen.vue'
 
 const agentTitle = 'Agent'
+const LEGACY_LOGIN_ENDPOINT = '/api/login'
 const submitting = ref(false)
 const serverError = ref('')
 const { privateAppAvailable, privateAppChecking } = usePrivateAppAccess()
@@ -49,12 +50,43 @@ function refreshAuthState() {
   isAuthenticated.value = readAgentAuthState()
 }
 
+async function loginWithSharedBlogAuth(payload) {
+  const response = await fetch(LEGACY_LOGIN_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify(payload)
+  })
+  const rawBody = await response.text()
+  let body = null
+
+  try {
+    body = rawBody ? JSON.parse(rawBody) : null
+  } catch {
+    body = null
+  }
+
+  if (!response.ok) {
+    const message =
+      typeof body?.message === 'string'
+        ? body.message
+        : typeof rawBody === 'string' && rawBody.trim() && !rawBody.trim().startsWith('<')
+          ? rawBody.trim()
+          : 'Login failed. Please try again.'
+    throw new Error(message)
+  }
+
+  return body || {}
+}
+
 async function handleLogin(payload) {
   serverError.value = ''
   submitting.value = true
 
   try {
-    const data = await http.post('/api/login', payload)
+    const data = await loginWithSharedBlogAuth(payload)
     const username = typeof data.user?.username === 'string' ? data.user.username : payload.username
     const token = typeof data.token === 'string' ? data.token : ''
 

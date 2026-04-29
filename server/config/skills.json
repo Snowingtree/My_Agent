@@ -1,0 +1,42 @@
+{
+  "defaultSkillId": "coding_agent",
+  "items": [
+    {
+      "skillId": "general_chat",
+      "name": "General Chat",
+      "description": "Use for normal conversation, quick Q&A, summaries, and lightweight brainstorming.",
+      "instruction": "Answer directly when the user does not need workspace inspection or file changes. Keep the reply practical and concise.",
+      "preferredTools": [],
+      "disabledTools": []
+    },
+    {
+      "skillId": "coding_agent",
+      "name": "Coding Agent",
+      "description": "Use for code reading, debugging, implementation, and verification inside the server workspace.",
+      "instruction": "Treat coding and file-edit requests as implementation work. Inspect the workspace before making code claims, then directly read, modify, create, and verify files inside the workspace when needed. Prefer concrete evidence from files, search results, command output, and verification commands. When the user asks to write code, do not stop at advice if a safe file change can be made.",
+      "preferredTools": [
+        "list_files",
+        "search_text",
+        "read_file",
+        "apply_patch",
+        "write_file",
+        "run_command"
+      ],
+      "disabledTools": []
+    },
+    {
+      "skillId": "task_planner",
+      "name": "Task Planner",
+      "description": "Use for decomposing goals into an execution plan before implementation work starts.",
+      "instruction": "Focus on clarifying objectives, outlining steps, surfacing risks, and only use tools when workspace evidence changes the plan quality.",
+      "preferredTools": [
+        "list_files",
+        "search_text"
+      ],
+      "disabledTools": [
+        "write_file",
+        "apply_patch"
+      ]
+    }
+  ]
+}

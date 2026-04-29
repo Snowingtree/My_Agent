@@ -1,0 +1,1187 @@
+import { readFile } from 'node:fs/promises'
+import { createStructuredCompletion } from './llmClient.js'
+import {
+  createId,
+  createTaskStep,
+  getRecentMessages,
+  isRunningTaskStatus,
+  normalizeTrimmedString,
+  nowIso,
+  sleep,
+  truncateText
+} from './utils.js'
+
+const WRITE_TOOL_NAMES = new Set(['write_file', 'apply_patch'])
+const TASK_CANCELLED_CODE = 'TASK_CANCELLED'
+const FILE_CHANGE_REQUEST_PATTERNS = [
+  /修改文件|写入文件|新增文件|新建文件|创建文件|删除文件|改代码|写代码|生成文件|保存到文件|落文件|更新文件|重写文件|补丁/i,
+  /\b(create|write|modify|edit|rewrite|update|delete|remove|save)\b.*\b(file|code|component|script|module)\b/i,
+  /\b(file|code|component|script|module)\b.*\b(create|write|modify|edit|rewrite|update|delete|remove|save)\b/i
+]
+
+const UI_FILE_CHANGE_REQUEST_PATTERNS = [
+  /\u5199\u4ee3\u7801|\u6539\u4ee3\u7801|\u751f\u6210\u4ee3\u7801|\u521b\u5efa\u4ee3\u7801|\u65b0\u5efa\u9875\u9762|\u521b\u5efa\u9875\u9762|\u505a\u4e00\u4e2a\u9875\u9762|\u505a\u4e00\u4e2a\u754c\u9762|\u521b\u5efa\u754c\u9762|\u751f\u6210\u9875\u9762|\u751f\u6210\u754c\u9762|\u521b\u5efa\u7ec4\u4ef6|\u65b0\u5efa\u7ec4\u4ef6|\u5199\u4e00\u4e2a html|\u5199\u4e00\u4e2a vue/i,
+  /\b(create|build|make|generate)\b.*\b(page|ui|interface|html|css|javascript|js|vue|react|component)\b/i,
+  /\b(page|ui|interface|html|css|javascript|js|vue|react|component)\b.*\b(create|build|make|generate|write)\b/i
+]
+
+function toChatHistory(messages) {
+  return messages.flatMap((message) => {
+    const role = normalizeTrimmedString(message?.role).toLowerCase()
+    const content = String(message?.content ?? '')
+
+    if (!content) {
+      return []
+    }
+
+    if (role === 'assistant' || role === 'user') {
+      return [{
+        role,
+        content
+      }]
+    }
+
+    if (role === 'tool') {
+      return [{
+        role: 'assistant',
+        content: `Tool summary:\n${content}`
+      }]
+    }
+
+    return []
+  })
+}
+
+function normalizeAction(value) {
+  return normalizeTrimmedString(value).toLowerCase()
+}
+
+function looksLikeFileChangeRequest(value) {
+  const normalized = normalizeTrimmedString(value)
+
+  if (!normalized) {
+    return false
+  }
+
+  return (
+    FILE_CHANGE_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))
+    || UI_FILE_CHANGE_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))
+  )
+}
+
+function buildActiveSkillPrompt(skill) {
+  if (!skill) {
+    return ''
+  }
+
+  const promptSections = [
+    `Active skill: ${skill.name} (${skill.skillId}).`
+  ]
+
+  if (skill.description) {
+    promptSections.push(`Skill purpose: ${skill.description}`)
+  }
+
+  if (skill.instruction) {
+    promptSections.push(`Skill instruction: ${skill.instruction}`)
+  }
+
+  if (Array.isArray(skill.preferredTools) && skill.preferredTools.length) {
+    promptSections.push(`Prefer these tools or namespaces when relevant: ${skill.preferredTools.join(', ')}`)
+  }
+
+  if (Array.isArray(skill.allowedTools) && skill.allowedTools.length) {
+    promptSections.push(`Only use these tools or namespaces: ${skill.allowedTools.join(', ')}`)
+  }
+
+  if (Array.isArray(skill.disabledTools) && skill.disabledTools.length) {
+    promptSections.push(`Never use these tools or namespaces: ${skill.disabledTools.join(', ')}`)
+  }
+
+  return promptSections.join('\n')
+}
+
+function serializeJson(value, maxChars = 12000) {
+  const serialized = JSON.stringify(value, null, 2)
+  return serialized.length > maxChars
+    ? `${serialized.slice(0, maxChars)}\n...truncated...`
+    : serialized
+}
+
+function buildAgentLoopMessages({
+  latestGoal,
+  conversationHistory,
+  requireFileChanges = false,
+  toolMessages,
+  toolPromptText,
+  systemPrompt,
+  remainingIterations
+}) {
+  const promptSections = [
+    'You are a coding agent running inside a server workspace.',
+    'The user may ask for coding work, workspace investigation, product discussion, brainstorming, or ordinary conversation.',
+    'Return strict JSON only.',
+    'Do not expose hidden chain-of-thought.',
+    'Use the same language as the user.',
+    'You may decide one of three actions on each turn:',
+    '- "tool": call exactly one available tool when you need workspace evidence.',
+    '- "final": provide the final user-facing answer when you have enough information.',
+    '- "ask_user": ask exactly one concise clarification question when the task is blocked by missing information.',
+    'Use "final" for greetings, everyday Q&A, explanations, brainstorming, summaries, translations, or any request that does not require workspace inspection.',
+    'Do not force tool usage when a direct answer is sufficient.',
+    'Do not ask clarifying questions unless the missing detail truly blocks a useful next response.',
+    'When the request is about the codebase or file changes, prefer inspecting the workspace before making code claims.',
+    'Use apply_patch for targeted edits and write_file for new files or full rewrites.',
+    'Never claim that a file changed unless a write tool actually succeeded.',
+    'When you modify files and a verification command is available, expect a follow-up verification step before the final answer.',
+    ...(requireFileChanges
+      ? [
+          'This request appears to ask for real file changes.',
+          'You must use workspace tools and actually create, modify, or delete files before choosing "final", unless the task is blocked by missing information.',
+          'Do not place the intended code only in reply text when a file change is required.',
+          'When the user asks for a page, UI, component, script, or HTML/CSS/JS implementation without giving an explicit path, choose a sensible default filename in the current workspace and write the file directly.'
+        ]
+      : []),
+    `You have ${remainingIterations} tool iteration(s) remaining before you must finish.`,
+    'Available tools:',
+    toolPromptText,
+    'JSON schema:',
+    '{',
+    '  "action": "tool" | "final" | "ask_user",',
+    '  "summary": "short public progress update",',
+    '  "reply": "required for final or ask_user, otherwise empty",',
+    '  "tool": {',
+    '    "name": "tool name when action is tool",',
+    '    "args": {}',
+    '  }',
+    '}'
+  ]
+
+  if (systemPrompt) {
+    promptSections.push(`Additional behavior preference: ${systemPrompt}`)
+  }
+
+  return [
+    {
+      role: 'system',
+      content: promptSections.join('\n')
+    },
+    ...conversationHistory,
+    ...toolMessages,
+    {
+      role: 'user',
+      content: [
+        `Latest user message: ${latestGoal}`,
+        'It may be a normal conversation or a concrete task.',
+        'Decide the next best action now.'
+      ].join('\n')
+    }
+  ]
+}
+
+function buildForcedFinalMessages({
+  latestGoal,
+  conversationHistory,
+  fileChangesRequired = false,
+  modifiedWorkspace = false,
+  toolMessages,
+  systemPrompt
+}) {
+  const promptSections = [
+    'You are a coding agent running inside a server workspace.',
+    'The user may be asking for a normal conversational reply or a task result.',
+    'Return strict JSON only.',
+    'Do not expose hidden chain-of-thought.',
+    'Use the same language as the user.',
+    'You must now finish without calling more tools.',
+    'Base the answer on the gathered workspace evidence.',
+    'If the request never needed workspace tools, answer naturally and directly.',
+    'If file changes were verified, mention the verification result clearly.',
+    ...(modifiedWorkspace
+      ? [
+          'Keep the final reply concise.',
+          'If files were changed, summarize what changed and which files were affected.',
+          'Do not paste full file contents or long code blocks unless the user explicitly asked to see them.'
+        ]
+      : []),
+    ...(fileChangesRequired && !modifiedWorkspace
+      ? [
+          'The user asked for file changes, but no file was changed.',
+          'Explain briefly that the requested file change was not applied and state the blocking reason.',
+          'Do not fabricate code changes and do not paste large code blocks.'
+        ]
+      : []),
+    'JSON schema:',
+    '{',
+    '  "summary": "short public completion update",',
+    '  "reply": "the final user-facing answer"',
+    '}'
+  ]
+
+  if (systemPrompt) {
+    promptSections.push(`Additional behavior preference: ${systemPrompt}`)
+  }
+
+  return [
+    {
+      role: 'system',
+      content: promptSections.join('\n')
+    },
+    ...conversationHistory,
+    ...toolMessages,
+    {
+      role: 'user',
+      content: [
+        `Latest user message: ${latestGoal}`,
+        'Produce the best final user-facing reply now.'
+      ].join('\n')
+    }
+  ]
+}
+
+function normalizeToolRequest(rawTool) {
+  const name = normalizeTrimmedString(rawTool?.name)
+  const args =
+    rawTool?.args && typeof rawTool.args === 'object' && !Array.isArray(rawTool.args)
+      ? rawTool.args
+      : {}
+
+  if (!name) {
+    throw new Error('Model requested a tool call without a valid tool name.')
+  }
+
+  return { name, args }
+}
+
+function createToolTranscriptMessages(toolExecution) {
+  return [
+    {
+      role: 'assistant',
+      content: `Tool call:\n${serializeJson({
+        name: toolExecution.tool,
+        args: toolExecution.args
+      })}`
+    },
+    {
+      role: 'user',
+      content: `Tool result:\n${serializeJson({
+        summary: toolExecution.summary,
+        result: toolExecution.result
+      })}`
+    }
+  ]
+}
+
+function createToolStepTitle(toolName, args) {
+  if (toolName === 'read_file') {
+    return `读取文件 ${truncateText(args?.path || '', 36) || ''}`.trim()
+  }
+
+  if (toolName === 'search_text') {
+    return `搜索 ${truncateText(args?.query || '', 28) || '关键字'}`
+  }
+
+  if (toolName === 'run_command') {
+    const commandLine = [args?.command, ...(Array.isArray(args?.args) ? args.args : [])]
+      .filter(Boolean)
+      .join(' ')
+    return `执行命令 ${truncateText(commandLine, 36) || ''}`.trim()
+  }
+
+  if (toolName === 'list_files') {
+    return `查看目录 ${truncateText(args?.path || '.', 36)}`
+  }
+
+  if (toolName === 'write_file') {
+    return `写入文件 ${truncateText(args?.path || '', 36) || ''}`.trim()
+  }
+
+  if (toolName === 'apply_patch') {
+    return `修改文件 ${truncateText(args?.path || '', 36) || ''}`.trim()
+  }
+
+  return `执行工具 ${toolName}`
+}
+
+function createToolMessageContent(toolExecution) {
+  return normalizeTrimmedString(toolExecution?.message)
+    || [
+      `Tool: ${toolExecution.tool}`,
+      `Summary: ${toolExecution.summary}`
+    ].join('\n')
+}
+
+function completeStep(step, summary) {
+  const timestamp = nowIso()
+
+  return {
+    ...step,
+    status: 'completed',
+    summary: normalizeTrimmedString(summary) || step.summary,
+    completedAt: step.completedAt || timestamp,
+    updatedAt: timestamp
+  }
+}
+
+function cancelStep(step, summary) {
+  const timestamp = nowIso()
+
+  return {
+    ...step,
+    status: 'cancelled',
+    summary: normalizeTrimmedString(summary) || step.summary,
+    completedAt: timestamp,
+    updatedAt: timestamp
+  }
+}
+
+function failStep(step, summary) {
+  const timestamp = nowIso()
+
+  return {
+    ...step,
+    status: 'failed',
+    summary: normalizeTrimmedString(summary) || step.summary,
+    completedAt: timestamp,
+    updatedAt: timestamp
+  }
+}
+
+function createFinalReplyStep(summary) {
+  const timestamp = nowIso()
+
+  return createTaskStep({
+    title: '整理最终答复',
+    status: 'completed',
+    summary,
+    startedAt: timestamp,
+    completedAt: timestamp
+  })
+}
+
+function finalizeRunningSteps(steps, summary) {
+  return steps.map((step) => (
+    isRunningTaskStatus(step?.status)
+      ? completeStep(step, summary)
+      : step
+  ))
+}
+
+function cancelRunningSteps(steps, summary) {
+  return steps.map((step) => (
+    isRunningTaskStatus(step?.status)
+      ? cancelStep(step, summary)
+      : step
+  ))
+}
+
+function isWriteToolName(toolName) {
+  return WRITE_TOOL_NAMES.has(String(toolName || '').trim().toLowerCase())
+}
+
+function normalizeCommandSpec(item) {
+  const command = normalizeTrimmedString(item?.command)
+  const args = Array.isArray(item?.args)
+    ? item.args.map((arg) => String(arg ?? '')).filter(Boolean)
+    : []
+  const cwd = normalizeTrimmedString(item?.cwd) || '.'
+
+  if (!command) {
+    return null
+  }
+
+  return {
+    command,
+    args,
+    cwd
+  }
+}
+
+function isPlaceholderTestScript(value) {
+  const normalized = normalizeTrimmedString(value).toLowerCase()
+
+  return (
+    !normalized
+    || normalized.includes('no test specified')
+    || normalized === 'exit 0'
+  )
+}
+
+async function resolveVerificationCommands({
+  workspaceConfig,
+  sessionId,
+  toolRunner
+} = {}) {
+  if (!workspaceConfig?.autoVerifyAfterWrite) {
+    return []
+  }
+
+  const explicitCommands = Array.isArray(workspaceConfig.autoVerifyCommands)
+    ? workspaceConfig.autoVerifyCommands.map((item) => normalizeCommandSpec(item)).filter(Boolean)
+    : []
+
+  if (explicitCommands.length) {
+    return explicitCommands
+  }
+
+  if (!workspaceConfig.allowedCommands.includes('npm')) {
+    return []
+  }
+
+  try {
+    const packageJsonTarget = toolRunner.resolveWorkspace(sessionId).resolvePath('package.json')
+    const packageJson = JSON.parse(await readFile(packageJsonTarget.absolutePath, 'utf8'))
+    const scripts = packageJson?.scripts && typeof packageJson.scripts === 'object'
+      ? packageJson.scripts
+      : {}
+    const commands = []
+
+    if (normalizeTrimmedString(scripts.build)) {
+      commands.push({ command: 'npm', args: ['run', 'build'], cwd: '.' })
+    }
+
+    if (normalizeTrimmedString(scripts.test) && !isPlaceholderTestScript(scripts.test)) {
+      commands.push({ command: 'npm', args: ['test'], cwd: '.' })
+    } else if (!commands.length && normalizeTrimmedString(scripts.lint)) {
+      commands.push({ command: 'npm', args: ['run', 'lint'], cwd: '.' })
+    }
+
+    return commands
+  } catch {
+    return []
+  }
+}
+
+function commandResultMatchesSpec(result, spec) {
+  return (
+    String(result?.command || '') === String(spec?.command || '')
+    && String(result?.cwd || '.') === String(spec?.cwd || '.')
+    && JSON.stringify(Array.isArray(result?.args) ? result.args : []) === JSON.stringify(Array.isArray(spec?.args) ? spec.args : [])
+  )
+}
+
+function buildVerificationSummary(commandSpec) {
+  const commandLine = [commandSpec.command, ...(commandSpec.args || [])].join(' ')
+  return `正在验证刚才的文件修改：${commandLine}`
+}
+
+function createCancellationError(message = '已停止当前处理。') {
+  const error = new Error(message)
+  error.code = TASK_CANCELLED_CODE
+  return error
+}
+
+function isCancellationError(error) {
+  return error?.code === TASK_CANCELLED_CODE
+}
+
+function summarizeChangedFiles(filePaths = []) {
+  const normalizedPaths = [...new Set(
+    (Array.isArray(filePaths) ? filePaths : [])
+      .map((item) => normalizeTrimmedString(item))
+      .filter(Boolean)
+  )]
+
+  if (!normalizedPaths.length) {
+    return ''
+  }
+
+  const visiblePaths = normalizedPaths.slice(0, 5)
+  const suffix = normalizedPaths.length > visiblePaths.length
+    ? ` 等 ${normalizedPaths.length} 个文件`
+    : ''
+
+  return visiblePaths.join('、') + suffix
+}
+
+function buildWorkspaceCompletionReply({
+  changedFiles = [],
+  verifiedAfterModification = false
+} = {}) {
+  const fileSummary = summarizeChangedFiles(changedFiles)
+
+  if (fileSummary && verifiedAfterModification) {
+    return `已完成文件处理，并已完成验证。涉及文件：${fileSummary}。请在右侧会话文件中查看。`
+  }
+
+  if (fileSummary) {
+    return `已完成文件处理。涉及文件：${fileSummary}。请在右侧会话文件中查看。`
+  }
+
+  if (verifiedAfterModification) {
+    return '已完成文件处理，并已完成验证。请在右侧会话文件中查看。'
+  }
+
+  return '已完成文件处理。请在右侧会话文件中查看。'
+}
+
+export function createAgentRunner({
+  sessionRepository,
+  aiRuntimeConfig,
+  getAiConfigById,
+  resolveModel,
+  loadAiConfigs,
+  skillRegistry,
+  sessionWorkspaces,
+  runtimeConfig,
+  workspaceConfig,
+  toolRunner
+} = {}) {
+  const activeRuns = new Map()
+
+  async function appendFailureAssistantMessage(sessionId, summary, model = '') {
+    const normalizedSummary = normalizeTrimmedString(summary) || '\u4efb\u52a1\u6267\u884c\u5931\u8d25\u3002'
+
+    return sessionRepository.appendAssistantMessage(sessionId, {
+      content: `\u5904\u7406\u5931\u8d25\uff1a${normalizedSummary}`,
+      model
+    })
+  }
+
+  async function markTaskCancelled(sessionId, summary = '已停止当前处理。') {
+    return sessionRepository.updateSession(sessionId, (draftSession) => {
+      if (!draftSession?.task) {
+        return draftSession
+      }
+
+      draftSession.task = {
+        ...draftSession.task,
+        status: 'cancelled',
+        summary,
+        steps: cancelRunningSteps(
+          Array.isArray(draftSession.task.steps) ? draftSession.task.steps : [],
+          summary
+        ),
+        completedAt: draftSession.task.completedAt || nowIso(),
+        updatedAt: nowIso()
+      }
+      draftSession.updatedAt = nowIso()
+
+      return draftSession
+    })
+  }
+
+  async function runTask({ sessionId, requestedAiId, requestedModel, requestedSkillId, abortSignal }) {
+    const taskStartedAtMs = Date.now()
+    const throwIfCancelled = () => {
+      if (abortSignal?.aborted) {
+        throw createCancellationError()
+      }
+    }
+    const throwIfTaskTimedOut = () => {
+      const timeoutMs = Number(runtimeConfig?.taskTimeoutMs || 0)
+
+      if (timeoutMs > 0 && Date.now() - taskStartedAtMs > timeoutMs) {
+        throw new Error(`Task exceeded the maximum runtime of ${Math.ceil(timeoutMs / 1000)} seconds.`)
+      }
+    }
+
+    const session = await sessionRepository.getSession(sessionId)
+
+    if (!session) {
+      return
+    }
+
+    throwIfCancelled()
+    throwIfTaskTimedOut()
+
+    const latestUserMessage = [...(session.messages || [])]
+      .reverse()
+      .find((item) => item.role === 'user')
+
+    if (!latestUserMessage?.content) {
+      const failureSummary = '\u672a\u627e\u5230\u53ef\u6267\u884c\u7684\u7528\u6237\u76ee\u6807\u3002'
+
+      await sessionRepository.updateSession(sessionId, (draftSession) => {
+        draftSession.task = {
+          ...draftSession.task,
+          taskId: draftSession.task?.taskId || createId('task'),
+          status: 'failed',
+          summary: '未找到可执行的用户目标。',
+          completedAt: nowIso(),
+          updatedAt: nowIso()
+        }
+
+        return draftSession
+      })
+      await appendFailureAssistantMessage(sessionId, failureSummary)
+      return
+    }
+
+    const aiConfig = await getAiConfigById(aiRuntimeConfig, requestedAiId)
+    const activeSkill = skillRegistry?.resolveSkill(requestedSkillId) || null
+    const activeSkillPrompt = buildActiveSkillPrompt(activeSkill)
+
+    if (!aiConfig || !aiConfig.apiKey) {
+      const failureSummary = '\u5f53\u524d\u6ca1\u6709\u53ef\u7528\u7684 AI \u914d\u7f6e\uff0c\u8bf7\u5148\u68c0\u67e5 AI \u914d\u7f6e\u548c API Key\u3002'
+
+      await sessionRepository.updateSession(sessionId, (draftSession) => {
+        draftSession.task = {
+          ...draftSession.task,
+          taskId: draftSession.task?.taskId || createId('task'),
+          status: 'failed',
+          summary: '当前没有可用的 AI 配置，请先检查 AI 配置和 API Key。',
+          completedAt: nowIso(),
+          updatedAt: nowIso()
+        }
+
+        return draftSession
+      })
+      await appendFailureAssistantMessage(sessionId, failureSummary)
+      return
+    }
+
+    const selectedModel = resolveModel(aiConfig, requestedModel)
+    const taskId = session.task?.taskId || createId('task')
+    const conversationHistory = toChatHistory(
+      getRecentMessages(session.messages || [], aiRuntimeConfig.recentMessages)
+    )
+    const latestGoal = String(latestUserMessage.content)
+    const fileChangesRequired = looksLikeFileChangeRequest(latestGoal)
+    const toolMessages = []
+    const verificationCommands = await resolveVerificationCommands({
+      workspaceConfig,
+      sessionId,
+      toolRunner
+    })
+    throwIfCancelled()
+    const executionState = {
+      modifiedWorkspace: false,
+      changedFiles: [],
+      verifiedAfterModification: false,
+      autoVerificationAttempted: false
+    }
+    const analysisStep = createTaskStep({
+      title: '理解目标',
+      status: 'in_progress',
+      summary: '正在分析需求并决定下一步行动。',
+      startedAt: nowIso()
+    })
+    const taskSteps = [analysisStep]
+
+    await sessionRepository.updateSession(sessionId, (draftSession) => {
+      draftSession.lastAiId = aiConfig.aiId
+      draftSession.lastModel = selectedModel
+      draftSession.updatedAt = nowIso()
+      draftSession.task = {
+        ...draftSession.task,
+        taskId,
+        title: draftSession.title,
+        status: 'running',
+        summary: analysisStep.summary,
+        steps: taskSteps,
+        startedAt: draftSession.task?.startedAt || nowIso(),
+        completedAt: null,
+        updatedAt: nowIso()
+      }
+
+      return draftSession
+    })
+
+    async function executeToolRequest(toolRequest, {
+      summary = '',
+      stepTitle = ''
+    } = {}) {
+      throwIfCancelled()
+      throwIfTaskTimedOut()
+
+      const normalizedRequest = normalizeToolRequest(toolRequest)
+      const toolStep = createTaskStep({
+        title: stepTitle || createToolStepTitle(normalizedRequest.name, normalizedRequest.args),
+        status: 'in_progress',
+        summary: summary || `正在执行工具 ${normalizedRequest.name}。`,
+        startedAt: nowIso()
+      })
+      taskSteps.push(toolStep)
+
+      await sessionRepository.updateSession(sessionId, (draftSession) => {
+        draftSession.task = {
+          ...draftSession.task,
+          taskId,
+          status: 'running',
+          summary: toolStep.summary,
+          steps: taskSteps,
+          updatedAt: nowIso()
+        }
+
+        return draftSession
+      })
+
+      let toolExecution
+
+      try {
+        toolExecution = await toolRunner.executeToolCall(normalizedRequest, {
+          skill: activeSkill,
+          signal: abortSignal,
+          sessionId
+        })
+      } catch (error) {
+        if (isCancellationError(error) || abortSignal?.aborted) {
+          taskSteps[taskSteps.length - 1] = cancelStep(toolStep, '已停止当前处理。')
+          throw createCancellationError()
+        }
+        const errorMessage = normalizeTrimmedString(error?.message) || `工具 ${normalizedRequest.name} 执行失败。`
+        taskSteps[taskSteps.length - 1] = failStep(toolStep, errorMessage)
+
+        await sessionRepository.appendToolMessage(sessionId, {
+          content: [
+            `Tool: ${normalizedRequest.name}`,
+            'Status: failed',
+            '',
+            errorMessage
+          ].join('\n')
+        })
+
+        await sessionRepository.updateSession(sessionId, (draftSession) => {
+          draftSession.task = {
+            ...draftSession.task,
+            taskId,
+            status: 'failed',
+            summary: errorMessage,
+            steps: taskSteps,
+            completedAt: nowIso(),
+            updatedAt: nowIso()
+          }
+
+          return draftSession
+        })
+
+        await appendFailureAssistantMessage(sessionId, errorMessage, selectedModel)
+
+        return {
+          ok: false,
+          failed: true
+        }
+      }
+
+      throwIfCancelled()
+      throwIfTaskTimedOut()
+      taskSteps[taskSteps.length - 1] = completeStep(toolStep, toolExecution.summary)
+      toolMessages.push(...createToolTranscriptMessages(toolExecution))
+
+      await sessionRepository.appendToolMessage(sessionId, {
+        content: createToolMessageContent(toolExecution)
+      })
+
+      if (isWriteToolName(toolExecution.tool) && toolExecution.result?.changed !== false) {
+        executionState.modifiedWorkspace = true
+        executionState.verifiedAfterModification = false
+
+        const writtenPath = normalizeTrimmedString(toolExecution.result?.path)
+
+        if (writtenPath) {
+          executionState.changedFiles.push(writtenPath)
+        }
+
+        if (sessionWorkspaces && writtenPath) {
+          try {
+            const capturedFile = sessionWorkspaces.createWorkspaceFileRecord(sessionId, writtenPath, {
+              sizeBytes: toolExecution.result?.sizeBytes ?? null,
+              updatedAt: nowIso()
+            })
+            await sessionRepository.upsertWorkspaceFile(sessionId, capturedFile)
+          } catch (error) {
+            console.warn(
+              '[agent-runner] failed to record session workspace file:',
+              error instanceof Error ? error.message : error
+            )
+          }
+        }
+      }
+
+      if (
+        toolExecution.tool === 'run_command'
+        && executionState.modifiedWorkspace
+        && toolExecution.result?.exitCode === 0
+      ) {
+        if (!verificationCommands.length) {
+          executionState.verifiedAfterModification = true
+        } else if (verificationCommands.some((spec) => commandResultMatchesSpec(toolExecution.result, spec))) {
+          executionState.verifiedAfterModification = true
+        }
+      }
+
+      await sessionRepository.updateSession(sessionId, (draftSession) => {
+        draftSession.task = {
+          ...draftSession.task,
+          taskId,
+          status: 'running',
+          summary: toolExecution.summary,
+          steps: taskSteps,
+          updatedAt: nowIso()
+        }
+
+        return draftSession
+      })
+
+      return {
+        ok: true,
+        toolExecution
+      }
+    }
+
+    async function maybeRunAutoVerification() {
+      throwIfCancelled()
+      throwIfTaskTimedOut()
+
+      if (
+        !executionState.modifiedWorkspace
+        || executionState.verifiedAfterModification
+        || executionState.autoVerificationAttempted
+      ) {
+        return {
+          ranVerification: false,
+          failedTask: false
+        }
+      }
+
+      executionState.autoVerificationAttempted = true
+
+      if (!verificationCommands.length) {
+        return {
+          ranVerification: false,
+          failedTask: false
+        }
+      }
+
+      for (const commandSpec of verificationCommands) {
+        throwIfCancelled()
+
+        const result = await executeToolRequest({
+          name: 'run_command',
+          args: {
+            command: commandSpec.command,
+            args: commandSpec.args,
+            cwd: commandSpec.cwd
+          }
+        }, {
+          summary: buildVerificationSummary(commandSpec),
+          stepTitle: `验证修改 ${truncateText([commandSpec.command, ...(commandSpec.args || [])].join(' '), 36)}`
+        })
+
+        if (!result.ok) {
+          return {
+            ranVerification: true,
+            failedTask: true
+          }
+        }
+
+        if (result.toolExecution.result?.exitCode !== 0) {
+          executionState.verifiedAfterModification = false
+          return {
+            ranVerification: true,
+            failedTask: false
+          }
+        }
+      }
+
+      executionState.verifiedAfterModification = true
+
+      return {
+        ranVerification: true,
+        failedTask: false
+      }
+    }
+
+    await sleep(runtimeConfig.stepDelayMs)
+    throwIfCancelled()
+    throwIfTaskTimedOut()
+
+    try {
+      for (let iteration = 0; iteration < runtimeConfig.maxToolIterations; iteration += 1) {
+        throwIfCancelled()
+        throwIfTaskTimedOut()
+
+        const decision = await createStructuredCompletion({
+          aiConfig,
+          model: selectedModel,
+          requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+          timeoutRetries: aiRuntimeConfig.timeoutRetries,
+          timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
+          signal: abortSignal,
+          messages: buildAgentLoopMessages({
+            latestGoal,
+            conversationHistory,
+            requireFileChanges: fileChangesRequired,
+            toolMessages,
+            toolPromptText: toolRunner.getPromptText({ skill: activeSkill }),
+            systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+            remainingIterations: runtimeConfig.maxToolIterations - iteration
+          })
+        })
+        throwIfCancelled()
+        throwIfTaskTimedOut()
+
+        const action = normalizeAction(decision.json?.action)
+        const decisionSummary = normalizeTrimmedString(decision.json?.summary)
+
+        if (action === 'tool') {
+          taskSteps[0] = completeStep(
+            taskSteps[0],
+            decisionSummary || '已分析目标，开始检查工作区。'
+          )
+
+          const result = await executeToolRequest(decision.json?.tool, {
+            summary: decisionSummary || `正在执行工具 ${normalizeTrimmedString(decision.json?.tool?.name) || ''}。`
+          })
+
+          if (!result.ok) {
+            return
+          }
+
+          await sleep(runtimeConfig.stepDelayMs)
+          continue
+        }
+
+        if (action === 'ask_user') {
+          const reply = normalizeTrimmedString(decision.json?.reply) || '我还缺少一项关键信息，你可以再补充一点吗？'
+          const waitingSummary = decisionSummary || '当前目标还需要补充信息。'
+          const finalizedSteps = finalizeRunningSteps(taskSteps, waitingSummary)
+
+          await sessionRepository.updateSession(sessionId, (draftSession) => {
+            draftSession.task = {
+              ...draftSession.task,
+              taskId,
+              status: 'waiting_for_user',
+              summary: waitingSummary,
+              steps: finalizedSteps,
+              completedAt: nowIso(),
+              updatedAt: nowIso()
+            }
+
+            return draftSession
+          })
+
+          await sessionRepository.appendAssistantMessage(sessionId, {
+            content: reply,
+            model: selectedModel,
+            usage: decision.usage
+          })
+          return
+        }
+
+        const autoVerification = await maybeRunAutoVerification()
+
+        if (autoVerification.failedTask) {
+          return
+        }
+
+        if (autoVerification.ranVerification) {
+          await sleep(runtimeConfig.stepDelayMs)
+          continue
+        }
+
+        if (fileChangesRequired && !executionState.modifiedWorkspace) {
+          toolMessages.push({
+            role: 'user',
+            content: [
+              'The user asked for real file changes.',
+              'No file has been changed yet.',
+              'Call a workspace tool to create, modify, or delete files, or ask one brief clarification question if required information is missing.',
+              'Do not finish with a reply-only answer yet.'
+            ].join('\n')
+          })
+
+          await sleep(runtimeConfig.stepDelayMs)
+          continue
+        }
+
+        const finalReply = normalizeTrimmedString(decision.json?.reply)
+
+        if (!finalReply) {
+          throw new Error('Model returned a final action without a reply.')
+        }
+
+        const completionSummary = decisionSummary || '任务已完成。'
+        const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
+        finalizedSteps.push(createFinalReplyStep(completionSummary))
+
+        await sessionRepository.updateSession(sessionId, (draftSession) => {
+          draftSession.task = {
+            ...draftSession.task,
+            taskId,
+            status: 'completed',
+            summary: completionSummary,
+            steps: finalizedSteps,
+            completedAt: nowIso(),
+            updatedAt: nowIso()
+          }
+
+          return draftSession
+        })
+
+        const userFacingReply = fileChangesRequired && executionState.modifiedWorkspace
+          ? buildWorkspaceCompletionReply({
+              changedFiles: executionState.changedFiles,
+              verifiedAfterModification: executionState.verifiedAfterModification
+            })
+          : finalReply
+
+        await sessionRepository.appendAssistantMessage(sessionId, {
+          content: userFacingReply,
+          model: selectedModel,
+          usage: decision.usage
+        })
+        return
+      }
+
+      const autoVerification = await maybeRunAutoVerification()
+
+      if (autoVerification.failedTask) {
+        return
+      }
+
+      const forcedFinal = await createStructuredCompletion({
+        aiConfig,
+        model: selectedModel,
+        requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+        timeoutRetries: aiRuntimeConfig.timeoutRetries,
+        timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
+        signal: abortSignal,
+        messages: buildForcedFinalMessages({
+          latestGoal,
+          conversationHistory,
+          fileChangesRequired,
+          modifiedWorkspace: executionState.modifiedWorkspace,
+          toolMessages,
+          systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n')
+        })
+      })
+      const finalReply = normalizeTrimmedString(forcedFinal.json?.reply)
+
+      if (!finalReply) {
+        throw new Error('Model reached the tool iteration limit without producing a final answer.')
+      }
+
+      const completionSummary = normalizeTrimmedString(forcedFinal.json?.summary) || '已基于已收集的信息完成答复。'
+      const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
+      finalizedSteps.push(createFinalReplyStep(completionSummary))
+
+      await sessionRepository.updateSession(sessionId, (draftSession) => {
+        draftSession.task = {
+          ...draftSession.task,
+          taskId,
+          status: 'completed',
+          summary: completionSummary,
+          steps: finalizedSteps,
+          completedAt: nowIso(),
+          updatedAt: nowIso()
+        }
+
+        return draftSession
+      })
+
+      const userFacingReply = fileChangesRequired && executionState.modifiedWorkspace
+        ? buildWorkspaceCompletionReply({
+            changedFiles: executionState.changedFiles,
+            verifiedAfterModification: executionState.verifiedAfterModification
+          })
+        : finalReply
+
+      await sessionRepository.appendAssistantMessage(sessionId, {
+        content: userFacingReply,
+        model: selectedModel,
+        usage: forcedFinal.usage
+      })
+    } catch (error) {
+      if (isCancellationError(error) || abortSignal?.aborted) {
+        const cancelledSummary = '已停止当前处理。'
+        const cancelledSteps = cancelRunningSteps(taskSteps, cancelledSummary)
+
+        await sessionRepository.updateSession(sessionId, (draftSession) => {
+          draftSession.task = {
+            ...draftSession.task,
+            taskId,
+            status: 'cancelled',
+            summary: cancelledSummary,
+            steps: cancelledSteps,
+            completedAt: nowIso(),
+            updatedAt: nowIso()
+          }
+
+          return draftSession
+        })
+        return
+      }
+      const failureSummary = normalizeTrimmedString(error?.message) || '任务执行失败。'
+      const failedSteps = taskSteps.map((step) => (
+        isRunningTaskStatus(step?.status)
+          ? failStep(step, failureSummary)
+          : step
+      ))
+
+      await sessionRepository.updateSession(sessionId, (draftSession) => {
+        draftSession.task = {
+          ...draftSession.task,
+          taskId,
+          status: 'failed',
+          summary: failureSummary,
+          steps: failedSteps,
+          completedAt: nowIso(),
+          updatedAt: nowIso()
+        }
+
+        return draftSession
+      })
+      await appendFailureAssistantMessage(sessionId, failureSummary, selectedModel)
+    }
+  }
+
+  function startTask(input) {
+    const existingRun = activeRuns.get(input.sessionId)
+
+    if (existingRun) {
+      return existingRun.promise
+    }
+
+    const controller = new AbortController()
+    const taskPromise = runTask({
+      ...input,
+      abortSignal: controller.signal
+    })
+      .finally(() => {
+        activeRuns.delete(input.sessionId)
+      })
+
+    activeRuns.set(input.sessionId, {
+      promise: taskPromise,
+      controller
+    })
+    return taskPromise
+  }
+
+  function isTaskActive(sessionId) {
+    return activeRuns.has(sessionId)
+  }
+
+  async function cancelTask(sessionId) {
+    const session = await sessionRepository.getSession(sessionId)
+
+    if (!session) {
+      return null
+    }
+
+    const activeRun = activeRuns.get(sessionId)
+
+    if (activeRun) {
+      activeRun.controller.abort()
+    }
+
+    if (activeRun || isRunningTaskStatus(session?.task?.status)) {
+      return markTaskCancelled(sessionId)
+    }
+
+    return session
+  }
+
+  function getAvailableConfigs() {
+    return loadAiConfigs(aiRuntimeConfig)
+  }
+
+  return {
+    cancelTask,
+    startTask,
+    isTaskActive,
+    getAvailableConfigs
+  }
+}
