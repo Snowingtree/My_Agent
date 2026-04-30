@@ -64,13 +64,17 @@ function normalizeRepositoryOptions(options) {
   if (typeof options === 'string') {
     return {
       sessionsDir: resolve(dirname(options), 'sessions'),
-      legacyFilePath: options
+      legacyFilePath: options,
+      onSessionUpdated: null,
+      onSessionDeleted: null
     }
   }
 
   return {
     sessionsDir: String(options?.sessionsDir || '').trim(),
-    legacyFilePath: String(options?.legacyFilePath || '').trim()
+    legacyFilePath: String(options?.legacyFilePath || '').trim(),
+    onSessionUpdated: typeof options?.onSessionUpdated === 'function' ? options.onSessionUpdated : null,
+    onSessionDeleted: typeof options?.onSessionDeleted === 'function' ? options.onSessionDeleted : null
   }
 }
 
@@ -79,6 +83,8 @@ export class SessionRepository {
     const normalizedOptions = normalizeRepositoryOptions(options)
     this.sessionsDir = normalizedOptions.sessionsDir
     this.legacyFilePath = normalizedOptions.legacyFilePath
+    this.onSessionUpdated = normalizedOptions.onSessionUpdated
+    this.onSessionDeleted = normalizedOptions.onSessionDeleted
     this.pendingWrite = Promise.resolve()
     this.didAttemptLegacyMigration = false
   }
@@ -227,6 +233,10 @@ export class SessionRepository {
       sessions.push(createdSession)
     })
 
+    if (createdSession && this.onSessionUpdated) {
+      await this.onSessionUpdated(cloneValue(createdSession))
+    }
+
     return cloneValue(createdSession)
   }
 
@@ -276,6 +286,10 @@ export class SessionRepository {
       removed = true
     })
 
+    if (removed && this.onSessionDeleted) {
+      await this.onSessionDeleted(sessionId)
+    }
+
     return removed
   }
 
@@ -299,6 +313,10 @@ export class SessionRepository {
       sessions[targetIndex] = nextSession
       updatedSession = cloneValue(nextSession)
     })
+
+    if (updatedSession && this.onSessionUpdated) {
+      await this.onSessionUpdated(cloneValue(updatedSession))
+    }
 
     return updatedSession
   }

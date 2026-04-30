@@ -1,9 +1,10 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import http from './http.js'
+import http, { buildApiUrl } from './http.js'
 import {
   AGENT_ACTIVE_SESSION_KEY,
   AGENT_AI_ID_KEY,
-  AGENT_AI_MODEL_KEY
+  AGENT_AI_MODEL_KEY,
+  AUTH_TOKEN_KEY
 } from './storage.js'
 
 const NEW_SESSION_TITLE = '新对话'
@@ -54,8 +55,50 @@ function writeStorageValue(storage, storageKey, value) {
   storage.setItem(storageKey, normalized)
 }
 
+function getFriendlyErrorMessage(errorMessage, fallbackMessage) {
+  const normalized = String(errorMessage || '').trim()
+
+  if (!normalized) {
+    return fallbackMessage
+  }
+
+  const lowerMessage = normalized.toLowerCase()
+
+  if (lowerMessage.includes('matched') && lowerMessage.includes('snippets')) {
+    const matchCount = normalized.match(/(\d+)\s+snippets/) ? normalized.match(/(\d+)\s+snippets/)[1] : '多个'
+    return `Agent 在文件中找到了 ${matchCount} 个相同的内容，不确定要修改哪一个。请提供更多上下文，或者让 Agent 使用"全部替换"方式修改。`
+  }
+
+  if (lowerMessage.includes('no match found') || lowerMessage.includes('did not match')) {
+    return `Agent 没有在文件中找到要修改的内容，可能内容已经不同。请让 Agent 重新检查文件内容后再修改。`
+  }
+
+  if (lowerMessage.includes('file not found') || lowerMessage.includes('no such file')) {
+    return `Agent 找不到指定的文件，请确认文件路径是否正确。`
+  }
+
+  if (lowerMessage.includes('permission denied') || lowerMessage.includes('access denied')) {
+    return `Agent 没有权限执行该操作。`
+  }
+
+  if (lowerMessage.includes('timeout') || lowerMessage.includes('timed out')) {
+    return `操作超时，可能是任务太复杂或网络不稳定。请稍后再试。`
+  }
+
+  if (lowerMessage.includes('final action without a reply') || lowerMessage.includes('without a reply')) {
+    return `Agent 执行了操作但没有给出说明。这是 AI 模型的问题，建议重新发起请求，并要求 Agent 给出修改说明。`
+  }
+
+  if (lowerMessage.includes('model returned') && lowerMessage.includes('final')) {
+    return `AI 模型返回了不完整的响应。建议重新尝试该任务。`
+  }
+
+  return normalized
+}
+
 function normalizeErrorMessage(error, fallbackMessage) {
-  return error instanceof Error ? error.message : fallbackMessage
+  const rawMessage = error instanceof Error ? error.message : String(error || '')
+  return getFriendlyErrorMessage(rawMessage, fallbackMessage)
 }
 
 function normalizeNotify(notify) {
@@ -151,6 +194,9 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const selectedModel = ref(readStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY))
   const isRefreshingActiveSession = ref(false)
   const isCancellingTask = ref(false)
+  const isSessionStreamConnected = ref(false)
+  const taskProgressMessage = ref(null)
+  const partialAssistantReply = ref(null)
   const selectedWorkspaceFilePath = ref('')
   const selectedWorkspaceFileContent = ref('')
   const selectedWorkspaceFileUpdatedAt = ref('')
@@ -158,11 +204,19 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const isLoadingWorkspaceFile = ref(false)
   const workspaceFileError = ref('')
 
-  const activeMessages = computed(() => (
-    Array.isArray(activeSession.value?.messages)
+  const activeMessages = computed(() => {
+    const persistedMessages = Array.isArray(activeSession.value?.messages)
       ? activeSession.value.messages.filter((item) => String(item?.role || '').trim().toLowerCase() !== 'tool')
       : []
-  ))
+    const transientMessages = [
+      ...(taskProgressMessage.value ? [taskProgressMessage.value] : []),
+      ...(partialAssistantReply.value ? [partialAssistantReply.value] : [])
+    ]
+
+    return transientMessages.length
+      ? [...persistedMessages, ...transientMessages]
+      : persistedMessages
+  })
   const currentTask = computed(() => activeSession.value?.task || null)
   const activeWorkspaceFolder = computed(() => String(activeSession.value?.workspaceFolder || '').trim())
   const activeWorkspaceFiles = computed(() => (
@@ -212,6 +266,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   let taskPollTimer = null
   let sessionLoadToken = 0
+  let sessionStreamAbortController = null
 
   function persistActiveSessionId() {
     writeStorageValue(resolvedStorage, AGENT_ACTIVE_SESSION_KEY, activeSessionId.value)
@@ -229,6 +284,15 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
     window.clearTimeout(taskPollTimer)
     taskPollTimer = null
+  }
+
+  function stopSessionStream() {
+    if (sessionStreamAbortController) {
+      sessionStreamAbortController.abort()
+      sessionStreamAbortController = null
+    }
+
+    isSessionStreamConnected.value = false
   }
 
   function upsertSessionSummary(item) {
@@ -262,6 +326,218 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     selectedWorkspaceFileSizeBytes.value = null
     isLoadingWorkspaceFile.value = false
     workspaceFileError.value = ''
+  }
+
+  function resetPartialAssistantReply() {
+    partialAssistantReply.value = null
+  }
+
+  function resetTaskProgressMessage() {
+    taskProgressMessage.value = null
+  }
+
+  function applyActiveSessionSnapshot(item) {
+    activeSession.value = item || null
+    activeSessionId.value = activeSession.value?.sessionId || activeSessionId.value
+    persistActiveSessionId()
+
+    if (!isTaskRunning(activeSession.value?.task)) {
+      resetTaskProgressMessage()
+    }
+
+    if (
+      selectedWorkspaceFilePath.value
+      && !activeWorkspaceFiles.value.some((entry) => entry.path === selectedWorkspaceFilePath.value)
+    ) {
+      resetWorkspaceFilePreview()
+      return
+    }
+
+    if (!selectedWorkspaceFilePath.value) {
+      return
+    }
+
+    const activeFile = activeWorkspaceFiles.value.find((entry) => entry.path === selectedWorkspaceFilePath.value)
+    const nextUpdatedAt = String(activeFile?.updatedAt || '').trim()
+    const currentUpdatedAt = String(selectedWorkspaceFileUpdatedAt.value || '').trim()
+
+    if (activeFile && nextUpdatedAt && nextUpdatedAt !== currentUpdatedAt) {
+      void openWorkspaceFile(selectedWorkspaceFilePath.value)
+    }
+  }
+
+  async function startSessionStream(sessionId) {
+    const normalizedSessionId = String(sessionId || '').trim()
+
+    stopSessionStream()
+
+    if (!normalizedSessionId || typeof window === 'undefined') {
+      return
+    }
+
+    const token = localStorage.getItem(AUTH_TOKEN_KEY)
+
+    if (!token) {
+      return
+    }
+
+    const controller = new AbortController()
+    sessionStreamAbortController = controller
+
+    try {
+      const response = await fetch(buildApiUrl(`/api/agent/sessions/${normalizedSessionId}/stream`), {
+        method: 'GET',
+        headers: {
+          Accept: 'text/event-stream',
+          Authorization: `Bearer ${token}`
+        },
+        signal: controller.signal
+      })
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Session stream failed with ${response.status}.`)
+      }
+
+      isSessionStreamConnected.value = true
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let eventName = 'message'
+      let dataLines = []
+
+      const flushEvent = () => {
+        if (!dataLines.length) {
+          eventName = 'message'
+          return
+        }
+
+        const payloadText = dataLines.join('\n')
+        eventName = eventName || 'message'
+        dataLines = []
+
+        try {
+          const payload = payloadText ? JSON.parse(payloadText) : {}
+
+          if (eventName === 'session.updated' && payload?.item) {
+            applyActiveSessionSnapshot(payload.item)
+            upsertSessionSummary(payload.item)
+            return
+          }
+
+          if (eventName === 'task.progress') {
+            taskProgressMessage.value = {
+              messageId: `progress-${normalizedSessionId}`,
+              role: 'assistant',
+              content: String(payload?.summary || ''),
+              createdAt: new Date().toISOString(),
+              model: String(payload?.model || ''),
+              usage: {
+                inputTokens: null,
+                outputTokens: null,
+                totalTokens: null
+              }
+            }
+            return
+          }
+
+          if (eventName === 'assistant.partial') {
+            resetTaskProgressMessage()
+            partialAssistantReply.value = {
+              messageId: `partial-${normalizedSessionId}`,
+              role: 'assistant',
+              content: String(payload?.content || ''),
+              createdAt: new Date().toISOString(),
+              model: String(payload?.model || ''),
+              usage: {
+                inputTokens: null,
+                outputTokens: null,
+                totalTokens: null
+              }
+            }
+            return
+          }
+
+          if (eventName === 'assistant.finalized') {
+            resetTaskProgressMessage()
+            resetPartialAssistantReply()
+            return
+          }
+
+          if (eventName === 'session.deleted' && payload?.sessionId === activeSessionId.value) {
+            stopSessionStream()
+            activeSession.value = null
+            activeSessionId.value = ''
+            persistActiveSessionId()
+            resetWorkspaceFilePreview()
+            resetTaskProgressMessage()
+            resetPartialAssistantReply()
+          }
+        } catch {
+          // ignore malformed stream payloads
+        } finally {
+          eventName = 'message'
+        }
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+
+        if (done) {
+          break
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split(/\r?\n/)
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line) {
+            flushEvent()
+            continue
+          }
+
+          if (line.startsWith(':')) {
+            continue
+          }
+
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim() || 'message'
+            continue
+          }
+
+          if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).trimStart())
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        const trailingLines = buffer.split(/\r?\n/)
+
+        for (const line of trailingLines) {
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim() || 'message'
+          } else if (line.startsWith('data:')) {
+            dataLines.push(line.slice(5).trimStart())
+          }
+        }
+
+        flushEvent()
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return
+      }
+
+      isSessionStreamConnected.value = false
+    } finally {
+      if (sessionStreamAbortController === controller) {
+        sessionStreamAbortController = null
+        isSessionStreamConnected.value = false
+      }
+
+      scheduleTaskPolling()
+    }
   }
 
   function ensureSelectedModel() {
@@ -342,6 +618,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
     if (!normalizedSessionId) {
       stopTaskPolling()
+      stopSessionStream()
       activeSession.value = null
       activeSessionId.value = ''
       persistActiveSessionId()
@@ -368,16 +645,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         return
       }
 
-      activeSession.value = data.item || null
-      activeSessionId.value = activeSession.value?.sessionId || normalizedSessionId
-      persistActiveSessionId()
-
-      if (
-        selectedWorkspaceFilePath.value
-        && !activeWorkspaceFiles.value.some((item) => item.path === selectedWorkspaceFilePath.value)
-      ) {
-        resetWorkspaceFilePreview()
-      }
+      applyActiveSessionSnapshot(data.item || null)
 
       if (activeSession.value) {
         upsertSessionSummary(activeSession.value)
@@ -404,7 +672,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
     stopTaskPolling()
 
-    if (!activeSessionId.value || !isAgentRunning.value) {
+    if (!activeSessionId.value || !isAgentRunning.value || isSessionStreamConnected.value) {
       return
     }
 
@@ -601,6 +869,8 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     draft.value = ''
     chatError.value = ''
     isSending.value = true
+    resetTaskProgressMessage()
+    resetPartialAssistantReply()
 
     try {
       const data = await http.post('/api/agent/chat', {
@@ -614,13 +884,13 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         throw new Error('Agent chat returned an invalid session payload.')
       }
 
-      activeSession.value = data.session
-      activeSessionId.value = data.session.sessionId
-      persistActiveSessionId()
+      applyActiveSessionSnapshot(data.session)
       upsertSessionSummary(data.session)
     } catch (error) {
       activeSession.value = previousActiveSession
       draft.value = message
+      resetTaskProgressMessage()
+      resetPartialAssistantReply()
       chatError.value = normalizeErrorMessage(error, '发送消息失败。')
     } finally {
       isSending.value = false
@@ -736,6 +1006,22 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   )
 
   watch(
+    activeSessionId,
+    (nextSessionId) => {
+      resetPartialAssistantReply()
+      resetTaskProgressMessage()
+
+      if (!nextSessionId) {
+        stopSessionStream()
+        return
+      }
+
+      void startSessionStream(nextSessionId)
+    },
+    { immediate: true }
+  )
+
+  watch(
     () => currentTask.value?.status,
     (nextStatus, previousStatus) => {
       if (previousStatus && nextStatus === 'completed' && previousStatus !== 'completed') {
@@ -753,6 +1039,9 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   onUnmounted(() => {
     stopTaskPolling()
+    stopSessionStream()
+    resetTaskProgressMessage()
+    resetPartialAssistantReply()
   })
 
   return {

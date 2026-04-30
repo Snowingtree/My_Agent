@@ -100,6 +100,9 @@
           <h2>{{ activeSessionTitle }}</h2>
         </div>
         <div class="agent-mainbar__actions">
+          <span v-if="totalTokens > 0" class="agent-token-badge">
+            {{ formattedTotalTokens }}
+          </span>
           <span class="agent-mode-badge" :class="`is-${resolvedWorkspaceMode.tone}`">
             {{ resolvedWorkspaceMode.label }}
           </span>
@@ -121,6 +124,9 @@
               <p class="agent-conversation__welcome-tag">Agent Workspace</p>
               <h3>把目标交给 Agent，持续推进到结果</h3>
               <p>直接输入任务、问题或待办。启动后，Agent 会围绕同一个目标持续拆解、执行，并回写当前进展。</p>
+              <p class="agent-conversation__auto-refresh-hint" style="margin-top: 12px; font-size: 0.86rem; color: #666;">
+                💡 提示：当 Agent 成功修改文件后，会自动重新加载并显示最新内容
+              </p>
             </div>
 
             <div class="agent-conversation__starter-grid">
@@ -156,12 +162,27 @@
             :key="item.messageId"
             :class="[
               'agent-message',
-              `agent-message--${resolveMessageVariant(item.role)}`
+              `agent-message--${resolveMessageVariant(item)}`,
+              {
+                'is-progress': isProgressMessage(item),
+                'is-partial': isPartialAssistantMessage(item)
+              }
             ]"
           >
-            <span class="agent-message__role">{{ resolveMessageLabel(item.role) }}</span>
+            <span class="agent-message__role">
+              {{ isProgressMessage(item) ? '进行中' : resolveMessageLabelForDisplay(item.role) }}
+            </span>
             <div class="agent-message__bubble">
-              <p>{{ item.content }}</p>
+              <template v-if="isProgressMessage(item)">
+                <div class="agent-progress-card">
+                  <span class="agent-progress-card__dot" aria-hidden="true"></span>
+                  <div class="agent-progress-card__copy">
+                    <strong>Agent 正在处理</strong>
+                    <p>{{ formatMessageContentForDisplay(item.content, item.role) }}</p>
+                  </div>
+                </div>
+              </template>
+              <p v-else>{{ formatMessageContentForDisplay(item.content, item.role) }}</p>
             </div>
           </article>
 
@@ -554,8 +575,42 @@ const selectedWorkspaceFileMeta = computed(() => {
   return [sizeLabel, updatedLabel].filter(Boolean).join(' · ')
 })
 
+function decodeEscapedPreviewContent(value) {
+  const rawContent = String(value || '')
+
+  if (!rawContent) {
+    return ''
+  }
+
+  const actualLineBreaks = (rawContent.match(/\r?\n/g) || []).length
+  const escapedLineBreaks = (rawContent.match(/\\n/g) || []).length
+  const escapedQuotes = (rawContent.match(/\\"/g) || []).length
+  const looksEscaped = escapedLineBreaks > 0 || escapedQuotes > 0
+
+  if (!looksEscaped) {
+    return rawContent
+  }
+
+  if (actualLineBreaks > escapedLineBreaks && actualLineBreaks > 2) {
+    return rawContent
+  }
+
+  return rawContent
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, '\'')
+    .replace(/\\\\/g, '\\')
+}
+
+const normalizedWorkspaceFileContent = computed(() => (
+  decodeEscapedPreviewContent(props.selectedWorkspaceFileContent)
+))
+
 const highlightedWorkspaceFileContent = computed(() => {
-  const content = String(props.selectedWorkspaceFileContent || '')
+  const content = normalizedWorkspaceFileContent.value
 
   if (!content) {
     return ''
@@ -594,7 +649,57 @@ const resolvedSendButtonLabel = computed(() => {
   return '发送消息'
 })
 
-function resolveMessageVariant(role) {
+const totalTokens = computed(() => {
+  if (!Array.isArray(props.messages)) {
+    return 0
+  }
+
+  return props.messages.reduce((sum, message) => {
+    const usage = message?.usage
+    const totalTokens = Number(usage?.totalTokens)
+
+    if (Number.isFinite(totalTokens) && totalTokens > 0) {
+      return sum + totalTokens
+    }
+
+    return sum
+  }, 0)
+})
+
+const formattedTotalTokens = computed(() => {
+  const tokens = totalTokens.value
+
+  if (tokens >= 1000000) {
+    return `${(tokens / 1000000).toFixed(1)}M tokens`
+  }
+
+  if (tokens >= 1000) {
+    return `${(tokens / 1000).toFixed(1)}K tokens`
+  }
+
+  return `${tokens} tokens`
+})
+
+function isProgressMessage(message) {
+  return String(message?.messageId || '').startsWith('progress-')
+}
+
+function isPartialAssistantMessage(message) {
+  return String(message?.messageId || '').startsWith('partial-')
+}
+
+function resolveMessageVariant(messageOrRole) {
+  if (messageOrRole && typeof messageOrRole === 'object') {
+    if (isProgressMessage(messageOrRole)) {
+      return 'progress'
+    }
+
+    if (isPartialAssistantMessage(messageOrRole)) {
+      return 'assistant'
+    }
+  }
+
+  const role = typeof messageOrRole === 'object' ? messageOrRole?.role : messageOrRole
   const normalizedRole = String(role || '').trim().toLowerCase()
 
   if (normalizedRole === 'user') {
@@ -622,6 +727,115 @@ function resolveMessageLabel(role) {
   return 'Agent'
 }
 
+function resolveMessageLabelForDisplay(role) {
+  const normalizedRole = String(role || '').trim().toLowerCase()
+
+  if (normalizedRole === 'user') {
+    return '你'
+  }
+
+  if (normalizedRole === 'tool') {
+    return 'Tool'
+  }
+
+  return 'Agent'
+}
+
+function formatMessageContent(content, role) {
+  const normalizedContent = String(content || '').trim()
+
+  if (role === 'user') {
+    return normalizedContent
+  }
+
+  const lowerContent = normalizedContent.toLowerCase()
+
+  if (lowerContent.includes('tool summary:') && lowerContent.includes('status: failed')) {
+    const lines = normalizedContent.split('\n')
+    const toolMatch = lines.find(line => line.toLowerCase().includes('tool:'))
+    const toolName = toolMatch ? toolMatch.replace(/tool:\s*/i, '').trim() : '工具'
+
+    if (lowerContent.includes('matched') && lowerContent.includes('snippets')) {
+      const snippetMatch = normalizedContent.match(/(\d+)\s+snippets/)
+      const count = snippetMatch ? snippetMatch[1] : '多个'
+      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 在文件中找到了 ${count} 个相同的内容，不确定要修改哪一个。\n\n建议：请提供更多上下文来唯一标识要修改的位置，或者告诉 Agent"全部替换"。`
+    }
+
+    if (lowerContent.includes('no match found') || lowerContent.includes('did not match')) {
+      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 没有在文件中找到要修改的内容。\n\n建议：文件内容可能已经变化，请让 Agent 重新检查文件内容后再修改。`
+    }
+
+    if (lowerContent.includes('matchindex is required')) {
+      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 在文件中找到了多个相同的内容，不确定要修改哪一个。\n\n建议：提供更多上下文，或使用"全部替换"方式。`
+    }
+  }
+
+  if (lowerContent.includes('model returned a final action without a reply')) {
+    return 'Agent 执行了操作但没有给出说明。建议重新发起请求，并要求 Agent 给出修改说明。'
+  }
+
+  return normalizedContent
+}
+
+function formatMessageContentForDisplay(content, role) {
+  const normalizedRole = String(role || '').trim().toLowerCase()
+  const normalizedContent = String(content || '').trim()
+
+  if (normalizedRole === 'user') {
+    return normalizedContent
+  }
+
+  const lowerContent = normalizedContent.toLowerCase()
+
+  const looksLikeCodeHeavyMessage = [
+    '```',
+    '<!doctype html',
+    '<html',
+    '<style',
+    '<script',
+    '<template>',
+    'export default',
+    'function ',
+    'const ',
+    'body {',
+    '.container {'
+  ].some((marker) => lowerContent.includes(marker))
+
+  if (lowerContent.includes('tool summary:') && !lowerContent.includes('status: failed')) {
+    return '本轮主要执行了文件或工具操作，代码正文已省略，请查看右侧会话文件。'
+  }
+
+  if (looksLikeCodeHeavyMessage) {
+    return '本轮返回的是代码或文件内容，对话区已省略，请查看右侧会话文件。'
+  }
+
+  if (lowerContent.includes('tool summary:') && lowerContent.includes('status: failed')) {
+    const lines = normalizedContent.split('\n')
+    const toolMatch = lines.find((line) => line.toLowerCase().includes('tool:'))
+    const toolName = toolMatch ? toolMatch.replace(/tool:\s*/i, '').trim() : '工具'
+
+    if (lowerContent.includes('matched') && lowerContent.includes('snippets')) {
+      const snippetMatch = normalizedContent.match(/(\d+)\s+snippets/)
+      const count = snippetMatch ? snippetMatch[1] : '多个'
+      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 在文件中找到了 ${count} 处相同内容，暂时无法确定该修改哪一处。\n\n建议：请补充更多上下文，或者直接要求 Agent “全部替换”。`
+    }
+
+    if (lowerContent.includes('no match found') || lowerContent.includes('did not match')) {
+      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 没有在文件中找到要修改的内容。\n\n建议：文件内容可能已经变化，请让 Agent 先重新读取文件，再继续修改。`
+    }
+
+    if (lowerContent.includes('matchindex is required')) {
+      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 在文件中找到了多处相同内容，暂时无法确定该修改哪一处。\n\n建议：请补充更多上下文，或者使用“全部替换”的方式。`
+    }
+  }
+
+  if (lowerContent.includes('model returned a final action without a reply')) {
+    return 'Agent 执行了操作，但没有给出说明。建议重新发起请求，并要求 Agent 明确说明修改结果。'
+  }
+
+  return normalizedContent
+}
+
 function formatFileMeta(item) {
   const sizeBytes = Number(item?.sizeBytes)
   const sizeLabel = Number.isFinite(sizeBytes)
@@ -643,6 +857,18 @@ function getFileDisplayName(filePath) {
 
   const segments = normalized.split('/').filter(Boolean)
   return segments[segments.length - 1] || normalized
+}
+
+function getMostRecentWorkspaceFile(files) {
+  if (!Array.isArray(files) || !files.length) {
+    return null
+  }
+
+  return [...files]
+    .filter((item) => String(item?.path || '').trim())
+    .sort((left, right) => (
+      String(right?.updatedAt || '').localeCompare(String(left?.updatedAt || ''))
+    ))[0] || null
 }
 
 function scrollMessagesToBottom(behavior = 'auto') {
@@ -763,6 +989,66 @@ watch(
     }
   },
   { immediate: true }
+)
+
+// 监听最新消息，检测文件操作是否完成
+watch(
+  () => props.messages[props.messages.length - 1],
+  (latestMessage) => {
+    if (!latestMessage || latestMessage.role !== 'tool') {
+      return
+    }
+
+    const content = String(latestMessage.content || '').toLowerCase()
+
+    // 检测工具执行成功且包含文件修改操作
+    if (content.includes('tool summary:') &&
+        content.includes('status: success') &&
+        (content.includes('patch') || content.includes('edit') || content.includes('write'))) {
+
+      // 尝试提取文件路径
+      const pathMatch = content.match(/(?:file|path):([^\n\s]+)/i)
+      if (pathMatch) {
+        const filePath = pathMatch[1].trim()
+
+        // 延迟执行确保文件操作完成
+        setTimeout(() => {
+          emit('open-workspace-file', filePath)
+        }, 800)
+      }
+    }
+  },
+  { deep: true }
+)
+
+watch(
+  () => props.activeWorkspaceFiles.map((item) => `${item.path || ''}:${item.updatedAt || ''}`).join('|'),
+  (nextSignature, previousSignature) => {
+    if (!nextSignature || nextSignature === previousSignature) {
+      return
+    }
+
+    const latestFile = getMostRecentWorkspaceFile(props.activeWorkspaceFiles)
+
+    if (!latestFile?.path) {
+      return
+    }
+
+    const selectedPath = String(props.selectedWorkspaceFilePath || '').trim()
+    const selectedUpdatedAt = String(props.selectedWorkspaceFileUpdatedAt || '').trim()
+    const latestUpdatedAt = String(latestFile.updatedAt || '').trim()
+    const shouldOpenLatestFile = !selectedPath
+      || selectedPath !== latestFile.path
+      || (latestUpdatedAt && latestUpdatedAt !== selectedUpdatedAt)
+
+    if (!shouldOpenLatestFile) {
+      return
+    }
+
+    setTimeout(() => {
+      emit('open-workspace-file', latestFile.path)
+    }, 300)
+  }
 )
 
 watch(
@@ -1266,6 +1552,18 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
+.agent-token-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(147, 114, 255, 0.12);
+  color: #7c5fe4;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .agent-task-badge {
   display: inline-flex;
   align-items: center;
@@ -1385,6 +1683,11 @@ onBeforeUnmount(() => {
   line-height: 1.8;
 }
 
+.agent-conversation__auto-refresh-hint {
+  color: #5f8758 !important;
+  font-weight: 500;
+}
+
 .agent-conversation__starter-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1437,7 +1740,8 @@ onBeforeUnmount(() => {
 }
 
 .agent-message--assistant,
-.agent-message--tool {
+.agent-message--tool,
+.agent-message--progress {
   width: min(100%, var(--agent-content-width));
   justify-self: center;
 }
@@ -1455,6 +1759,11 @@ onBeforeUnmount(() => {
 
 .agent-message--assistant .agent-message__bubble {
   padding: 2px 0;
+  background: transparent;
+}
+
+.agent-message--progress .agent-message__bubble {
+  padding: 0;
   background: transparent;
 }
 
@@ -1478,6 +1787,59 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
 }
 
+.agent-progress-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 14px 16px;
+  border: 1px solid #dfe7fb;
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(247, 250, 255, 0.98), rgba(241, 246, 255, 0.98));
+  box-shadow: 0 10px 24px rgba(88, 116, 188, 0.08);
+}
+
+.agent-progress-card__dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 0.38rem;
+  border-radius: 999px;
+  background: #4f7cff;
+  box-shadow: 0 0 0 6px rgba(79, 124, 255, 0.12);
+  animation: agent-progress-pulse 1.35s ease-in-out infinite;
+}
+
+.agent-progress-card__copy {
+  min-width: 0;
+}
+
+.agent-progress-card__copy strong {
+  display: block;
+  margin: 0 0 4px;
+  color: #2950b8;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.agent-progress-card__copy p {
+  color: #25324f;
+  line-height: 1.6;
+}
+
+.agent-message.is-partial .agent-message__bubble p::after {
+  content: '';
+  display: inline-block;
+  width: 0.55ch;
+  height: 1.1em;
+  margin-left: 0.16rem;
+  vertical-align: -0.16em;
+  border-radius: 999px;
+  background: rgba(40, 40, 40, 0.5);
+  animation: agent-caret-blink 0.9s steps(1) infinite;
+}
+
 .agent-conversation__sending {
   display: inline-flex;
   align-items: center;
@@ -1487,6 +1849,31 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: var(--agent-soft-surface);
   justify-self: center;
+}
+
+@keyframes agent-progress-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+
+  50% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+}
+
+@keyframes agent-caret-blink {
+  0%,
+  50% {
+    opacity: 0.9;
+  }
+
+  50.01%,
+  100% {
+    opacity: 0;
+  }
 }
 
 .agent-conversation__sending span {

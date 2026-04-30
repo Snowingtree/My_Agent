@@ -15,9 +15,72 @@ import { createWorkspace } from './workspace.js'
 loadEnvFiles()
 
 const config = createConfig()
+let sessionWorkspaces = null
+const sessionStreamSubscribers = new Map()
+
+function subscribeToSessionStream(sessionId, listener) {
+  const normalizedSessionId = normalizeTrimmedString(sessionId)
+
+  if (!normalizedSessionId || typeof listener !== 'function') {
+    return () => {}
+  }
+
+  const listeners = sessionStreamSubscribers.get(normalizedSessionId) || new Set()
+  listeners.add(listener)
+  sessionStreamSubscribers.set(normalizedSessionId, listeners)
+
+  return () => {
+    const activeListeners = sessionStreamSubscribers.get(normalizedSessionId)
+
+    if (!activeListeners) {
+      return
+    }
+
+    activeListeners.delete(listener)
+
+    if (!activeListeners.size) {
+      sessionStreamSubscribers.delete(normalizedSessionId)
+    }
+  }
+}
+
+function publishSessionStreamEvent(sessionId, event) {
+  const normalizedSessionId = normalizeTrimmedString(sessionId)
+  const listeners = sessionStreamSubscribers.get(normalizedSessionId)
+
+  if (!normalizedSessionId || !listeners?.size) {
+    return
+  }
+
+  for (const listener of listeners) {
+    try {
+      listener(event)
+    } catch (error) {
+      console.warn('[agent-api] session stream listener failed:', error instanceof Error ? error.message : error)
+    }
+  }
+}
+
 const sessionRepository = new SessionRepository({
   sessionsDir: config.storage.sessionsDir,
-  legacyFilePath: config.storage.legacySessionsFile
+  legacyFilePath: config.storage.legacySessionsFile,
+  onSessionUpdated: async (session) => {
+    if (!session?.sessionId || !sessionWorkspaces) {
+      return
+    }
+
+    const item = await attachWorkspaceState(session)
+    publishSessionStreamEvent(session.sessionId, {
+      type: 'session.updated',
+      item
+    })
+  },
+  onSessionDeleted: async (sessionId) => {
+    publishSessionStreamEvent(sessionId, {
+      type: 'session.deleted',
+      sessionId
+    })
+  }
 })
 const skillRegistry = createSkillRegistry(config.skills)
 const sourceWorkspace = createWorkspace(config.workspace)
@@ -29,9 +92,10 @@ try {
 } catch (error) {
   console.warn('[agent-api] failed to initialize MCP registry:', error instanceof Error ? error.message : error)
 }
-const sessionWorkspaces = createSessionWorkspacesRepository({
+sessionWorkspaces = createSessionWorkspacesRepository({
   baseDir: config.storage.sessionWorkspacesDir,
   sourceWorkspace,
+  writeMode: config.workspace.writeMode,
   ignoredRootDirs: [
     config.storage.dataDir,
     config.storage.sessionArtifactsDir,
@@ -54,6 +118,9 @@ const agentRunner = createAgentRunner({
   getAiConfigById,
   resolveModel,
   loadAiConfigs,
+  publishSessionEvent: (sessionId, event) => {
+    publishSessionStreamEvent(sessionId, event)
+  },
   skillRegistry,
   sessionWorkspaces,
   runtimeConfig: config.runtime,
@@ -80,6 +147,30 @@ function sendEmpty(response, statusCode = 204) {
   setBaseHeaders(response)
   response.statusCode = statusCode
   response.end()
+}
+
+function sendSseHeaders(response) {
+  setBaseHeaders(response)
+  response.statusCode = 200
+  response.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  response.setHeader('Connection', 'keep-alive')
+  response.setHeader('X-Accel-Buffering', 'no')
+}
+
+function sendSseEvent(response, eventName, payload) {
+  const lines = []
+
+  if (eventName) {
+    lines.push(`event: ${eventName}`)
+  }
+
+  const serializedPayload = JSON.stringify(payload ?? {})
+
+  for (const line of serializedPayload.split(/\r?\n/)) {
+    lines.push(`data: ${line}`)
+  }
+
+  response.write(`${lines.join('\n')}\n\n`)
 }
 
 async function readJsonBody(request) {
@@ -117,6 +208,11 @@ function matchSessionFileContentPath(pathname) {
 
 function matchSessionCancelPath(pathname) {
   const match = pathname.match(/^\/api\/agent\/sessions\/([^/]+)\/cancel$/)
+  return match?.[1] ? decodeURIComponent(match[1]) : ''
+}
+
+function matchSessionStreamPath(pathname) {
+  const match = pathname.match(/^\/api\/agent\/sessions\/([^/]+)\/stream$/)
   return match?.[1] ? decodeURIComponent(match[1]) : ''
 }
 
@@ -291,10 +387,12 @@ async function attachWorkspaceState(item) {
     return item
   }
 
+  const trackedWorkspaceFiles = Array.isArray(item.workspaceFiles) ? item.workspaceFiles : []
+
   return {
     ...item,
     workspaceFolder: sessionWorkspaces.getWorkspaceFolderLabel(item.sessionId),
-    workspaceFiles: await sessionWorkspaces.listWorkspaceFiles(item.sessionId)
+    workspaceFiles: await sessionWorkspaces.listWorkspaceFiles(item.sessionId, trackedWorkspaceFiles)
   }
 }
 
@@ -393,6 +491,41 @@ async function handleCancelTask(response, sessionId) {
   }
 
   sendJson(response, 202, { item: await attachWorkspaceState(item) })
+}
+
+async function handleSessionStream(request, response, sessionId) {
+  const session = await sessionRepository.getSession(sessionId)
+
+  if (!session) {
+    sendJson(response, 404, {
+      message: 'Session not found.'
+    })
+    return
+  }
+
+  sendSseHeaders(response)
+  sendSseEvent(response, 'session.updated', {
+    item: await attachWorkspaceState(session)
+  })
+
+  const unsubscribe = subscribeToSessionStream(sessionId, (event) => {
+    sendSseEvent(response, event.type || 'message', event)
+  })
+  const heartbeatTimer = setInterval(() => {
+    try {
+      response.write(': keep-alive\n\n')
+    } catch {
+      // connection cleanup is handled below
+    }
+  }, 15000)
+
+  const cleanup = () => {
+    clearInterval(heartbeatTimer)
+    unsubscribe()
+  }
+
+  request.on('close', cleanup)
+  response.on('close', cleanup)
 }
 
 async function handleChat(request, response) {
@@ -570,6 +703,13 @@ async function handleRequest(request, response) {
 
   if (fileContentSessionId && request.method === 'GET') {
     await handleGetSessionFileContent(response, requestUrl, fileContentSessionId)
+    return
+  }
+
+  const streamSessionId = matchSessionStreamPath(pathname)
+
+  if (streamSessionId && request.method === 'GET') {
+    await handleSessionStream(request, response, streamSessionId)
     return
   }
 

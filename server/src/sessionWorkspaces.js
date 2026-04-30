@@ -19,10 +19,12 @@ function isWithinPath(rootDir, targetPath) {
 
 export function createSessionWorkspacesRepository({
   baseDir,
-  sourceWorkspace
+  sourceWorkspace,
+  writeMode = 'session'
 } = {}) {
   const sourceRootDir = resolve(String(sourceWorkspace?.rootDir || '.'))
   const requestedRootDir = resolve(String(baseDir || '.'))
+  const directSourceWrites = String(writeMode || '').trim().toLowerCase() !== 'session'
   const rootDir = isWithinPath(sourceRootDir, requestedRootDir)
     ? resolve(dirname(sourceRootDir), `${basename(sourceRootDir)}-session-workspaces`)
     : requestedRootDir
@@ -38,6 +40,10 @@ export function createSessionWorkspacesRepository({
   }
 
   function getWorkspaceFolderLabel(sessionId) {
+    if (directSourceWrites) {
+      return basename(sourceRootDir)
+    }
+
     const normalizedSessionId = String(sessionId || '').trim()
 
     if (!normalizedSessionId) {
@@ -48,6 +54,15 @@ export function createSessionWorkspacesRepository({
   }
 
   async function ensureSessionWorkspace(sessionId) {
+    if (directSourceWrites) {
+      await mkdir(rootDir, { recursive: true })
+
+      return {
+        rootDir: sourceRootDir,
+        created: true
+      }
+    }
+
     const sessionDir = resolveSessionDir(sessionId)
     await mkdir(sessionDir, { recursive: true })
 
@@ -58,11 +73,21 @@ export function createSessionWorkspacesRepository({
   }
 
   async function deleteSessionWorkspace(sessionId) {
+    if (directSourceWrites) {
+      return
+    }
+
     const targetDir = resolveSessionDir(sessionId)
     await rm(targetDir, { recursive: true, force: true })
   }
 
   function resolveWorkspace(sessionId) {
+    if (directSourceWrites) {
+      return createWorkspace({
+        rootDir: sourceRootDir
+      })
+    }
+
     const sessionDir = resolveSessionDir(sessionId)
 
     return createWorkspace({
@@ -117,8 +142,44 @@ export function createSessionWorkspacesRepository({
     }
   }
 
-  async function listWorkspaceFiles(sessionId) {
+  async function listWorkspaceFiles(sessionId, trackedFiles = []) {
     const workspace = resolveWorkspace(sessionId)
+
+    if (directSourceWrites) {
+      const normalizedTrackedFiles = Array.isArray(trackedFiles) ? trackedFiles : []
+      const files = []
+
+      for (const item of normalizedTrackedFiles) {
+        const relativePath = String(item?.path || '').trim()
+
+        if (!relativePath) {
+          continue
+        }
+
+        try {
+          const target = workspace.resolvePath(relativePath)
+          const fileStat = await stat(target.absolutePath)
+
+          if (!fileStat.isFile()) {
+            continue
+          }
+
+          files.push(createWorkspaceFileRecord(sessionId, target.relativePath, {
+            sizeBytes: fileStat.size,
+            updatedAt: new Date(fileStat.mtimeMs).toISOString()
+          }))
+        } catch (error) {
+          if (error?.code !== 'ENOENT') {
+            throw error
+          }
+        }
+      }
+
+      return files.sort((left, right) => (
+        String(right?.updatedAt || '').localeCompare(String(left?.updatedAt || ''))
+      ))
+    }
+
     const files = []
 
     async function walk(relativePath = '.') {
@@ -166,6 +227,7 @@ export function createSessionWorkspacesRepository({
   return {
     rootDir,
     sourceRootDir,
+    directSourceWrites,
     ensureSessionWorkspace,
     deleteSessionWorkspace,
     getWorkspaceFolderLabel,

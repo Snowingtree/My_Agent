@@ -156,7 +156,7 @@ export function createSessionRecord() {
     lastAiId: '',
     lastModel: '',
     lastSkillId: '',
-    workspaceFolder: `session-workspaces/${sessionId}`,
+    workspaceFolder: `sessions/${sessionId}`,
     workspaceFiles: [],
     messages: [],
     task: createEmptyTask(DEFAULT_SESSION_TITLE)

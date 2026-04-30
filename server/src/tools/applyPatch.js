@@ -46,6 +46,18 @@ function normalizeBoolean(value, fallbackValue = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase())
 }
 
+function readFirstNonEmptyString(...values) {
+  for (const value of values) {
+    const normalized = String(value ?? '')
+
+    if (normalized !== '') {
+      return normalized
+    }
+  }
+
+  return ''
+}
+
 function replaceByOccurrence(content, find, replacement, targetOccurrence) {
   let occurrenceIndex = 0
   let searchIndex = 0
@@ -216,7 +228,14 @@ function applyBetweenChange({
 function applySingleChange(content, change, index) {
   const type = String(change?.type || 'replace').trim().toLowerCase()
   const changeLabel = `Change #${index + 1}`
-  const body = String(change?.content ?? change?.replace ?? '')
+  const body = readFirstNonEmptyString(
+    change?.content,
+    change?.replace,
+    change?.replacement,
+    change?.replaceWith,
+    change?.to,
+    change?.new
+  )
   const replaceAll = normalizeBoolean(change?.replaceAll)
 
   if (type === 'append') {
@@ -251,7 +270,14 @@ function applySingleChange(content, change, index) {
   return applyOccurrenceChange({
     content,
     type,
-    find: String(change?.find ?? ''),
+    find: readFirstNonEmptyString(
+      change?.find,
+      change?.search,
+      change?.from,
+      change?.old,
+      change?.target,
+      change?.targetSnippet
+    ),
     body,
     replaceAll,
     matchIndex: change?.matchIndex,
@@ -262,7 +288,7 @@ function applySingleChange(content, change, index) {
 export function createApplyPatchTool({ workspace, workspaceConfig } = {}) {
   return {
     name: 'apply_patch',
-    description: 'Apply targeted text edits to an existing file. Supports replace, insert_before, insert_after, delete, append, prepend, and replace_between.',
+    description: 'Apply targeted text edits to an existing file. Supports replace, insert_before, insert_after, delete, append, prepend, and replace_between. For replace/delete, provide the target text in find/search/from/old and the replacement text in content/replace/replacement/replaceWith/to/new.',
     inputSchema: {
       type: 'object',
       properties: {

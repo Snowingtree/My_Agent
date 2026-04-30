@@ -48,6 +48,16 @@ function normalizeBaseUrl(value) {
   return String(value || '').trim().replace(/\/$/, '')
 }
 
+function normalizeWorkspaceWriteMode(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+
+  if (normalized === 'source') {
+    return 'source'
+  }
+
+  return 'session'
+}
+
 function normalizeCommandSpec(item) {
   const command = String(item?.command || '').trim()
   const args = Array.isArray(item?.args)
@@ -150,8 +160,10 @@ export function createConfig() {
     ai: {
       configPath: resolveServerPath(process.env.AGENT_AI_CONFIG_PATH, 'config/ai-configs.json'),
       requestTimeoutMs: readNumberEnv('AGENT_AI_TIMEOUT_MS', 120000),
+      idleTimeoutMs: readNumberEnv('AGENT_AI_IDLE_TIMEOUT_MS', 30000),
       timeoutRetries: readNumberEnv('AGENT_AI_TIMEOUT_RETRIES', 2),
       timeoutRetryDelayMs: readNumberEnv('AGENT_AI_TIMEOUT_RETRY_DELAY_MS', 1500),
+      streamResponses: normalizeBooleanEnv(process.env.AGENT_AI_STREAM_RESPONSES, true),
       recentMessages: readNumberEnv('AGENT_CONTEXT_MESSAGES', 12),
       maxPlanSteps: readNumberEnv('AGENT_MAX_PLAN_STEPS', 5)
     },
@@ -166,6 +178,7 @@ export function createConfig() {
       protocolVersion: String(process.env.AGENT_MCP_PROTOCOL_VERSION || '2025-11-25').trim() || '2025-11-25'
     },
     workspace: {
+      writeMode: normalizeWorkspaceWriteMode(process.env.AGENT_WORKSPACE_WRITE_MODE),
       rootDir: workspaceRootDir,
       maxFileSizeBytes: readNumberEnv('AGENT_MAX_FILE_SIZE_BYTES', 256 * 1024),
       maxWriteSizeBytes: readNumberEnv('AGENT_MAX_WRITE_SIZE_BYTES', 512 * 1024),

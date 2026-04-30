@@ -69,6 +69,115 @@ function looksLikeFileChangeRequest(value) {
   )
 }
 
+function extractExplicitFilePaths(value) {
+  const matches = String(value || '').matchAll(/([A-Za-z0-9_./-]+\.(html|css|js|ts|tsx|jsx|vue|json|md|txt))/ig)
+  const paths = []
+  const seen = new Set()
+
+  for (const match of matches) {
+    const nextPath = normalizeTrimmedString(match?.[1]).replace(/\\/g, '/')
+
+    if (!nextPath || seen.has(nextPath)) {
+      continue
+    }
+
+    seen.add(nextPath)
+    paths.push(nextPath)
+  }
+
+  return paths
+}
+
+function getRequiredCompanionExtensions(value) {
+  const normalized = normalizeTrimmedString(value).toLowerCase()
+  const required = []
+  const splitMarkers = ['分离', '抽离', '拆分', '拆出', '提取', '独立']
+
+  if (splitMarkers.some((marker) => normalized.includes(marker)) && ['css', '样式', 'style'].some((marker) => normalized.includes(marker))) {
+    required.push('.css')
+  }
+
+  if (splitMarkers.some((marker) => normalized.includes(marker)) && ['js', 'javascript', '脚本', 'script'].some((marker) => normalized.includes(marker))) {
+    required.push('.js')
+  }
+
+  return required
+}
+
+function hasRequiredCompanionChanges(requiredExtensions = [], changedFiles = []) {
+  if (!requiredExtensions.length) {
+    return true
+  }
+
+  const normalizedChangedFiles = (Array.isArray(changedFiles) ? changedFiles : [])
+    .map((item) => normalizeTrimmedString(item).toLowerCase())
+    .filter(Boolean)
+
+  return requiredExtensions.every((extension) => (
+    normalizedChangedFiles.some((filePath) => filePath.endsWith(extension))
+  ))
+}
+
+async function buildWorkspaceSnapshotText({
+  sessionId,
+  latestGoal,
+  changedFiles = [],
+  sessionRepository,
+  sessionWorkspaces
+} = {}) {
+  if (!sessionId || !sessionRepository || !sessionWorkspaces) {
+    return ''
+  }
+
+  const activeSession = await sessionRepository.getSession(sessionId)
+  const trackedWorkspaceFiles = Array.isArray(activeSession?.workspaceFiles) ? activeSession.workspaceFiles : []
+  const workspaceFiles = await sessionWorkspaces.listWorkspaceFiles(sessionId, trackedWorkspaceFiles)
+  const lines = [
+    `Current session workspace folder: ${sessionWorkspaces.getWorkspaceFolderLabel(sessionId)}`
+  ]
+
+  if (!workspaceFiles.length) {
+    lines.push('Current session workspace files: (empty)')
+    return lines.join('\n')
+  }
+
+  lines.push('Current session workspace files:')
+
+  for (const [index, file] of workspaceFiles.slice(0, 40).entries()) {
+    lines.push(`${index + 1}. ${file.path}`)
+  }
+
+  if (workspaceFiles.length > 40) {
+    lines.push(`...and ${workspaceFiles.length - 40} more file(s).`)
+  }
+
+  const explicitPaths = extractExplicitFilePaths(latestGoal)
+  const previewPaths = Array.from(new Set([
+    ...explicitPaths,
+    ...changedFiles,
+    ...workspaceFiles.map((item) => normalizeTrimmedString(item?.path))
+  ].filter(Boolean))).slice(0, 3)
+
+  const previewBlocks = []
+
+  for (const targetPath of previewPaths) {
+    try {
+      const preview = await sessionWorkspaces.readWorkspaceFile(sessionId, targetPath, 3200)
+      previewBlocks.push([
+        `File preview: ${targetPath}`,
+        truncateText(preview.content, 1600)
+      ].join('\n'))
+    } catch {}
+  }
+
+  if (previewBlocks.length) {
+    lines.push('Relevant file previews:')
+    lines.push(previewBlocks.join('\n\n'))
+  }
+
+  return lines.join('\n')
+}
+
 function buildActiveSkillPrompt(skill) {
   if (!skill) {
     return ''
@@ -101,6 +210,60 @@ function buildActiveSkillPrompt(skill) {
   return promptSections.join('\n')
 }
 
+function looksLikeToolSummaryContent(value) {
+  const normalized = normalizeTrimmedString(value).toLowerCase()
+  return normalized.includes('tool summary:')
+}
+
+function looksLikeCodeHeavyContent(value) {
+  const normalized = normalizeTrimmedString(value).toLowerCase()
+
+  if (!normalized) {
+    return false
+  }
+
+  return [
+    '```',
+    '<!doctype html',
+    '<html',
+    '<style',
+    '<script',
+    '<template>',
+    'export default',
+    'function ',
+    'const ',
+    'body {',
+    '.container {'
+  ].some((marker) => normalized.includes(marker))
+}
+
+function buildSafeAssistantReply({
+  reply = '',
+  fileChangesRequired = false,
+  modifiedWorkspace = false,
+  changedFiles = [],
+  verifiedAfterModification = false
+} = {}) {
+  const normalizedReply = normalizeTrimmedString(reply)
+
+  if (modifiedWorkspace) {
+    return buildWorkspaceCompletionReply({
+      changedFiles,
+      verifiedAfterModification
+    })
+  }
+
+  if (fileChangesRequired && (looksLikeToolSummaryContent(normalizedReply) || looksLikeCodeHeavyContent(normalizedReply))) {
+    return '本次请求需要直接修改文件。当前不再展示代码正文，请继续查看右侧会话文件；如果右侧没有新文件，说明本次修改还未真正完成。'
+  }
+
+  if (looksLikeToolSummaryContent(normalizedReply)) {
+    return '本轮主要执行了工具操作，详细代码和文件内容请查看右侧会话文件。'
+  }
+
+  return normalizedReply
+}
+
 function serializeJson(value, maxChars = 12000) {
   const serialized = JSON.stringify(value, null, 2)
   return serialized.length > maxChars
@@ -115,10 +278,13 @@ function buildAgentLoopMessages({
   toolMessages,
   toolPromptText,
   systemPrompt,
-  remainingIterations
+  remainingIterations,
+  workspaceContextText = ''
 }) {
   const promptSections = [
     'You are a coding agent running inside a server workspace.',
+    'The current session workspace is the only source of truth for this task.',
+    'When the user asks to continue modifying previous files, continue working on files that already exist inside the current session workspace.',
     'The user may ask for coding work, workspace investigation, product discussion, brainstorming, or ordinary conversation.',
     'Return strict JSON only.',
     'Do not expose hidden chain-of-thought.',
@@ -139,7 +305,9 @@ function buildAgentLoopMessages({
           'This request appears to ask for real file changes.',
           'You must use workspace tools and actually create, modify, or delete files before choosing "final", unless the task is blocked by missing information.',
           'Do not place the intended code only in reply text when a file change is required.',
-          'When the user asks for a page, UI, component, script, or HTML/CSS/JS implementation without giving an explicit path, choose a sensible default filename in the current workspace and write the file directly.'
+          'When the user asks for a page, UI, component, script, or HTML/CSS/JS implementation without giving an explicit path, choose a sensible default filename in the current workspace and write the file directly.',
+          'If the current session workspace already contains related files, inspect and continue modifying those existing files instead of starting over.',
+          'If the user asks to split CSS or JS into separate files, do not finish until the companion file is actually written and the original file references it correctly.'
         ]
       : []),
     `You have ${remainingIterations} tool iteration(s) remaining before you must finish.`,
@@ -166,6 +334,12 @@ function buildAgentLoopMessages({
       role: 'system',
       content: promptSections.join('\n')
     },
+    ...(workspaceContextText
+      ? [{
+          role: 'user',
+          content: `Current session workspace snapshot:\n${workspaceContextText}`
+        }]
+      : []),
     ...conversationHistory,
     ...toolMessages,
     {
@@ -185,10 +359,12 @@ function buildForcedFinalMessages({
   fileChangesRequired = false,
   modifiedWorkspace = false,
   toolMessages,
-  systemPrompt
+  systemPrompt,
+  workspaceContextText = ''
 }) {
   const promptSections = [
     'You are a coding agent running inside a server workspace.',
+    'The current session workspace is the only source of truth for this task.',
     'The user may be asking for a normal conversational reply or a task result.',
     'Return strict JSON only.',
     'Do not expose hidden chain-of-thought.',
@@ -227,6 +403,12 @@ function buildForcedFinalMessages({
       role: 'system',
       content: promptSections.join('\n')
     },
+    ...(workspaceContextText
+      ? [{
+          role: 'user',
+          content: `Current session workspace snapshot:\n${workspaceContextText}`
+        }]
+      : []),
     ...conversationHistory,
     ...toolMessages,
     {
@@ -638,6 +820,7 @@ export function createAgentRunner({
     )
     const latestGoal = String(latestUserMessage.content)
     const fileChangesRequired = looksLikeFileChangeRequest(latestGoal)
+    const requiredCompanionExtensions = getRequiredCompanionExtensions(latestGoal)
     const toolMessages = []
     const verificationCommands = await resolveVerificationCommands({
       workspaceConfig,
@@ -891,6 +1074,13 @@ export function createAgentRunner({
       for (let iteration = 0; iteration < runtimeConfig.maxToolIterations; iteration += 1) {
         throwIfCancelled()
         throwIfTaskTimedOut()
+        const workspaceContextText = await buildWorkspaceSnapshotText({
+          sessionId,
+          latestGoal,
+          changedFiles: executionState.changedFiles,
+          sessionRepository,
+          sessionWorkspaces
+        })
 
         const decision = await createStructuredCompletion({
           aiConfig,
@@ -906,7 +1096,8 @@ export function createAgentRunner({
             toolMessages,
             toolPromptText: toolRunner.getPromptText({ skill: activeSkill }),
             systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-            remainingIterations: runtimeConfig.maxToolIterations - iteration
+            remainingIterations: runtimeConfig.maxToolIterations - iteration,
+            workspaceContextText
           })
         })
         throwIfCancelled()
@@ -986,9 +1177,27 @@ export function createAgentRunner({
           continue
         }
 
+        if (
+          executionState.modifiedWorkspace
+          && requiredCompanionExtensions.length
+          && !hasRequiredCompanionChanges(requiredCompanionExtensions, executionState.changedFiles)
+        ) {
+          toolMessages.push({
+            role: 'user',
+            content: [
+              `The task explicitly requires companion files: ${requiredCompanionExtensions.join(', ')}.`,
+              'Those companion files have not been created or updated yet.',
+              'Do not finish yet. Continue modifying the existing files in the current session workspace and create or update the missing companion file.'
+            ].join('\n')
+          })
+
+          await sleep(runtimeConfig.stepDelayMs)
+          continue
+        }
+
         const finalReply = normalizeTrimmedString(decision.json?.reply)
 
-        if (!finalReply) {
+        if (!finalReply && !executionState.modifiedWorkspace) {
           throw new Error('Model returned a final action without a reply.')
         }
 
@@ -1010,12 +1219,13 @@ export function createAgentRunner({
           return draftSession
         })
 
-        const userFacingReply = fileChangesRequired && executionState.modifiedWorkspace
-          ? buildWorkspaceCompletionReply({
-              changedFiles: executionState.changedFiles,
-              verifiedAfterModification: executionState.verifiedAfterModification
-            })
-          : finalReply
+        const userFacingReply = buildSafeAssistantReply({
+          reply: finalReply,
+          fileChangesRequired,
+          modifiedWorkspace: executionState.modifiedWorkspace,
+          changedFiles: executionState.changedFiles,
+          verifiedAfterModification: executionState.verifiedAfterModification
+        })
 
         await sessionRepository.appendAssistantMessage(sessionId, {
           content: userFacingReply,
@@ -1031,6 +1241,14 @@ export function createAgentRunner({
         return
       }
 
+      const workspaceContextText = await buildWorkspaceSnapshotText({
+        sessionId,
+        latestGoal,
+        changedFiles: executionState.changedFiles,
+        sessionRepository,
+        sessionWorkspaces
+      })
+
       const forcedFinal = await createStructuredCompletion({
         aiConfig,
         model: selectedModel,
@@ -1044,16 +1262,25 @@ export function createAgentRunner({
           fileChangesRequired,
           modifiedWorkspace: executionState.modifiedWorkspace,
           toolMessages,
-          systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n')
+          systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+          workspaceContextText
         })
       })
       const finalReply = normalizeTrimmedString(forcedFinal.json?.reply)
 
-      if (!finalReply) {
+      if (!finalReply && !executionState.modifiedWorkspace) {
         throw new Error('Model reached the tool iteration limit without producing a final answer.')
       }
 
       const completionSummary = normalizeTrimmedString(forcedFinal.json?.summary) || '已基于已收集的信息完成答复。'
+      if (
+        executionState.modifiedWorkspace
+        && requiredCompanionExtensions.length
+        && !hasRequiredCompanionChanges(requiredCompanionExtensions, executionState.changedFiles)
+      ) {
+        throw new Error(`The requested file split is incomplete. Missing companion file update for: ${requiredCompanionExtensions.join(', ')}`)
+      }
+
       const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
       finalizedSteps.push(createFinalReplyStep(completionSummary))
 
@@ -1071,12 +1298,13 @@ export function createAgentRunner({
         return draftSession
       })
 
-      const userFacingReply = fileChangesRequired && executionState.modifiedWorkspace
-        ? buildWorkspaceCompletionReply({
-            changedFiles: executionState.changedFiles,
-            verifiedAfterModification: executionState.verifiedAfterModification
-          })
-        : finalReply
+      const userFacingReply = buildSafeAssistantReply({
+        reply: finalReply,
+        fileChangesRequired,
+        modifiedWorkspace: executionState.modifiedWorkspace,
+        changedFiles: executionState.changedFiles,
+        verifiedAfterModification: executionState.verifiedAfterModification
+      })
 
       await sessionRepository.appendAssistantMessage(sessionId, {
         content: userFacingReply,

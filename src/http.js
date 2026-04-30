@@ -22,6 +22,21 @@ function resolveApiBaseUrl() {
   return ''
 }
 
+export function buildApiUrl(pathname) {
+  const normalizedPath = String(pathname || '').trim()
+  const baseURL = resolveApiBaseUrl()
+
+  if (!normalizedPath) {
+    return baseURL || ''
+  }
+
+  if (!baseURL) {
+    return normalizedPath
+  }
+
+  return `${baseURL}${normalizedPath.startsWith('/') ? normalizedPath : `/${normalizedPath}`}`
+}
+
 function clearAgentStoredAuth() {
   if (typeof localStorage === 'undefined') {
     return
