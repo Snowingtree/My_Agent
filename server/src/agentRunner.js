@@ -237,6 +237,104 @@ function looksLikeCodeHeavyContent(value) {
   ].some((marker) => normalized.includes(marker))
 }
 
+function extractCodeFence(value) {
+  const normalized = String(value || '')
+  const match = normalized.match(/```([a-zA-Z0-9_-]*)\s*([\s\S]+?)```/)
+
+  if (!match) {
+    return null
+  }
+
+  return {
+    language: normalizeTrimmedString(match[1]).toLowerCase(),
+    content: String(match[2] || '').trim()
+  }
+}
+
+function inferFilePathFromReply(latestGoal, replyContent) {
+  const explicitPaths = extractExplicitFilePaths(latestGoal)
+
+  if (explicitPaths.length) {
+    return explicitPaths[0]
+  }
+
+  const normalizedReply = normalizeTrimmedString(replyContent).toLowerCase()
+
+  if (!normalizedReply) {
+    return ''
+  }
+
+  if (normalizedReply.includes('<!doctype html') || normalizedReply.includes('<html')) {
+    return 'index.html'
+  }
+
+  if (
+    normalizedReply.includes('<template>')
+    || normalizedReply.includes('</template>')
+    || normalizedReply.includes('export default')
+  ) {
+    return 'App.vue'
+  }
+
+  if (
+    normalizedReply.includes('body {')
+    || normalizedReply.includes('@media')
+    || normalizedReply.includes('.container')
+    || normalizedReply.includes(':root {')
+  ) {
+    return 'styles.css'
+  }
+
+  if (
+    normalizedReply.includes('function ')
+    || normalizedReply.includes('const ')
+    || normalizedReply.includes('document.')
+    || normalizedReply.includes('addEventListener(')
+  ) {
+    return 'main.js'
+  }
+
+  return ''
+}
+
+function extractWritableContentFromReply(reply) {
+  const normalizedReply = String(reply || '').trim()
+
+  if (!normalizedReply) {
+    return {
+      content: '',
+      language: ''
+    }
+  }
+
+  const fencedCode = extractCodeFence(normalizedReply)
+
+  if (fencedCode?.content) {
+    return fencedCode
+  }
+
+  const htmlStartIndex = normalizedReply.search(/<!doctype html|<html/i)
+
+  if (htmlStartIndex >= 0) {
+    return {
+      content: normalizedReply.slice(htmlStartIndex).trim(),
+      language: 'html'
+    }
+  }
+
+  if (looksLikeCodeHeavyContent(normalizedReply)) {
+    return {
+      content: normalizedReply,
+      language: ''
+    }
+  }
+
+  return {
+    content: '',
+    language: ''
+  }
+}
+
 function buildSafeAssistantReply({
   reply = '',
   fileChangesRequired = false,
@@ -703,6 +801,7 @@ export function createAgentRunner({
   getAiConfigById,
   resolveModel,
   loadAiConfigs,
+  publishSessionEvent,
   skillRegistry,
   sessionWorkspaces,
   runtimeConfig,
@@ -711,10 +810,78 @@ export function createAgentRunner({
 } = {}) {
   const activeRuns = new Map()
 
+  function pushSessionEvent(sessionId, type, payload = {}) {
+    if (typeof publishSessionEvent !== 'function') {
+      return
+    }
+
+    publishSessionEvent(sessionId, {
+      type,
+      ...payload
+    })
+  }
+
+  function publishTaskProgress(sessionId, summary, model = '') {
+    const normalizedSummary = normalizeTrimmedString(summary)
+
+    if (!normalizedSummary) {
+      return
+    }
+
+    pushSessionEvent(sessionId, 'task.progress', {
+      summary: normalizedSummary,
+      model
+    })
+  }
+
+  async function appendAssistantReplyWithStreaming(sessionId, {
+    content,
+    model = '',
+    usage
+  } = {}) {
+    const normalizedContent = normalizeTrimmedString(content)
+
+    if (!normalizedContent) {
+      return null
+    }
+
+    const chunks = []
+
+    for (let index = 0; index < normalizedContent.length; index += 24) {
+      chunks.push(normalizedContent.slice(index, index + 24))
+    }
+
+    let partialContent = ''
+
+    for (const chunk of chunks) {
+      partialContent += chunk
+      pushSessionEvent(sessionId, 'assistant.partial', {
+        content: partialContent,
+        model
+      })
+
+      if (chunks.length > 1) {
+        await sleep(18)
+      }
+    }
+
+    const message = await sessionRepository.appendAssistantMessage(sessionId, {
+      content: normalizedContent,
+      model,
+      usage
+    })
+
+    pushSessionEvent(sessionId, 'assistant.finalized', {
+      model
+    })
+
+    return message
+  }
+
   async function appendFailureAssistantMessage(sessionId, summary, model = '') {
     const normalizedSummary = normalizeTrimmedString(summary) || '\u4efb\u52a1\u6267\u884c\u5931\u8d25\u3002'
-
-    return sessionRepository.appendAssistantMessage(sessionId, {
+  
+    return appendAssistantReplyWithStreaming(sessionId, {
       content: `\u5904\u7406\u5931\u8d25\uff1a${normalizedSummary}`,
       model
     })
@@ -841,6 +1008,7 @@ export function createAgentRunner({
       startedAt: nowIso()
     })
     const taskSteps = [analysisStep]
+    publishTaskProgress(sessionId, '正在分析你的目标并准备下一步。', selectedModel)
 
     await sessionRepository.updateSession(sessionId, (draftSession) => {
       draftSession.lastAiId = aiConfig.aiId
@@ -869,6 +1037,11 @@ export function createAgentRunner({
       throwIfTaskTimedOut()
 
       const normalizedRequest = normalizeToolRequest(toolRequest)
+      publishTaskProgress(
+        sessionId,
+        summary || `正在执行工具 ${normalizedRequest.name}。`,
+        selectedModel
+      )
       const toolStep = createTaskStep({
         title: stepTitle || createToolStepTitle(normalizedRequest.name, normalizedRequest.args),
         status: 'in_progress',
@@ -941,6 +1114,7 @@ export function createAgentRunner({
       throwIfTaskTimedOut()
       taskSteps[taskSteps.length - 1] = completeStep(toolStep, toolExecution.summary)
       toolMessages.push(...createToolTranscriptMessages(toolExecution))
+      publishTaskProgress(sessionId, toolExecution.summary, selectedModel)
 
       await sessionRepository.appendToolMessage(sessionId, {
         content: createToolMessageContent(toolExecution)
@@ -1027,6 +1201,8 @@ export function createAgentRunner({
         }
       }
 
+      publishTaskProgress(sessionId, '正在验证刚刚完成的文件修改。', selectedModel)
+
       for (const commandSpec of verificationCommands) {
         throwIfCancelled()
 
@@ -1066,6 +1242,34 @@ export function createAgentRunner({
       }
     }
 
+    async function maybePersistReplyAsWorkspaceFile(reply) {
+      if (executionState.modifiedWorkspace) {
+        return false
+      }
+
+      const extracted = extractWritableContentFromReply(reply)
+      const targetPath = inferFilePathFromReply(latestGoal, extracted.content || reply)
+      const fileContent = String(extracted.content || '').trim()
+
+      if (!targetPath || !fileContent) {
+        return false
+      }
+
+      const result = await executeToolRequest({
+        name: 'write_file',
+        args: {
+          path: targetPath,
+          content: fileContent,
+          createDirectories: true
+        }
+      }, {
+        summary: `正在将生成内容写入 ${targetPath}。`,
+        stepTitle: `写入文件 ${truncateText(targetPath, 36)}`
+      })
+
+      return result.ok
+    }
+
     await sleep(runtimeConfig.stepDelayMs)
     throwIfCancelled()
     throwIfTaskTimedOut()
@@ -1086,6 +1290,8 @@ export function createAgentRunner({
           aiConfig,
           model: selectedModel,
           requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+          idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
+          streamResponses: aiRuntimeConfig.streamResponses,
           timeoutRetries: aiRuntimeConfig.timeoutRetries,
           timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
           signal: abortSignal,
@@ -1143,7 +1349,9 @@ export function createAgentRunner({
             return draftSession
           })
 
-          await sessionRepository.appendAssistantMessage(sessionId, {
+          publishTaskProgress(sessionId, waitingSummary, selectedModel)
+
+          await appendAssistantReplyWithStreaming(sessionId, {
             content: reply,
             model: selectedModel,
             usage: decision.usage
@@ -1197,6 +1405,20 @@ export function createAgentRunner({
 
         const finalReply = normalizeTrimmedString(decision.json?.reply)
 
+        if (
+          fileChangesRequired
+          && !executionState.modifiedWorkspace
+          && finalReply
+          && looksLikeCodeHeavyContent(finalReply)
+        ) {
+          const persisted = await maybePersistReplyAsWorkspaceFile(finalReply)
+
+          if (persisted) {
+            await sleep(runtimeConfig.stepDelayMs)
+            continue
+          }
+        }
+
         if (!finalReply && !executionState.modifiedWorkspace) {
           throw new Error('Model returned a final action without a reply.')
         }
@@ -1227,7 +1449,9 @@ export function createAgentRunner({
           verifiedAfterModification: executionState.verifiedAfterModification
         })
 
-        await sessionRepository.appendAssistantMessage(sessionId, {
+        publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
+
+        await appendAssistantReplyWithStreaming(sessionId, {
           content: userFacingReply,
           model: selectedModel,
           usage: decision.usage
@@ -1253,6 +1477,8 @@ export function createAgentRunner({
         aiConfig,
         model: selectedModel,
         requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+        idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
+        streamResponses: aiRuntimeConfig.streamResponses,
         timeoutRetries: aiRuntimeConfig.timeoutRetries,
         timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
         signal: abortSignal,
@@ -1267,6 +1493,80 @@ export function createAgentRunner({
         })
       })
       const finalReply = normalizeTrimmedString(forcedFinal.json?.reply)
+
+      if (
+        fileChangesRequired
+        && !executionState.modifiedWorkspace
+        && finalReply
+        && looksLikeCodeHeavyContent(finalReply)
+      ) {
+        const persisted = await maybePersistReplyAsWorkspaceFile(finalReply)
+
+        if (persisted) {
+          const refreshedWorkspaceContextText = await buildWorkspaceSnapshotText({
+            sessionId,
+            latestGoal,
+            changedFiles: executionState.changedFiles,
+            sessionRepository,
+            sessionWorkspaces
+          })
+          const recoveryFinal = await createStructuredCompletion({
+            aiConfig,
+            model: selectedModel,
+            requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+            idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
+            streamResponses: aiRuntimeConfig.streamResponses,
+            timeoutRetries: aiRuntimeConfig.timeoutRetries,
+            timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
+            signal: abortSignal,
+            messages: buildForcedFinalMessages({
+              latestGoal,
+              conversationHistory,
+              fileChangesRequired,
+              modifiedWorkspace: executionState.modifiedWorkspace,
+              toolMessages,
+              systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+              workspaceContextText: refreshedWorkspaceContextText
+            })
+          })
+
+          const recoveredReply = normalizeTrimmedString(recoveryFinal.json?.reply)
+          const recoveredSummary = normalizeTrimmedString(recoveryFinal.json?.summary) || '已基于最新工作区结果完成答复。'
+          const refreshedSteps = finalizeRunningSteps(taskSteps, recoveredSummary)
+          refreshedSteps.push(createFinalReplyStep(recoveredSummary))
+
+          await sessionRepository.updateSession(sessionId, (draftSession) => {
+            draftSession.task = {
+              ...draftSession.task,
+              taskId,
+              status: 'completed',
+              summary: recoveredSummary,
+              steps: refreshedSteps,
+              completedAt: nowIso(),
+              updatedAt: nowIso()
+            }
+
+            return draftSession
+          })
+
+          const recoveredUserFacingReply = buildSafeAssistantReply({
+            reply: recoveredReply,
+            fileChangesRequired,
+            modifiedWorkspace: executionState.modifiedWorkspace,
+            changedFiles: executionState.changedFiles,
+            verifiedAfterModification: executionState.verifiedAfterModification
+          })
+
+          publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
+
+          await appendAssistantReplyWithStreaming(sessionId, {
+            content: recoveredUserFacingReply,
+            model: selectedModel,
+            usage: recoveryFinal.usage
+          })
+          return
+        }
+      }
 
       if (!finalReply && !executionState.modifiedWorkspace) {
         throw new Error('Model reached the tool iteration limit without producing a final answer.')
@@ -1306,7 +1606,9 @@ export function createAgentRunner({
         verifiedAfterModification: executionState.verifiedAfterModification
       })
 
-      await sessionRepository.appendAssistantMessage(sessionId, {
+      publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
+
+      await appendAssistantReplyWithStreaming(sessionId, {
         content: userFacingReply,
         model: selectedModel,
         usage: forcedFinal.usage

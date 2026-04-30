@@ -37,9 +37,11 @@
       :workspace-file-error="workspaceFileError"
       @create-session="createSession"
       @cancel-task="cancelActiveTask"
+      @close-model-config="closeModelConfig"
       @close-workspace-file="closeWorkspaceFile"
       @delete-session="deleteSession"
       @logout="$emit('logout')"
+      @open-model-config="openModelConfig"
       @open-workspace-file="openWorkspaceFile"
       @refresh-session="refreshActiveSession"
       @select-session="selectSession"
@@ -48,6 +50,21 @@
       @update:draft="draft = $event"
       @update:model="setSelectedModel"
     />
+
+    <!-- Model Config Modal -->
+    <div v-if="showModelConfig" class="agent-modal-backdrop" @click="closeModelConfig">
+      <div class="agent-modal agent-modal--large" @click.stop>
+        <div class="agent-modal__head">
+          <h2 class="agent-modal__title">模型配置</h2>
+          <button class="agent-modal__close" @click="closeModelConfig">
+            ×
+          </button>
+        </div>
+        <div class="agent-modal__body">
+          <ModelConfigPage @back="closeModelConfig" />
+        </div>
+      </div>
+    </div>
   </main>
 </template>
 
@@ -55,10 +72,13 @@
 import { ref } from 'vue'
 import { createMessage } from 'snowingress-my-components'
 import AgentWorkspace from './agent/AgentWorkspace/AgentWorkspace.vue'
+import ModelConfigPage from './agent/ModelConfigPage.vue'
 import { getAgentUsername } from '../auth.js'
 import { useAgentWorkspace } from '../useAgentWorkspace.js'
 
-defineEmits(['logout'])
+const emit = defineEmits(['logout', 'open-model-config'])
+
+const showModelConfig = ref(false)
 
 function notify({ message, type = 'success' }) {
   createMessage({
@@ -67,6 +87,15 @@ function notify({ message, type = 'success' }) {
     duration: 1600,
     offset: 24
   })
+}
+
+function openModelConfig() {
+  showModelConfig.value = true
+  emit('open-model-config')
+}
+
+function closeModelConfig() {
+  showModelConfig.value = false
 }
 
 const username = ref(getAgentUsername({ storage: localStorage }))
@@ -134,5 +163,77 @@ const {
   .agent-page {
     padding: 0;
   }
+}
+</style>
+
+<style>
+.agent-modal-backdrop {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+}
+
+.agent-modal {
+  position: relative;
+  width: 100%;
+  max-width: 900px;
+  max-height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border-radius: 24px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+}
+
+.agent-modal--large {
+  max-width: 1000px;
+}
+
+.agent-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 28px 20px;
+  border-bottom: 1px solid #ececec;
+}
+
+.agent-modal__title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #171717;
+}
+
+.agent-modal__close {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 12px;
+  background: #f0f0f0;
+  color: #444444;
+  cursor: pointer;
+  font-size: 1.5rem;
+  line-height: 1;
+  transition: all 0.18s ease;
+}
+
+.agent-modal__close:hover {
+  background: #e4e4e4;
+}
+
+.agent-modal__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
 }
 </style>

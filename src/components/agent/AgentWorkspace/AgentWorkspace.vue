@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div
     ref="shellRef"
     class="agent-shell"
@@ -21,11 +21,11 @@
         <button
           type="button"
           class="agent-sidebar__icon-button"
-          :disabled="isCreatingSession"
-          aria-label="新建对话"
-          @click="$emit('create-session')"
+          aria-label="打开模型配置"
+          title="模型配置"
+          @click="$emit('open-model-config')"
         >
-          +
+          ⚙
         </button>
       </div>
 
@@ -247,7 +247,6 @@
           <article class="agent-info-card">
             <span class="agent-info-card__label">当前模式</span>
             <strong class="agent-info-card__value">{{ resolvedWorkspaceMode.label }}</strong>
-            <small class="agent-info-card__meta">{{ resolvedWorkspaceMode.hint }}</small>
           </article>
 
           <article class="agent-info-card">
@@ -415,6 +414,7 @@ const emit = defineEmits([
   'close-workspace-file',
   'delete-session',
   'logout',
+  'open-model-config',
   'open-workspace-file',
   'refresh-session',
   'select-session',
@@ -2055,6 +2055,25 @@ onBeforeUnmount(() => {
   background: #f5f5f5;
   color: var(--agent-muted);
   cursor: not-allowed;
+}
+
+.agent-info-card__button {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid var(--agent-border-strong);
+  border-radius: 14px;
+  background: #ffffff;
+  color: var(--agent-text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.agent-info-card__button:hover {
+  background: #f7f7f7;
 }
 
 .agent-info-card__meta {

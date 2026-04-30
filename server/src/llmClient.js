@@ -65,11 +65,15 @@ function shouldPreferJsonResponseFormat({ aiConfig, model } = {}) {
   )
 }
 
-function buildRequestBodies({ aiConfig, model, messages } = {}) {
+function buildRequestBodies({ aiConfig, model, messages, streamResponses } = {}) {
   const baseBody = {
     model,
     temperature: 0.4,
     messages
+  }
+
+  if (streamResponses) {
+    baseBody.stream = true
   }
 
   if (!shouldPreferJsonResponseFormat({ aiConfig, model })) {
@@ -212,7 +216,11 @@ function extractFirstJsonObject(rawText) {
 }
 
 function isTimeoutError(error) {
-  return normalizeErrorMessage(error) === 'Model request timed out.'
+  const message = normalizeErrorMessage(error)
+  return (
+    message === 'Model request timed out.'
+    || message === 'Model response became idle for too long.'
+  )
 }
 
 function normalizeErrorMessage(error) {
@@ -221,11 +229,213 @@ function normalizeErrorMessage(error) {
     : 'Model request failed.'
 }
 
+function createIdleTimeoutController(controller, idleTimeoutMs = 0) {
+  const normalizedTimeoutMs = Math.max(0, Number(idleTimeoutMs || 0))
+
+  if (!normalizedTimeoutMs) {
+    return {
+      touch() {},
+      stop() {},
+      didTimeOut: () => false
+    }
+  }
+
+  let timeoutId = null
+  let idleTimedOut = false
+
+  const schedule = () => {
+    if (timeoutId) {
+      clearTimeout(timeoutId)
+    }
+
+    timeoutId = setTimeout(() => {
+      idleTimedOut = true
+      controller.abort()
+    }, normalizedTimeoutMs)
+  }
+
+  schedule()
+
+  return {
+    touch() {
+      schedule()
+    },
+    stop() {
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+        timeoutId = null
+      }
+    },
+    didTimeOut() {
+      return idleTimedOut
+    }
+  }
+}
+
+function extractStreamDeltaText(payload) {
+  const choice = payload?.choices?.[0]
+
+  if (typeof choice?.delta?.content === 'string') {
+    return choice.delta.content
+  }
+
+  if (Array.isArray(choice?.delta?.content)) {
+    return choice.delta.content
+      .map((item) => (
+        typeof item?.text === 'string'
+          ? item.text
+          : typeof item === 'string'
+            ? item
+            : ''
+      ))
+      .join('')
+  }
+
+  if (typeof choice?.message?.content === 'string') {
+    return choice.message.content
+  }
+
+  return ''
+}
+
+function getResponseTextBody(response) {
+  return response.text()
+}
+
+async function readStreamedResponseBody(response, {
+  controller,
+  idleTimeoutMs = 0,
+  onTextChunk
+} = {}) {
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase()
+
+  if (!response.body || !contentType.includes('text/event-stream')) {
+    const rawText = await getResponseTextBody(response)
+    let payload = null
+
+    try {
+      payload = rawText ? JSON.parse(rawText) : null
+    } catch {
+      payload = null
+    }
+
+    return {
+      rawText: extractTextContent(payload),
+      usage: extractUsage(payload),
+      responseText: rawText,
+      payload
+    }
+  }
+
+  const idleController = createIdleTimeoutController(controller, idleTimeoutMs)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let responseText = ''
+  let usage = {
+    inputTokens: null,
+    outputTokens: null,
+    totalTokens: null
+  }
+  let pendingDataLines = []
+
+  const flushSseEvent = () => {
+    if (!pendingDataLines.length) {
+      return
+    }
+
+    const payloadText = pendingDataLines.join('\n').trim()
+    pendingDataLines = []
+
+    if (!payloadText || payloadText === '[DONE]') {
+      return
+    }
+
+    let payload = null
+
+    try {
+      payload = JSON.parse(payloadText)
+    } catch {
+      return
+    }
+
+    const deltaText = extractStreamDeltaText(payload)
+
+    if (deltaText) {
+      responseText += deltaText
+
+      if (typeof onTextChunk === 'function') {
+        onTextChunk(deltaText, responseText)
+      }
+    }
+
+    if (payload?.usage) {
+      usage = extractUsage(payload)
+    }
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+
+      if (done) {
+        break
+      }
+
+      idleController.touch()
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line) {
+          flushSseEvent()
+          continue
+        }
+
+        if (line.startsWith(':')) {
+          continue
+        }
+
+        if (line.startsWith('data:')) {
+          pendingDataLines.push(line.slice(5).trimStart())
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      const trailingLines = buffer.split(/\r?\n/)
+
+      for (const line of trailingLines) {
+        if (line.startsWith('data:')) {
+          pendingDataLines.push(line.slice(5).trimStart())
+        }
+      }
+    }
+
+    flushSseEvent()
+  } finally {
+    idleController.stop()
+    reader.releaseLock()
+  }
+
+  return {
+    rawText: responseText,
+    usage,
+    responseText,
+    payload: null,
+    idleTimedOut: idleController.didTimeOut()
+  }
+}
+
 async function runStructuredCompletionAttempt({
   aiConfig,
   model,
   messages,
   requestTimeoutMs,
+  idleTimeoutMs = 0,
+  streamResponses = false,
+  onTextChunk,
   signal
 } = {}) {
   const controller = new AbortController()
@@ -252,7 +462,8 @@ async function runStructuredCompletionAttempt({
     const requestBodies = buildRequestBodies({
       aiConfig,
       model,
-      messages
+      messages,
+      streamResponses
     })
     let lastError = null
 
@@ -264,21 +475,19 @@ async function runStructuredCompletionAttempt({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Accept: 'application/json',
+          Accept: streamResponses ? 'text/event-stream, application/json' : 'application/json',
           Authorization: `Bearer ${aiConfig.apiKey}`
         },
         body: JSON.stringify(requestBody),
         signal: controller.signal
       })
 
-      const responseText = await response.text()
-      let payload = null
-
-      try {
-        payload = responseText ? JSON.parse(responseText) : null
-      } catch {
-        payload = null
-      }
+      const streamedResult = await readStreamedResponseBody(response, {
+        controller,
+        idleTimeoutMs,
+        onTextChunk
+      })
+      const { rawText, usage, responseText, payload, idleTimedOut } = streamedResult
 
       if (!response.ok) {
         if (
@@ -293,22 +502,19 @@ async function runStructuredCompletionAttempt({
         throw new Error(errorMessage)
       }
 
-      const content = extractTextContent(payload)
-      const usage = extractUsage(payload)
-
       try {
         return {
-          rawText: content,
-          json: extractFirstJsonObject(content),
+          rawText,
+          json: extractFirstJsonObject(rawText),
           usage
         }
       } catch (error) {
         lastError = error
 
-        if (shouldTreatAsPlainTextFinal(content)) {
+        if (shouldTreatAsPlainTextFinal(rawText)) {
           return {
-            rawText: content,
-            json: createPlainTextFinalFallback(content),
+            rawText,
+            json: createPlainTextFinalFallback(rawText),
             usage
           }
         }
@@ -317,9 +523,13 @@ async function runStructuredCompletionAttempt({
           continue
         }
 
-        const details = summarizeRawText(content)
+        const details = summarizeRawText(rawText)
         const suffix = details ? ` Raw model output: ${details}` : ''
         throw new Error(`${error.message}${suffix}`)
+      } finally {
+        if (idleTimedOut) {
+          throw new Error('Model response became idle for too long.')
+        }
       }
     }
 
@@ -351,8 +561,11 @@ export async function createStructuredCompletion({
   model,
   messages,
   requestTimeoutMs,
+  idleTimeoutMs = 0,
+  streamResponses = false,
   timeoutRetries = 0,
   timeoutRetryDelayMs = 0,
+  onTextChunk,
   signal
 } = {}) {
   let lastError = null
@@ -366,6 +579,9 @@ export async function createStructuredCompletion({
         model,
         messages,
         requestTimeoutMs,
+        idleTimeoutMs,
+        streamResponses,
+        onTextChunk,
         signal
       })
     } catch (error) {

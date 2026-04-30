@@ -20,7 +20,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import LoginForm from './components/LoginForm/LoginForm.vue'
 import PrivateAccessLoadingOverlay from './components/PrivateAccessLoadingOverlay/PrivateAccessLoadingOverlay.vue'
 import { usePrivateAppAccess } from './hooks/usePrivateAppAccess.js'
@@ -35,6 +35,39 @@ const submitting = ref(false)
 const serverError = ref('')
 const { privateAppAvailable, privateAppChecking } = usePrivateAppAccess()
 const isAuthenticated = ref(readAgentAuthState())
+
+let previousHtmlOverflow = ''
+let previousBodyOverflow = ''
+let isDocumentScrollLocked = false
+
+function syncDocumentScrollLock(locked) {
+  if (typeof document === 'undefined') {
+    return
+  }
+
+  const { documentElement, body } = document
+
+  if (locked) {
+    if (isDocumentScrollLocked) {
+      return
+    }
+
+    previousHtmlOverflow = documentElement.style.overflow
+    previousBodyOverflow = body.style.overflow
+    documentElement.style.overflow = 'hidden'
+    body.style.overflow = 'hidden'
+    isDocumentScrollLocked = true
+    return
+  }
+
+  if (!isDocumentScrollLocked) {
+    return
+  }
+
+  documentElement.style.overflow = previousHtmlOverflow
+  body.style.overflow = previousBodyOverflow
+  isDocumentScrollLocked = false
+}
 
 function readAgentAuthState() {
   const token = localStorage.getItem(AUTH_TOKEN_KEY)
@@ -121,10 +154,24 @@ function handleLogout() {
   })
   refreshAuthState()
 }
+
+watch(isAuthenticated, (value) => {
+  syncDocumentScrollLock(value)
+}, { immediate: true })
+
+onMounted(() => {
+  syncDocumentScrollLock(isAuthenticated.value)
+})
+
+onBeforeUnmount(() => {
+  syncDocumentScrollLock(false)
+})
 </script>
 
 <style scoped>
 .agent-root {
+  height: 100dvh;
   min-height: 100dvh;
+  overflow: hidden;
 }
 </style>

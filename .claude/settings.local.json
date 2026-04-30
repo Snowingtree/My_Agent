@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(npm run *)",
-      "Bash(git restore *)"
+      "Bash(git restore *)",
+      "Bash(pkill -f \"vite\")",
+      "Bash(taskkill *)"
     ]
   }
 }
