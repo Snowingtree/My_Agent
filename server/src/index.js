@@ -8,6 +8,7 @@ import { createMcpRegistry } from './mcpRegistry.js'
 import { createSessionWorkspacesRepository } from './sessionWorkspaces.js'
 import { SessionRepository } from './sessionStore.js'
 import { createSkillRegistry } from './skillRegistry.js'
+import { getToolDetailItem, listToolPreviewItems } from './toolCatalogDetails.js'
 import { createToolRunner } from './toolRunner.js'
 import { createId, normalizeTrimmedString } from './utils.js'
 import { createWorkspace } from './workspace.js'
@@ -271,6 +272,42 @@ function validateLocalLoginCredentials(payload) {
   )
 }
 
+const CODING_SKILL_HINT_PATTERNS = [
+  /([A-Za-z0-9_./-]+\.(html|css|js|ts|tsx|jsx|vue|json|md|txt))/i,
+  /\b(html|css|javascript|typescript|js|ts|vue|react|node|sql|api|bug|debug|build|compile|patch|diff|command|git|npm)\b/i,
+  /写代码|改代码|生成代码|创建页面|新建页面|创建组件|修改文件|读取文件|搜索文件|报错|调试|修复|构建|运行命令|接口|前端|后端|项目|工作区|代码库|样式|脚本|组件/
+]
+
+function looksLikeCodingSkillRequest(message) {
+  const normalizedMessage = normalizeTrimmedString(message)
+
+  if (!normalizedMessage) {
+    return false
+  }
+
+  return CODING_SKILL_HINT_PATTERNS.some((pattern) => pattern.test(normalizedMessage))
+}
+
+function resolveSkillForMessage(requestedSkillId, message) {
+  const explicitSkill = skillRegistry.getSkillById(requestedSkillId)
+
+  if (explicitSkill) {
+    return explicitSkill
+  }
+
+  if (looksLikeCodingSkillRequest(message)) {
+    return (
+      skillRegistry.getSkillById('coding_agent')
+      || skillRegistry.resolveSkill(requestedSkillId)
+    )
+  }
+
+  return (
+    skillRegistry.getSkillById('general_chat')
+    || skillRegistry.resolveSkill(requestedSkillId)
+  )
+}
+
 async function trySharedAuthLogin(payload) {
   const baseUrl = normalizeTrimmedString(config.auth.sharedAuthBaseUrl)
   const loginPath = normalizeTrimmedString(config.auth.sharedAuthLoginPath) || '/api/login'
@@ -415,6 +452,34 @@ async function handleGetCapabilities(response) {
   })
 }
 
+async function handleListAgentTools(response) {
+  sendJson(response, 200, {
+    items: listToolPreviewItems(toolRunner.getToolCatalog())
+  })
+}
+
+async function handleGetAgentToolDetail(response, requestUrl) {
+  const toolName = normalizeTrimmedString(requestUrl.searchParams.get('name'))
+
+  if (!toolName) {
+    sendJson(response, 400, {
+      message: 'Tool name is required.'
+    })
+    return
+  }
+
+  const item = await getToolDetailItem(toolRunner.getToolCatalog(), toolName)
+
+  if (!item) {
+    sendJson(response, 404, {
+      message: 'Tool not found.'
+    })
+    return
+  }
+
+  sendJson(response, 200, { item })
+}
+
 async function handleCreateSession(response) {
   const item = await sessionRepository.createSession()
   await sessionWorkspaces.ensureSessionWorkspace(item.sessionId)
@@ -534,7 +599,7 @@ async function handleChat(request, response) {
   const aiId = normalizeTrimmedString(payload?.aiId)
   const requestedModel = normalizeTrimmedString(payload?.model)
   const requestedSkillId = normalizeTrimmedString(payload?.skillId)
-  const activeSkill = skillRegistry.resolveSkill(requestedSkillId)
+  const activeSkill = resolveSkillForMessage(requestedSkillId, message)
 
   if (!message) {
     sendJson(response, 400, {
@@ -679,6 +744,16 @@ async function handleRequest(request, response) {
 
   if (pathname === '/api/agent/capabilities' && request.method === 'GET') {
     await handleGetCapabilities(response)
+    return
+  }
+
+  if (pathname === '/api/agent/tools' && request.method === 'GET') {
+    await handleListAgentTools(response)
+    return
+  }
+
+  if (pathname === '/api/agent/tool-detail' && request.method === 'GET') {
+    await handleGetAgentToolDetail(response, requestUrl)
     return
   }
 

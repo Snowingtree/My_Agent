@@ -347,7 +347,7 @@ export class SessionRepository {
         taskId: nextTaskId,
         title: nextTitle,
         status: 'queued',
-        summary: 'Agent 已接收目标，正在准备执行。',
+        summary: '助手已接收目标，正在准备执行。',
         steps: [],
         startedAt: timestamp,
         completedAt: null,
@@ -412,7 +412,7 @@ export class SessionRepository {
               ? {
                 ...step,
                 status: 'failed',
-                summary: step.summary || 'Agent 服务重启，之前的执行已中断。',
+                summary: step.summary || '助手服务已重启，之前的执行已中断。',
                 completedAt: timestamp,
                 updatedAt: timestamp
               }
@@ -424,7 +424,7 @@ export class SessionRepository {
         session.task = {
           ...session.task,
           status: 'failed',
-          summary: 'Agent 服务重启，之前的任务未能执行完成。',
+          summary: '助手服务已重启，之前的任务未能执行完成。',
           steps: nextSteps,
           completedAt: timestamp,
           updatedAt: timestamp

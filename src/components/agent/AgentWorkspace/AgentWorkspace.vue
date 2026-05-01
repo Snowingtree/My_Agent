@@ -5,11 +5,12 @@
     :class="{
       'has-file-preview': hasWorkspaceFilePreview,
       'is-resizing-preview': isResizingPreview,
-      'is-inspector-collapsed': isInspectorCollapsed
+      'is-inspector-collapsed': isInspectorCollapsed,
+      'is-sidebar-hidden': hideSidebar
     }"
     :style="shellStyle"
   >
-    <aside class="agent-shell__sidebar">
+    <aside v-if="!hideSidebar" class="agent-shell__sidebar">
       <div class="agent-sidebar__top">
         <div class="agent-sidebar__brand">
           <span class="agent-user-card__avatar">{{ userInitial }}</span>
@@ -25,7 +26,24 @@
           title="模型配置"
           @click="$emit('open-model-config')"
         >
-          ⚙
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M10.325 4.317C10.751 2.561 13.249 2.561 13.675 4.317C13.95 5.454 15.229 5.991 16.243 5.44C17.81 4.589 19.577 6.355 18.726 7.923C18.175 8.936 18.712 10.216 19.849 10.49C21.605 10.917 21.605 13.414 19.849 13.84C18.712 14.115 18.175 15.394 18.726 16.408C19.577 17.975 17.81 19.742 16.243 18.891C15.229 18.34 13.95 18.877 13.675 20.014C13.249 21.77 10.751 21.77 10.325 20.014C10.05 18.877 8.771 18.34 7.757 18.891C6.19 19.742 4.423 17.975 5.274 16.408C5.825 15.394 5.288 14.115 4.151 13.84C2.395 13.414 2.395 10.917 4.151 10.49C5.288 10.216 5.825 8.936 5.274 7.923C4.423 6.355 6.19 4.589 7.757 5.44C8.771 5.991 10.05 5.454 10.325 4.317Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="1.6"
+            />
+            <circle
+              cx="12"
+              cy="12"
+              r="3.25"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+            />
+          </svg>
         </button>
       </div>
 
@@ -39,54 +57,56 @@
         <span>{{ isCreatingSession ? '创建中...' : '新建对话' }}</span>
       </button>
 
-      <div class="agent-sidebar__section">
-        <div class="agent-sidebar__section-head">
-          <span>最近对话</span>
-          <small>{{ sessions.length }}</small>
-        </div>
+      <div class="agent-sidebar__lower">
+        <div class="agent-sidebar__section">
+          <div class="agent-sidebar__section-head">
+            <span>最近对话</span>
+            <small>{{ sessions.length }}</small>
+          </div>
 
-        <div class="agent-session-list">
-          <div class="agent-session-list__body">
-            <p v-if="sessionError" class="form-error agent-session-list__status">{{ sessionError }}</p>
-            <p v-else-if="isLoadingSessions" class="agent-session-list__status">正在读取会话列表...</p>
-            <p v-else-if="!sessions.length" class="agent-session-list__status agent-session-list__status--empty">
-              还没有会话，先开始第一轮对话。
-            </p>
+          <div class="agent-session-list">
+            <div class="agent-session-list__body">
+              <p v-if="sessionError" class="form-error agent-session-list__status">{{ sessionError }}</p>
+              <p v-else-if="isLoadingSessions" class="agent-session-list__status">正在读取会话列表...</p>
+              <p v-else-if="!sessions.length" class="agent-session-list__status agent-session-list__status--empty">
+                还没有会话，先开始第一轮对话。
+              </p>
 
-            <div v-else class="agent-session-list__items">
-              <article
-                v-for="item in sessions"
-                :key="item.sessionId"
-                class="agent-session-item"
-                :class="{ 'is-active': item.sessionId === activeSessionId }"
-              >
-                <button
-                  type="button"
-                  class="agent-session-item__main"
-                  @click="$emit('select-session', item.sessionId)"
+              <div v-else class="agent-session-list__items">
+                <article
+                  v-for="item in sessions"
+                  :key="item.sessionId"
+                  class="agent-session-item"
+                  :class="{ 'is-active': item.sessionId === activeSessionId }"
                 >
-                  <span class="agent-session-item__title">{{ item.title }}</span>
-                </button>
+                  <button
+                    type="button"
+                    class="agent-session-item__main"
+                    @click="$emit('select-session', item.sessionId)"
+                  >
+                    <span class="agent-session-item__title">{{ item.title }}</span>
+                  </button>
 
-                <button
-                  type="button"
-                  class="agent-session-item__delete"
-                  title="删除会话"
-                  aria-label="删除会话"
-                  @click="$emit('delete-session', item.sessionId)"
-                >
-                  <span aria-hidden="true">•••</span>
-                </button>
-              </article>
+                  <button
+                    type="button"
+                    class="agent-session-item__delete"
+                    title="删除会话"
+                    aria-label="删除会话"
+                    @click="$emit('delete-session', item.sessionId)"
+                  >
+                    <span aria-hidden="true">•••</span>
+                  </button>
+                </article>
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      <div class="agent-sidebar__footer">
-        <button type="button" class="agent-sidebar__logout" @click="$emit('logout')">
-          退出登录
-        </button>
+        <div class="agent-sidebar__footer">
+          <button type="button" class="agent-sidebar__logout" @click="$emit('logout')">
+            退出登录
+          </button>
+        </div>
       </div>
     </aside>
 
@@ -95,7 +115,7 @@
         <div class="agent-mainbar__copy">
           <div class="agent-mainbar__status">
             <span class="agent-mainbar__status-dot"></span>
-            <span>Agent Workspace</span>
+            <span>Agent 工作台</span>
           </div>
           <h2>{{ activeSessionTitle }}</h2>
         </div>
@@ -121,7 +141,7 @@
         <div ref="messagesRef" class="agent-conversation__messages">
           <div v-if="!messages.length && !isLoadingSession" class="agent-conversation__welcome">
             <div class="agent-conversation__welcome-copy">
-              <p class="agent-conversation__welcome-tag">Agent Workspace</p>
+              <p class="agent-conversation__welcome-tag">Agent 工作台</p>
               <h3>把目标交给 Agent，持续推进到结果</h3>
               <p>直接输入任务、问题或待办。启动后，Agent 会围绕同一个目标持续拆解、执行，并回写当前进展。</p>
               <p class="agent-conversation__auto-refresh-hint" style="margin-top: 12px; font-size: 0.86rem; color: #666;">
@@ -177,11 +197,70 @@
                 <div class="agent-progress-card">
                   <span class="agent-progress-card__dot" aria-hidden="true"></span>
                   <div class="agent-progress-card__copy">
-                    <strong>Agent 正在处理</strong>
+                    <strong>助手正在处理</strong>
                     <p>{{ formatMessageContentForDisplay(item.content, item.role) }}</p>
                   </div>
                 </div>
               </template>
+              <template v-else-if="resolveMessageVariant(item) === 'tool'">
+                <div
+                  class="agent-tool-card"
+                  :class="[
+                    `is-${resolveToolVisual(parseToolMessage(item.content).tool).tone}`,
+                    `is-status-${parseToolMessage(item.content).status || 'success'}`,
+                    { 'is-expanded': isToolMessageExpanded(item.messageId) }
+                  ]"
+                >
+                  <div class="agent-tool-card__rail" aria-hidden="true">
+                    <span class="agent-tool-card__dot"></span>
+                    <span class="agent-tool-card__line"></span>
+                  </div>
+                  <div class="agent-tool-card__copy">
+                    <div class="agent-tool-card__head">
+                      <strong>工具调用</strong>
+                      <span class="agent-tool-card__icon" aria-hidden="true">{{ resolveToolVisual(parseToolMessage(item.content).tool).icon }}</span>
+                      <span class="agent-tool-card__name">{{ parseToolMessage(item.content).tool || 'unknown_tool' }}</span>
+                      <span
+                        class="agent-tool-card__status"
+                        :class="{ 'is-failed': parseToolMessage(item.content).status === 'failed' }"
+                      >
+                        {{ parseToolMessage(item.content).status === 'failed' ? '失败' : '成功' }}
+                      </span>
+                      <button
+                        type="button"
+                        class="agent-tool-card__toggle"
+                        :aria-expanded="isToolMessageExpanded(item.messageId) ? 'true' : 'false'"
+                        @click="toggleToolMessage(item.messageId)"
+                      >
+                        <span>{{ isToolMessageExpanded(item.messageId) ? '收起' : '展开' }}</span>
+                        <span
+                          class="agent-tool-card__toggle-icon"
+                          :class="{ 'is-expanded': isToolMessageExpanded(item.messageId) }"
+                          aria-hidden="true"
+                        >
+                          ▾
+                        </span>
+                      </button>
+                    </div>
+                    <div class="agent-tool-card__meta-row">
+                      <p v-if="parseToolMessage(item.content).target" class="agent-tool-card__meta">
+                        {{ parseToolMessage(item.content).target }}
+                      </p>
+                      <p v-if="parseToolMessage(item.content).duration" class="agent-tool-card__meta agent-tool-card__meta--duration">
+                        耗时 {{ parseToolMessage(item.content).duration }}
+                      </p>
+                    </div>
+                    <div v-if="isToolMessageExpanded(item.messageId)" class="agent-tool-card__body">
+                      <p class="agent-tool-card__result">{{ parseToolMessage(item.content).result }}</p>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <div
+                v-else-if="shouldRenderMarkdownMessage(item)"
+                class="agent-markdown-content"
+                v-html="renderMessageMarkdown(item.content, item.role)"
+              ></div>
               <p v-else>{{ formatMessageContentForDisplay(item.content, item.role) }}</p>
             </div>
           </article>
@@ -348,7 +427,25 @@
         <p v-if="workspaceFileError" class="form-error agent-code-viewer__status">{{ workspaceFileError }}</p>
         <p v-else-if="isLoadingWorkspaceFile" class="agent-code-viewer__status">正在读取文件内容...</p>
 
-        <pre v-else class="agent-code-viewer__body"><code class="hljs" v-html="highlightedWorkspaceFileContent"></code></pre>
+        <div v-else class="agent-code-viewer__body-wrap">
+          <div v-if="hasCopiedWorkspaceFile" class="agent-code-viewer__copy-toast" role="status" aria-live="polite">
+            已复制到剪贴板
+          </div>
+          <button
+            type="button"
+            class="agent-code-viewer__copy agent-code-viewer__copy--overlay"
+            :class="{ 'is-copied': hasCopiedWorkspaceFile }"
+            :disabled="!normalizedWorkspaceFileContent || isLoadingWorkspaceFile"
+            :aria-label="hasCopiedWorkspaceFile ? '代码已复制' : (isCopyingWorkspaceFile ? '正在复制代码' : '复制代码')"
+            @click="copyWorkspaceFileContent"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="9" y="9" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.7" />
+              <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+            </svg>
+          </button>
+          <pre class="agent-code-viewer__body"><code class="hljs" v-html="highlightedWorkspaceFileContent"></code></pre>
+        </div>
       </section>
     </aside>
   </div>
@@ -392,6 +489,7 @@ const props = defineProps({
   loadError: { type: String, default: '' },
   messages: { type: Array, default: () => [] },
   modelOptions: { type: Array, default: () => [] },
+  hideSidebar: { type: Boolean, default: false },
   selectedAgentLabel: { type: String, default: '' },
   selectedAiId: { type: String, default: '' },
   selectedModel: { type: String, default: '' },
@@ -427,11 +525,15 @@ const emit = defineEmits([
 const composerRef = ref(null)
 const messagesRef = ref(null)
 const shellRef = ref(null)
+const expandedToolMessages = ref({})
 const shouldRestoreFocus = ref(false)
+const isCopyingWorkspaceFile = ref(false)
+const hasCopiedWorkspaceFile = ref(false)
 const previewWidth = ref(520)
 const isInspectorCollapsed = ref(false)
 const isResizingPreview = ref(false)
 let activeResizePointerId = null
+let workspaceFileCopyResetTimer = null
 
 const userInitial = computed(() => {
   const normalized = String(props.username || '').trim()
@@ -721,7 +823,7 @@ function resolveMessageLabel(role) {
   }
 
   if (normalizedRole === 'tool') {
-    return 'Tool'
+    return '工具'
   }
 
   return 'Agent'
@@ -735,7 +837,7 @@ function resolveMessageLabelForDisplay(role) {
   }
 
   if (normalizedRole === 'tool') {
-    return 'Tool'
+    return '工具'
   }
 
   return 'Agent'
@@ -758,20 +860,20 @@ function formatMessageContent(content, role) {
     if (lowerContent.includes('matched') && lowerContent.includes('snippets')) {
       const snippetMatch = normalizedContent.match(/(\d+)\s+snippets/)
       const count = snippetMatch ? snippetMatch[1] : '多个'
-      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 在文件中找到了 ${count} 个相同的内容，不确定要修改哪一个。\n\n建议：请提供更多上下文来唯一标识要修改的位置，或者告诉 Agent"全部替换"。`
+      return `工具摘要：\n工具：${toolName}\n状态：失败\n\n${toolName} 在文件中找到了 ${count} 个相同的内容，不确定要修改哪一个。\n\n建议：请提供更多上下文来唯一标识要修改的位置，或者直接告诉助手“全部替换”。`
     }
 
     if (lowerContent.includes('no match found') || lowerContent.includes('did not match')) {
-      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 没有在文件中找到要修改的内容。\n\n建议：文件内容可能已经变化，请让 Agent 重新检查文件内容后再修改。`
+      return `工具摘要：\n工具：${toolName}\n状态：失败\n\n${toolName} 没有在文件中找到要修改的内容。\n\n建议：文件内容可能已经变化，请让助手重新检查文件内容后再修改。`
     }
 
     if (lowerContent.includes('matchindex is required')) {
-      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 在文件中找到了多个相同的内容，不确定要修改哪一个。\n\n建议：提供更多上下文，或使用"全部替换"方式。`
+      return `工具摘要：\n工具：${toolName}\n状态：失败\n\n${toolName} 在文件中找到了多个相同的内容，不确定要修改哪一个。\n\n建议：请补充更多上下文，或使用“全部替换”的方式。`
     }
   }
 
   if (lowerContent.includes('model returned a final action without a reply')) {
-    return 'Agent 执行了操作但没有给出说明。建议重新发起请求，并要求 Agent 给出修改说明。'
+    return '助手执行了操作，但没有给出说明。建议重新发起请求，并要求明确说明修改结果。'
   }
 
   return normalizedContent
@@ -782,6 +884,10 @@ function formatMessageContentForDisplay(content, role) {
   let normalizedContent = String(content || '').trim()
 
   if (normalizedRole === 'user') {
+    return normalizedContent
+  }
+
+  if (normalizedRole === 'tool') {
     return normalizedContent
   }
 
@@ -844,23 +950,225 @@ function formatMessageContentForDisplay(content, role) {
     if (lowerContent.includes('matched') && lowerContent.includes('snippets')) {
       const snippetMatch = normalizedContent.match(/(\d+)\s+snippets/)
       const count = snippetMatch ? snippetMatch[1] : '多个'
-      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 在文件中找到了 ${count} 处相同内容，暂时无法确定该修改哪一处。\n\n建议：请补充更多上下文，或者直接要求 Agent “全部替换”。`
+      return `工具摘要：\n工具：${toolName}\n状态：失败\n\n${toolName} 在文件中找到了 ${count} 处相同内容，暂时无法确定该修改哪一处。\n\n建议：请补充更多上下文，或者直接要求助手“全部替换”。`
     }
 
     if (lowerContent.includes('no match found') || lowerContent.includes('did not match')) {
-      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 没有在文件中找到要修改的内容。\n\n建议：文件内容可能已经变化，请让 Agent 先重新读取文件，再继续修改。`
+      return `工具摘要：\n工具：${toolName}\n状态：失败\n\n${toolName} 没有在文件中找到要修改的内容。\n\n建议：文件内容可能已经变化，请让助手先重新读取文件，再继续修改。`
     }
 
     if (lowerContent.includes('matchindex is required')) {
-      return `Tool summary:\nTool: ${toolName}\nStatus: failed\n\n${toolName} 在文件中找到了多处相同内容，暂时无法确定该修改哪一处。\n\n建议：请补充更多上下文，或者使用“全部替换”的方式。`
+      return `工具摘要：\n工具：${toolName}\n状态：失败\n\n${toolName} 在文件中找到了多处相同内容，暂时无法确定该修改哪一处。\n\n建议：请补充更多上下文，或者使用“全部替换”的方式。`
     }
   }
 
   if (lowerContent.includes('model returned a final action without a reply')) {
-    return 'Agent 执行了操作，但没有给出说明。建议重新发起请求，并要求 Agent 明确说明修改结果。'
+    return '助手执行了操作，但没有给出说明。建议重新发起请求，并要求明确说明修改结果。'
   }
 
   return normalizedContent
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function renderInlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+    .replace(/_([^_\n]+)_/g, '<em>$1</em>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer noopener">$1</a>')
+}
+
+function flushMarkdownParagraph(paragraphLines, htmlBlocks) {
+  if (!paragraphLines.length) {
+    return
+  }
+
+  htmlBlocks.push(`<p>${paragraphLines.map((line) => renderInlineMarkdown(line)).join('<br>')}</p>`)
+  paragraphLines.length = 0
+}
+
+function renderMarkdownHtml(content) {
+  const lines = String(content || '').replace(/\r\n/g, '\n').split('\n')
+  const htmlBlocks = []
+  const paragraphLines = []
+  let activeListType = ''
+  let activeListItems = []
+
+  const flushList = () => {
+    if (!activeListType || !activeListItems.length) {
+      activeListType = ''
+      activeListItems = []
+      return
+    }
+
+    const tagName = activeListType === 'ordered' ? 'ol' : 'ul'
+    htmlBlocks.push(`<${tagName}>${activeListItems.map((item) => `<li>${item}</li>`).join('')}</${tagName}>`)
+    activeListType = ''
+    activeListItems = []
+  }
+
+  for (const rawLine of lines) {
+    const line = String(rawLine || '')
+    const trimmed = line.trim()
+
+    if (!trimmed) {
+      flushMarkdownParagraph(paragraphLines, htmlBlocks)
+      flushList()
+      continue
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/)
+
+    if (headingMatch) {
+      flushMarkdownParagraph(paragraphLines, htmlBlocks)
+      flushList()
+      const level = headingMatch[1].length
+      htmlBlocks.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`)
+      continue
+    }
+
+    const orderedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/)
+
+    if (orderedMatch) {
+      flushMarkdownParagraph(paragraphLines, htmlBlocks)
+      if (activeListType && activeListType !== 'ordered') {
+        flushList()
+      }
+      activeListType = 'ordered'
+      activeListItems.push(renderInlineMarkdown(orderedMatch[2]))
+      continue
+    }
+
+    const unorderedMatch = trimmed.match(/^[-*+]\s+(.+)$/)
+
+    if (unorderedMatch) {
+      flushMarkdownParagraph(paragraphLines, htmlBlocks)
+      if (activeListType && activeListType !== 'unordered') {
+        flushList()
+      }
+      activeListType = 'unordered'
+      activeListItems.push(renderInlineMarkdown(unorderedMatch[1]))
+      continue
+    }
+
+    if (activeListType) {
+      flushList()
+    }
+
+    paragraphLines.push(trimmed)
+  }
+
+  flushMarkdownParagraph(paragraphLines, htmlBlocks)
+  flushList()
+
+  return htmlBlocks.join('')
+}
+
+function looksLikeMarkdownMessage(value) {
+  const normalized = String(value || '').trim()
+
+  if (!normalized) {
+    return false
+  }
+
+  return /(^|\n)#{1,6}\s+.+|(^|\n)\d+\.\s+.+|(^|\n)[-*+]\s+.+|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/m.test(normalized)
+}
+
+function shouldRenderMarkdownMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return false
+  }
+
+  if (isProgressMessage(message) || resolveMessageVariant(message) === 'tool') {
+    return false
+  }
+
+  const normalizedRole = String(message.role || '').trim().toLowerCase()
+
+  if (normalizedRole !== 'assistant') {
+    return false
+  }
+
+  return looksLikeMarkdownMessage(formatMessageContentForDisplay(message.content, message.role))
+}
+
+function renderMessageMarkdown(content, role) {
+  return renderMarkdownHtml(formatMessageContentForDisplay(content, role))
+}
+
+function parseToolMessage(content) {
+  const normalizedContent = String(content || '').trim()
+  const lines = normalizedContent
+    .split(/\r?\n/)
+    .map((line) => String(line || '').trim())
+    .filter(Boolean)
+
+  const toolLine = lines.find((line) => line.startsWith('工具：') || line.toLowerCase().startsWith('tool:')) || ''
+  const statusLine = lines.find((line) => line.startsWith('状态：') || line.toLowerCase().startsWith('status:')) || ''
+  const durationLine = lines.find((line) => line.startsWith('耗时：') || line.toLowerCase().startsWith('duration:')) || ''
+  const targetLine = lines.find((line) => line.startsWith('目标：') || line.toLowerCase().startsWith('target:')) || ''
+  const resultLineIndex = lines.findIndex((line) => line.startsWith('结果：') || line.toLowerCase().startsWith('result:'))
+
+  let result = normalizedContent
+
+  if (resultLineIndex >= 0) {
+    const currentLine = lines[resultLineIndex]
+    const inlineResult = currentLine.replace(/^(结果：|result:\s*)/i, '').trim()
+    const trailingLines = lines.slice(resultLineIndex + 1)
+    result = [inlineResult, ...trailingLines].filter(Boolean).join('\n').trim() || normalizedContent
+  }
+
+  const inferredStatus = statusLine
+    ? statusLine.replace(/^(状态：|status:\s*)/i, '').trim().toLowerCase()
+    : (/(失败|error|not found|timed out|timeout|denied|forbidden)/i.test(normalizedContent) ? 'failed' : 'success')
+
+  return {
+    tool: toolLine.replace(/^(工具：|tool:\s*)/i, '').trim(),
+    status: inferredStatus === '失败' || inferredStatus === 'failed' ? 'failed' : 'success',
+    duration: durationLine.replace(/^(耗时：|duration:\s*)/i, '').trim(),
+    target: targetLine.replace(/^(目标：|target:\s*)/i, '').trim(),
+    result
+  }
+}
+
+function resolveToolVisual(toolName) {
+  const normalizedToolName = String(toolName || '').trim().toLowerCase()
+
+  if (normalizedToolName === 'read_file') {
+    return { icon: '📖', tone: 'read' }
+  }
+
+  if (normalizedToolName === 'list_files') {
+    return { icon: '📂', tone: 'browse' }
+  }
+
+  if (normalizedToolName === 'search_text') {
+    return { icon: '🔎', tone: 'search' }
+  }
+
+  if (normalizedToolName === 'run_command') {
+    return { icon: '⌘', tone: 'command' }
+  }
+
+  if (normalizedToolName === 'write_file') {
+    return { icon: '✍', tone: 'write' }
+  }
+
+  if (normalizedToolName === 'apply_patch') {
+    return { icon: '🩹', tone: 'patch' }
+  }
+
+  return { icon: '🧰', tone: 'neutral' }
 }
 
 function formatFileMeta(item) {
@@ -886,6 +1194,23 @@ function getFileDisplayName(filePath) {
   return segments[segments.length - 1] || normalized
 }
 
+function isToolMessageExpanded(messageId) {
+  return Boolean(expandedToolMessages.value[String(messageId || '')])
+}
+
+function toggleToolMessage(messageId) {
+  const normalizedMessageId = String(messageId || '').trim()
+
+  if (!normalizedMessageId) {
+    return
+  }
+
+  expandedToolMessages.value = {
+    ...expandedToolMessages.value,
+    [normalizedMessageId]: !expandedToolMessages.value[normalizedMessageId]
+  }
+}
+
 function getMostRecentWorkspaceFile(files) {
   if (!Array.isArray(files) || !files.length) {
     return null
@@ -896,6 +1221,55 @@ function getMostRecentWorkspaceFile(files) {
     .sort((left, right) => (
       String(right?.updatedAt || '').localeCompare(String(left?.updatedAt || ''))
     ))[0] || null
+}
+
+function resetWorkspaceFileCopyState() {
+  hasCopiedWorkspaceFile.value = false
+  isCopyingWorkspaceFile.value = false
+
+  if (workspaceFileCopyResetTimer) {
+    clearTimeout(workspaceFileCopyResetTimer)
+    workspaceFileCopyResetTimer = null
+  }
+}
+
+async function copyWorkspaceFileContent() {
+  const content = String(normalizedWorkspaceFileContent.value || '')
+
+  if (!content || isCopyingWorkspaceFile.value) {
+    return
+  }
+
+  isCopyingWorkspaceFile.value = true
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(content)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = content
+      textarea.setAttribute('readonly', 'true')
+      textarea.style.position = 'absolute'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+
+    hasCopiedWorkspaceFile.value = true
+  } finally {
+    isCopyingWorkspaceFile.value = false
+
+    if (workspaceFileCopyResetTimer) {
+      clearTimeout(workspaceFileCopyResetTimer)
+    }
+
+    workspaceFileCopyResetTimer = setTimeout(() => {
+      hasCopiedWorkspaceFile.value = false
+      workspaceFileCopyResetTimer = null
+    }, 1600)
+  }
 }
 
 function scrollMessagesToBottom(behavior = 'auto') {
@@ -1028,17 +1402,12 @@ watch(
 
     const content = String(latestMessage.content || '').toLowerCase()
 
-    // 检测工具执行成功且包含文件修改操作
-    if (content.includes('tool summary:') &&
-        content.includes('status: success') &&
-        (content.includes('patch') || content.includes('edit') || content.includes('write'))) {
+    if ((content.includes('工具：write_file') || content.includes('工具：apply_patch')) && content.includes('目标：')) {
+      const pathMatch = content.match(/目标：([^\n]+)/i)
 
-      // 尝试提取文件路径
-      const pathMatch = content.match(/(?:file|path):([^\n\s]+)/i)
-      if (pathMatch) {
+      if (pathMatch?.[1]) {
         const filePath = pathMatch[1].trim()
 
-        // 延迟执行确保文件操作完成
         setTimeout(() => {
           emit('open-workspace-file', filePath)
         }, 800)
@@ -1100,6 +1469,7 @@ onBeforeUnmount(() => {
     window.removeEventListener('pointercancel', handlePreviewResizeUp)
   }
 
+  resetWorkspaceFileCopyState()
   stopPreviewResize()
 })
 </script>
@@ -1133,6 +1503,14 @@ onBeforeUnmount(() => {
   grid-template-columns: 280px minmax(0, 1fr) 14px minmax(320px, var(--agent-preview-width)) var(--agent-inspector-width);
 }
 
+.agent-shell.is-sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr) var(--agent-inspector-width);
+}
+
+.agent-shell.is-sidebar-hidden.has-file-preview {
+  grid-template-columns: minmax(0, 1fr) 14px minmax(320px, var(--agent-preview-width)) var(--agent-inspector-width);
+}
+
 .agent-shell__sidebar,
 .agent-shell__main,
 .agent-shell__inspector,
@@ -1150,6 +1528,14 @@ onBeforeUnmount(() => {
   overflow: hidden;
   background: var(--agent-sidebar-surface);
   border-right: 1px solid var(--agent-border);
+}
+
+.agent-sidebar__lower {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .agent-shell__main {
@@ -1339,6 +1725,11 @@ onBeforeUnmount(() => {
   cursor: pointer;
   font-size: 1.2rem;
   line-height: 1;
+}
+
+.agent-sidebar__icon-button svg {
+  width: 18px;
+  height: 18px;
 }
 
 .agent-sidebar__icon-button:hover,
@@ -1795,10 +2186,8 @@ onBeforeUnmount(() => {
 }
 
 .agent-message--tool .agent-message__bubble {
-  padding: 12px 14px;
-  border: 1px solid #e6e6e6;
-  border-radius: 16px;
-  background: #fbfbfb;
+  padding: 0;
+  background: transparent;
 }
 
 .agent-message--user .agent-message__bubble {
@@ -1812,6 +2201,85 @@ onBeforeUnmount(() => {
   color: var(--agent-text);
   line-height: 1.75;
   white-space: pre-wrap;
+}
+
+.agent-markdown-content {
+  color: var(--agent-text);
+  line-height: 1.75;
+}
+
+.agent-markdown-content > :first-child {
+  margin-top: 0;
+}
+
+.agent-markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+.agent-markdown-content h1,
+.agent-markdown-content h2,
+.agent-markdown-content h3,
+.agent-markdown-content h4,
+.agent-markdown-content h5,
+.agent-markdown-content h6 {
+  margin: 0 0 0.8rem;
+  color: #121926;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.agent-markdown-content h1 {
+  font-size: 1.75rem;
+}
+
+.agent-markdown-content h2 {
+  font-size: 1.45rem;
+}
+
+.agent-markdown-content h3 {
+  font-size: 1.2rem;
+}
+
+.agent-markdown-content p {
+  margin: 0 0 0.9rem;
+  white-space: normal;
+}
+
+.agent-markdown-content strong {
+  font-weight: 800;
+}
+
+.agent-markdown-content em {
+  font-style: italic;
+}
+
+.agent-markdown-content ul,
+.agent-markdown-content ol {
+  margin: 0 0 1rem;
+  padding-left: 1.45rem;
+}
+
+.agent-markdown-content li + li {
+  margin-top: 0.4rem;
+}
+
+.agent-markdown-content code {
+  display: inline;
+  padding: 0.12rem 0.38rem;
+  border-radius: 0.45rem;
+  background: rgba(99, 102, 241, 0.08);
+  color: #334155;
+  font-size: 0.92em;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+.agent-markdown-content a {
+  color: #315ddb;
+  text-decoration: none;
+}
+
+.agent-markdown-content a:hover {
+  text-decoration: underline;
 }
 
 .agent-progress-card {
@@ -1853,6 +2321,307 @@ onBeforeUnmount(() => {
 .agent-progress-card__copy p {
   color: #25324f;
   line-height: 1.6;
+}
+
+.agent-tool-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 14px 16px;
+  border: 1px solid #e3e7ef;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #fbfcfe, #f6f8fb);
+  box-shadow: 0 8px 20px rgba(60, 72, 95, 0.06);
+}
+
+.agent-tool-card__rail {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.agent-tool-card__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #6b7280;
+  box-shadow: 0 0 0 6px rgba(107, 114, 128, 0.12);
+}
+
+.agent-tool-card__line {
+  width: 2px;
+  min-height: 44px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(107, 114, 128, 0.45), rgba(107, 114, 128, 0));
+}
+
+.agent-tool-card__copy {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.agent-tool-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.agent-tool-card__head strong {
+  color: #374151;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.agent-tool-card__toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #5f6b7d;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-tool-card__toggle:hover {
+  color: #1f2937;
+}
+
+.agent-tool-card__toggle-icon {
+  display: inline-block;
+  font-size: 0.85rem;
+  line-height: 1;
+  transition: transform 160ms ease;
+}
+
+.agent-tool-card__toggle-icon.is-expanded {
+  transform: rotate(180deg);
+}
+
+.agent-tool-card__name {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: #e8edf6;
+  color: #2f4b78;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.agent-tool-card__icon {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.agent-tool-card__status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(34, 122, 72, 0.1);
+  color: #227a48;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.agent-tool-card__status.is-failed {
+  background: rgba(214, 76, 76, 0.12);
+  color: #b83434;
+}
+
+.agent-tool-card__meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.agent-tool-card__meta,
+.agent-tool-card__result {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.agent-tool-card__meta {
+  color: #5f6b7d;
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.agent-tool-card__meta--duration {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(95, 107, 125, 0.08);
+  color: #4f5b6a;
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.agent-tool-card__result {
+  color: #1f2937;
+  line-height: 1.7;
+}
+
+.agent-tool-card__body {
+  padding-top: 4px;
+  border-top: 1px solid rgba(95, 107, 125, 0.12);
+}
+
+.agent-tool-card.is-status-failed {
+  border-color: #f3d1d1;
+  background: linear-gradient(180deg, #fff9f9, #fff3f3);
+}
+
+.agent-tool-card.is-status-failed .agent-tool-card__dot {
+  background: #d64c4c;
+  box-shadow: 0 0 0 6px rgba(214, 76, 76, 0.12);
+}
+
+.agent-tool-card.is-status-failed .agent-tool-card__line {
+  background: linear-gradient(180deg, rgba(214, 76, 76, 0.42), rgba(214, 76, 76, 0));
+}
+
+.agent-tool-card.is-read {
+  border-color: #d8e4ff;
+  background: linear-gradient(180deg, #f9fbff, #f2f7ff);
+}
+
+.agent-tool-card.is-read .agent-tool-card__dot {
+  background: #4f7cff;
+  box-shadow: 0 0 0 6px rgba(79, 124, 255, 0.12);
+}
+
+.agent-tool-card.is-read .agent-tool-card__line {
+  background: linear-gradient(180deg, rgba(79, 124, 255, 0.42), rgba(79, 124, 255, 0));
+}
+
+.agent-tool-card.is-read .agent-tool-card__name {
+  background: #e8f0ff;
+  color: #2950b8;
+}
+
+.agent-tool-card.is-browse,
+.agent-tool-card.is-search {
+  border-color: #d7ecff;
+  background: linear-gradient(180deg, #fbfdff, #f3faff);
+}
+
+.agent-tool-card.is-browse .agent-tool-card__dot,
+.agent-tool-card.is-search .agent-tool-card__dot {
+  background: #1692c5;
+  box-shadow: 0 0 0 6px rgba(22, 146, 197, 0.12);
+}
+
+.agent-tool-card.is-browse .agent-tool-card__line,
+.agent-tool-card.is-search .agent-tool-card__line {
+  background: linear-gradient(180deg, rgba(22, 146, 197, 0.42), rgba(22, 146, 197, 0));
+}
+
+.agent-tool-card.is-browse .agent-tool-card__name,
+.agent-tool-card.is-search .agent-tool-card__name {
+  background: #e9f8ff;
+  color: #0f6f96;
+}
+
+.agent-tool-card.is-command {
+  border-color: #ece2ff;
+  background: linear-gradient(180deg, #fcfbff, #f7f4ff);
+}
+
+.agent-tool-card.is-command .agent-tool-card__dot {
+  background: #7c5fe4;
+  box-shadow: 0 0 0 6px rgba(124, 95, 228, 0.12);
+}
+
+.agent-tool-card.is-command .agent-tool-card__line {
+  background: linear-gradient(180deg, rgba(124, 95, 228, 0.4), rgba(124, 95, 228, 0));
+}
+
+.agent-tool-card.is-command .agent-tool-card__name {
+  background: #efe8ff;
+  color: #694bcf;
+}
+
+.agent-tool-card.is-write,
+.agent-tool-card.is-patch {
+  border-color: #d9efdf;
+  background: linear-gradient(180deg, #fbfefb, #f3faf4);
+}
+
+.agent-tool-card.is-write .agent-tool-card__dot,
+.agent-tool-card.is-patch .agent-tool-card__dot {
+  background: #35b36b;
+  box-shadow: 0 0 0 6px rgba(53, 179, 107, 0.12);
+}
+
+.agent-tool-card.is-write .agent-tool-card__line,
+.agent-tool-card.is-patch .agent-tool-card__line {
+  background: linear-gradient(180deg, rgba(53, 179, 107, 0.42), rgba(53, 179, 107, 0));
+}
+
+.agent-tool-card.is-write .agent-tool-card__name,
+.agent-tool-card.is-patch .agent-tool-card__name {
+  background: #eaf7ee;
+  color: #227a48;
+}
+
+.agent-tool-card.is-status-failed,
+.agent-tool-card.is-status-failed.is-read,
+.agent-tool-card.is-status-failed.is-browse,
+.agent-tool-card.is-status-failed.is-search,
+.agent-tool-card.is-status-failed.is-command,
+.agent-tool-card.is-status-failed.is-write,
+.agent-tool-card.is-status-failed.is-patch {
+  border-color: #f3d1d1;
+  background: linear-gradient(180deg, #fff9f9, #fff3f3);
+}
+
+.agent-tool-card.is-status-failed .agent-tool-card__dot,
+.agent-tool-card.is-status-failed.is-read .agent-tool-card__dot,
+.agent-tool-card.is-status-failed.is-browse .agent-tool-card__dot,
+.agent-tool-card.is-status-failed.is-search .agent-tool-card__dot,
+.agent-tool-card.is-status-failed.is-command .agent-tool-card__dot,
+.agent-tool-card.is-status-failed.is-write .agent-tool-card__dot,
+.agent-tool-card.is-status-failed.is-patch .agent-tool-card__dot {
+  background: #d64c4c;
+  box-shadow: 0 0 0 6px rgba(214, 76, 76, 0.12);
+}
+
+.agent-tool-card.is-status-failed .agent-tool-card__line,
+.agent-tool-card.is-status-failed.is-read .agent-tool-card__line,
+.agent-tool-card.is-status-failed.is-browse .agent-tool-card__line,
+.agent-tool-card.is-status-failed.is-search .agent-tool-card__line,
+.agent-tool-card.is-status-failed.is-command .agent-tool-card__line,
+.agent-tool-card.is-status-failed.is-write .agent-tool-card__line,
+.agent-tool-card.is-status-failed.is-patch .agent-tool-card__line {
+  background: linear-gradient(180deg, rgba(214, 76, 76, 0.42), rgba(214, 76, 76, 0));
+}
+
+.agent-tool-card.is-status-failed .agent-tool-card__name,
+.agent-tool-card.is-status-failed.is-read .agent-tool-card__name,
+.agent-tool-card.is-status-failed.is-browse .agent-tool-card__name,
+.agent-tool-card.is-status-failed.is-search .agent-tool-card__name,
+.agent-tool-card.is-status-failed.is-command .agent-tool-card__name,
+.agent-tool-card.is-status-failed.is-write .agent-tool-card__name,
+.agent-tool-card.is-status-failed.is-patch .agent-tool-card__name {
+  background: #fdeaea;
+  color: #b83434;
 }
 
 .agent-message.is-partial .agent-message__bubble p::after {
@@ -2219,21 +2988,84 @@ onBeforeUnmount(() => {
   font-size: 0.78rem;
 }
 
+.agent-code-viewer__copy,
 .agent-code-viewer__close {
   width: 34px;
   height: 34px;
-  border: 0;
+  border: 1px solid #e4e8ef;
   border-radius: 10px;
-  background: #f0f0f0;
+  background: #f8fafc;
   color: #444444;
   cursor: pointer;
   font: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease;
+}
+
+.agent-code-viewer__copy {
+  line-height: 1;
+}
+
+.agent-code-viewer__copy svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.agent-code-viewer__copy:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.agent-code-viewer__close {
   font-size: 1.25rem;
   line-height: 1;
 }
 
+.agent-code-viewer__copy:hover:not(:disabled),
 .agent-code-viewer__close:hover {
-  background: #e4e4e4;
+  background: #eef3ff;
+  border-color: #d4defc;
+  color: #264db7;
+}
+
+.agent-code-viewer__copy--overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  box-shadow: 0 8px 24px rgba(31, 41, 55, 0.08);
+}
+
+.agent-code-viewer__copy--overlay.is-copied {
+  background: #eaf7ee;
+  border-color: #cbe9d5;
+  color: #227a48;
+}
+
+.agent-code-viewer__body-wrap {
+  position: relative;
+  min-height: 0;
+  display: grid;
+}
+
+.agent-code-viewer__copy-toast {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 2;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(34, 122, 72, 0.94);
+  color: #ffffff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 10px 28px rgba(34, 122, 72, 0.22);
+  pointer-events: none;
 }
 
 .agent-code-viewer__status {
@@ -2242,6 +3074,7 @@ onBeforeUnmount(() => {
 
 .agent-code-viewer__body {
   min-height: 0;
+  height: 100%;
   margin: 0;
   overflow: auto;
   padding: 16px;
@@ -2283,6 +3116,11 @@ onBeforeUnmount(() => {
 
   .agent-shell.has-file-preview {
     grid-template-columns: 280px minmax(0, 1fr);
+  }
+
+  .agent-shell.is-sidebar-hidden,
+  .agent-shell.is-sidebar-hidden.has-file-preview {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .agent-shell__inspector {

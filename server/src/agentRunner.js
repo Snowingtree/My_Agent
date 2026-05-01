@@ -25,6 +25,47 @@ const UI_FILE_CHANGE_REQUEST_PATTERNS = [
   /\b(page|ui|interface|html|css|javascript|js|vue|react|component)\b.*\b(create|build|make|generate|write)\b/i
 ]
 
+const FILE_MUTATION_HINT_PATTERNS = [
+  /修改|删除|替换|分离|抽离|拆分|拆出|提取|创建|新建|生成|保存|写入|更新|重写|引入|引用|添加|追加/,
+  /\b(edit|modify|delete|remove|replace|split|extract|separate|create|generate|save|write|update|rewrite|link|import|add)\b/i
+]
+
+const FILE_CHANGE_CONFIRMATION_PATTERNS = [
+  /\b(created|generated|saved|updated|modified|rewritten|split|extracted|separated)\b/i,
+  /已经[^。；\n]{0,24}(创建|生成|保存|写入|修改|更新|分离|拆分|抽离|完成)/,
+  /已[^。；\n]{0,24}(创建|生成|保存|写入|修改|更新|分离|拆分|抽离|完成)/,
+  /我已经[^。；\n]{0,32}(创建|生成|保存|写入|修改|更新|分离|拆分|抽离|完成)/,
+  /文件已[^。；\n]{0,24}(创建|生成|保存|写入|修改|更新)/
+]
+
+const SAFE_FILE_CHANGE_REQUEST_PATTERNS = [
+  /(?:\u4fee\u6539\u6587\u4ef6|\u5199\u5165\u6587\u4ef6|\u65b0\u589e\u6587\u4ef6|\u65b0\u5efa\u6587\u4ef6|\u521b\u5efa\u6587\u4ef6|\u5220\u9664\u6587\u4ef6|\u6539\u4ee3\u7801|\u5199\u4ee3\u7801|\u751f\u6210\u6587\u4ef6|\u4fdd\u5b58\u5230\u6587\u4ef6|\u843d\u5730\u6587\u4ef6|\u66f4\u65b0\u6587\u4ef6|\u91cd\u5199\u6587\u4ef6|\u8865\u4e01)/i,
+  /\b(create|write|modify|edit|rewrite|update|delete|remove|save)\b.*\b(file|code|component|script|module)\b/i,
+  /\b(file|code|component|script|module)\b.*\b(create|write|modify|edit|rewrite|update|delete|remove|save)\b/i
+]
+
+const SAFE_FILE_MUTATION_HINT_PATTERNS = [
+  /(?:\u4fee\u6539|\u5220\u9664|\u66ff\u6362|\u5206\u79bb|\u62bd\u79bb|\u62c6\u5206|\u62c6\u51fa|\u63d0\u53d6|\u521b\u5efa|\u65b0\u5efa|\u751f\u6210|\u4fdd\u5b58|\u5199\u5165|\u66f4\u65b0|\u91cd\u5199|\u5f15\u5165|\u5f15\u7528|\u6dfb\u52a0|\u8ffd\u52a0)/,
+  /\b(edit|modify|delete|remove|replace|split|extract|separate|create|generate|save|write|update|rewrite|link|import|add)\b/i
+]
+
+const SAFE_FILE_CHANGE_CONFIRMATION_PATTERNS = [
+  /\b(created|generated|saved|updated|modified|rewritten|split|extracted|separated|added|imported|linked)\b/i,
+  /(?:\u5df2\u7ecf|\u5df2|\u6211\u5df2\u7ecf|\u6211\u5df2|\u6587\u4ef6\u5df2)(?:[^\n\u3002\uff1b]{0,32})?(?:\u521b\u5efa|\u751f\u6210|\u4fdd\u5b58|\u5199\u5165|\u4fee\u6539|\u66f4\u65b0|\u5206\u79bb|\u62c6\u5206|\u62bd\u79bb|\u5b8c\u6210|\u5f15\u5165|\u5f15\u7528|\u5220\u9664|\u6dfb\u52a0)/
+]
+
+const SAFE_SPLIT_MARKERS = [
+  '\u5206\u79bb',
+  '\u62bd\u79bb',
+  '\u62c6\u5206',
+  '\u62c6\u51fa',
+  '\u63d0\u53d6',
+  '\u72ec\u7acb',
+  'split',
+  'extract',
+  'separate'
+]
+
 function toChatHistory(messages) {
   return messages.flatMap((message) => {
     const role = normalizeTrimmedString(message?.role).toLowerCase()
@@ -44,12 +85,87 @@ function toChatHistory(messages) {
     if (role === 'tool') {
       return [{
         role: 'assistant',
-        content: `Tool summary:\n${content}`
+        content: `工具摘要：\n${content}`
       }]
     }
 
     return []
   })
+}
+
+function toChatHistorySafe(messages) {
+  return messages.flatMap((message) => {
+    const role = normalizeTrimmedString(message?.role).toLowerCase()
+    const content = String(message?.content ?? '')
+
+    if (!content) {
+      return []
+    }
+
+    if (role === 'assistant' || role === 'user') {
+      return [{
+        role,
+        content
+      }]
+    }
+
+    if (role === 'tool') {
+      return [{
+        role: 'assistant',
+        content: `工具摘要：\n${content}`
+      }]
+    }
+
+    return []
+  })
+}
+
+function looksLikeFileChangeRequestSafe(value) {
+  const normalized = normalizeTrimmedString(value)
+
+  if (!normalized) {
+    return false
+  }
+
+  const hasExplicitPaths = extractExplicitFilePaths(normalized).length > 0
+  const hasMutationHint = SAFE_FILE_MUTATION_HINT_PATTERNS.some((pattern) => pattern.test(normalized))
+  const hasCompanionFileRequirement = getRequiredCompanionExtensionsSafe(normalized).length > 0
+
+  return (
+    (hasExplicitPaths && hasMutationHint)
+    || hasCompanionFileRequirement
+    || SAFE_FILE_CHANGE_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))
+    || UI_FILE_CHANGE_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))
+  )
+}
+
+function looksLikeCompletedFileChangeClaimSafe(value) {
+  const normalized = normalizeTrimmedString(value)
+
+  if (!normalized) {
+    return false
+  }
+
+  const hasConfirmationPattern = SAFE_FILE_CHANGE_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))
+  const mentionsFilePath = extractExplicitFilePaths(normalized).length > 0
+  const mentionsMutationHint = SAFE_FILE_MUTATION_HINT_PATTERNS.some((pattern) => pattern.test(normalized))
+
+  return hasConfirmationPattern || (mentionsFilePath && mentionsMutationHint)
+}
+
+function getRequiredCompanionExtensionsSafe(value) {
+  const normalized = normalizeTrimmedString(value).toLowerCase()
+  const required = []
+
+  if (SAFE_SPLIT_MARKERS.some((marker) => normalized.includes(marker)) && ['css', '\u6837\u5f0f', 'style'].some((marker) => normalized.includes(marker))) {
+    required.push('.css')
+  }
+
+  if (SAFE_SPLIT_MARKERS.some((marker) => normalized.includes(marker)) && ['js', 'javascript', '\u811a\u672c', 'script'].some((marker) => normalized.includes(marker))) {
+    required.push('.js')
+  }
+
+  return required
 }
 
 function normalizeAction(value) {
@@ -63,10 +179,26 @@ function looksLikeFileChangeRequest(value) {
     return false
   }
 
+  const hasExplicitPaths = extractExplicitFilePaths(normalized).length > 0
+  const hasMutationHint = FILE_MUTATION_HINT_PATTERNS.some((pattern) => pattern.test(normalized))
+  const hasCompanionFileRequirement = getRequiredCompanionExtensions(normalized).length > 0
+
   return (
-    FILE_CHANGE_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))
+    (hasExplicitPaths && hasMutationHint)
+    || hasCompanionFileRequirement
+    || FILE_CHANGE_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))
     || UI_FILE_CHANGE_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))
   )
+}
+
+function looksLikeCompletedFileChangeClaim(value) {
+  const normalized = normalizeTrimmedString(value)
+
+  if (!normalized) {
+    return false
+  }
+
+  return FILE_CHANGE_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))
 }
 
 function extractExplicitFilePaths(value) {
@@ -392,6 +524,32 @@ function buildSafeAssistantReply({
   return normalizedReply
 }
 
+function buildCurrentDateContext(timeZone = 'Asia/Shanghai') {
+  const now = new Date()
+  const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
+    timeZone,
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long'
+  })
+  const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  })
+
+  return [
+    `Current server date: ${dateFormatter.format(now)}`,
+    `Current server time: ${timeFormatter.format(now)}`,
+    `Time zone: ${timeZone}`,
+    'Use this current date and time for ordinary conversational questions such as today, weekday, current date, or current time.',
+    'Do not say that you lack access to the current date or time when this information is provided here.'
+  ].join('\n')
+}
+
 function serializeJson(value, maxChars = 12000) {
   const serialized = JSON.stringify(value, null, 2)
   return serialized.length > maxChars
@@ -407,7 +565,8 @@ function buildAgentLoopMessages({
   toolPromptText,
   systemPrompt,
   remainingIterations,
-  workspaceContextText = ''
+  workspaceContextText = '',
+  currentDateContextText = ''
 }) {
   const promptSections = [
     'You are a coding agent running inside a server workspace.',
@@ -417,6 +576,7 @@ function buildAgentLoopMessages({
     'Return strict JSON only.',
     'Do not expose hidden chain-of-thought.',
     'Use the same language as the user.',
+    'For ordinary conversation, answer naturally and directly instead of refusing unnecessarily.',
     'You may decide one of three actions on each turn:',
     '- "tool": call exactly one available tool when you need workspace evidence.',
     '- "final": provide the final user-facing answer when you have enough information.',
@@ -424,6 +584,7 @@ function buildAgentLoopMessages({
     'Use "final" for greetings, everyday Q&A, explanations, brainstorming, summaries, translations, or any request that does not require workspace inspection.',
     'Do not force tool usage when a direct answer is sufficient.',
     'Do not ask clarifying questions unless the missing detail truly blocks a useful next response.',
+    'When the user asks for the current date, weekday, or time, use the provided current date context directly.',
     'When the request is about the codebase or file changes, prefer inspecting the workspace before making code claims.',
     'Use apply_patch for targeted edits and write_file for new files or full rewrites.',
     'Never claim that a file changed unless a write tool actually succeeded.',
@@ -462,6 +623,12 @@ function buildAgentLoopMessages({
       role: 'system',
       content: promptSections.join('\n')
     },
+    ...(currentDateContextText
+      ? [{
+          role: 'user',
+          content: `Current date context:\n${currentDateContextText}`
+        }]
+      : []),
     ...(workspaceContextText
       ? [{
           role: 'user',
@@ -488,7 +655,8 @@ function buildForcedFinalMessages({
   modifiedWorkspace = false,
   toolMessages,
   systemPrompt,
-  workspaceContextText = ''
+  workspaceContextText = '',
+  currentDateContextText = ''
 }) {
   const promptSections = [
     'You are a coding agent running inside a server workspace.',
@@ -497,9 +665,11 @@ function buildForcedFinalMessages({
     'Return strict JSON only.',
     'Do not expose hidden chain-of-thought.',
     'Use the same language as the user.',
+    'For ordinary conversation, answer naturally and directly instead of refusing unnecessarily.',
     'You must now finish without calling more tools.',
     'Base the answer on the gathered workspace evidence.',
     'If the request never needed workspace tools, answer naturally and directly.',
+    'When the user asks for the current date, weekday, or time, use the provided current date context directly.',
     'If file changes were verified, mention the verification result clearly.',
     ...(modifiedWorkspace
       ? [
@@ -531,6 +701,12 @@ function buildForcedFinalMessages({
       role: 'system',
       content: promptSections.join('\n')
     },
+    ...(currentDateContextText
+      ? [{
+          role: 'user',
+          content: `Current date context:\n${currentDateContextText}`
+        }]
+      : []),
     ...(workspaceContextText
       ? [{
           role: 'user',
@@ -613,12 +789,78 @@ function createToolStepTitle(toolName, args) {
   return `执行工具 ${toolName}`
 }
 
+function summarizeToolTarget(toolExecution) {
+  const toolName = normalizeTrimmedString(toolExecution?.tool)
+  const args = toolExecution?.args && typeof toolExecution.args === 'object'
+    ? toolExecution.args
+    : {}
+
+  if (['read_file', 'write_file', 'apply_patch', 'list_files'].includes(toolName)) {
+    const targetPath = normalizeTrimmedString(args?.path || toolExecution?.result?.path)
+    return targetPath ? `目标：${targetPath}` : ''
+  }
+
+  if (toolName === 'search_text') {
+    const query = normalizeTrimmedString(args?.query || args?.pattern)
+    return query ? `搜索：${query}` : ''
+  }
+
+  if (toolName === 'run_command') {
+    const commandLine = [args?.command, ...(Array.isArray(args?.args) ? args.args : [])]
+      .map((item) => normalizeTrimmedString(item))
+      .filter(Boolean)
+      .join(' ')
+
+    return commandLine ? `命令：${commandLine}` : ''
+  }
+
+  return ''
+}
+
+function formatToolDuration(durationMs) {
+  const normalizedDuration = Number(durationMs)
+
+  if (!Number.isFinite(normalizedDuration) || normalizedDuration < 0) {
+    return ''
+  }
+
+  if (normalizedDuration < 1000) {
+    return `${Math.round(normalizedDuration)}ms`
+  }
+
+  return `${(normalizedDuration / 1000).toFixed(normalizedDuration >= 10000 ? 0 : 1)}s`
+}
+
+function createNormalizedToolMessageContent(toolExecution) {
+  const toolName = normalizeTrimmedString(toolExecution?.tool) || 'unknown_tool'
+  const toolSummary = normalizeTrimmedString(toolExecution?.summary) || `${toolName} 已执行。`
+  const toolTarget = summarizeToolTarget(toolExecution)
+  const toolStatus = normalizeTrimmedString(toolExecution?.status) || 'success'
+  const durationLabel = formatToolDuration(toolExecution?.durationMs)
+
+  return [
+    `工具：${toolName}`,
+    `状态：${toolStatus === 'failed' ? '失败' : '成功'}`,
+    durationLabel ? `耗时：${durationLabel}` : '',
+    toolTarget,
+    `结果：${toolSummary}`
+  ].filter(Boolean).join('\n')
+}
+
 function createToolMessageContent(toolExecution) {
-  return normalizeTrimmedString(toolExecution?.message)
-    || [
-      `Tool: ${toolExecution.tool}`,
-      `Summary: ${toolExecution.summary}`
-    ].join('\n')
+  const toolName = normalizeTrimmedString(toolExecution?.tool) || 'unknown_tool'
+  const toolSummary = normalizeTrimmedString(toolExecution?.summary) || `${toolName} 已执行。`
+  const toolTarget = summarizeToolTarget(toolExecution)
+  const toolStatus = normalizeTrimmedString(toolExecution?.status).toLowerCase() || 'success'
+  const durationLabel = formatToolDuration(toolExecution?.durationMs)
+
+  return [
+    `工具：${toolName}`,
+    `状态：${toolStatus === 'failed' ? '失败' : '成功'}`,
+    durationLabel ? `耗时：${durationLabel}` : '',
+    toolTarget,
+    `结果：${toolSummary}`
+  ].filter(Boolean).join('\n')
 }
 
 function completeStep(step, summary) {
@@ -1012,12 +1254,13 @@ export function createAgentRunner({
 
     const selectedModel = resolveModel(aiConfig, requestedModel)
     const taskId = session.task?.taskId || createId('task')
-    const conversationHistory = toChatHistory(
+    const conversationHistory = toChatHistorySafe(
       getRecentMessages(session.messages || [], aiRuntimeConfig.recentMessages)
     )
     const latestGoal = String(latestUserMessage.content)
-    const fileChangesRequired = looksLikeFileChangeRequest(latestGoal)
-    const requiredCompanionExtensions = getRequiredCompanionExtensions(latestGoal)
+    const fileChangesRequired = looksLikeFileChangeRequestSafe(latestGoal)
+    const requiredCompanionExtensions = getRequiredCompanionExtensionsSafe(latestGoal)
+    const currentDateContextText = buildCurrentDateContext(runtimeConfig?.timezone)
     const toolMessages = []
     const verificationCommands = await resolveVerificationCommands({
       workspaceConfig,
@@ -1094,6 +1337,7 @@ export function createAgentRunner({
       })
 
       let toolExecution
+      const toolStartedAt = Date.now()
 
       try {
         toolExecution = await toolRunner.executeToolCall(normalizedRequest, {
@@ -1101,6 +1345,11 @@ export function createAgentRunner({
           signal: abortSignal,
           sessionId
         })
+        toolExecution = {
+          ...toolExecution,
+          status: 'success',
+          durationMs: Date.now() - toolStartedAt
+        }
       } catch (error) {
         if (isCancellationError(error) || abortSignal?.aborted) {
           taskSteps[taskSteps.length - 1] = cancelStep(toolStep, '已停止当前处理。')
@@ -1112,7 +1361,7 @@ export function createAgentRunner({
         await sessionRepository.appendToolMessage(sessionId, {
           content: [
             `Tool: ${normalizedRequest.name}`,
-            'Status: failed',
+            '状态：失败',
             '',
             errorMessage
           ].join('\n')
@@ -1147,7 +1396,7 @@ export function createAgentRunner({
       publishTaskProgress(sessionId, toolExecution.summary, selectedModel)
 
       await sessionRepository.appendToolMessage(sessionId, {
-        content: createToolMessageContent(toolExecution)
+        content: createNormalizedToolMessageContent(toolExecution)
       })
 
       if (isWriteToolName(toolExecution.tool) && toolExecution.result?.changed !== false) {
@@ -1333,7 +1582,8 @@ export function createAgentRunner({
             toolPromptText: toolRunner.getPromptText({ skill: activeSkill }),
             systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
             remainingIterations: runtimeConfig.maxToolIterations - iteration,
-            workspaceContextText
+            workspaceContextText,
+            currentDateContextText
           })
         })
         throwIfCancelled()
@@ -1449,6 +1699,26 @@ export function createAgentRunner({
           }
         }
 
+        if (
+          fileChangesRequired
+          && !executionState.modifiedWorkspace
+          && finalReply
+          && (looksLikeCompletedFileChangeClaimSafe(finalReply) || extractExplicitFilePaths(finalReply).length)
+        ) {
+          toolMessages.push({
+            role: 'user',
+            content: [
+              'The previous final reply claimed that files were created or modified.',
+              'However, no workspace write tool has succeeded yet.',
+              'Do not claim success until write_file or apply_patch actually succeeds.',
+              'Continue editing the existing workspace files now.'
+            ].join('\n')
+          })
+
+          await sleep(runtimeConfig.stepDelayMs)
+          continue
+        }
+
         if (!finalReply && !executionState.modifiedWorkspace) {
           throw new Error('Model returned a final action without a reply.')
         }
@@ -1519,7 +1789,8 @@ export function createAgentRunner({
           modifiedWorkspace: executionState.modifiedWorkspace,
           toolMessages,
           systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-          workspaceContextText
+          workspaceContextText,
+          currentDateContextText
         })
       })
       const finalReply = normalizeTrimmedString(forcedFinal.json?.reply)
@@ -1556,7 +1827,8 @@ export function createAgentRunner({
               modifiedWorkspace: executionState.modifiedWorkspace,
               toolMessages,
               systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-              workspaceContextText: refreshedWorkspaceContextText
+              workspaceContextText: refreshedWorkspaceContextText,
+              currentDateContextText
             })
           })
 
@@ -1596,6 +1868,15 @@ export function createAgentRunner({
           })
           return
         }
+      }
+
+      if (
+        fileChangesRequired
+        && !executionState.modifiedWorkspace
+        && finalReply
+        && (looksLikeCompletedFileChangeClaimSafe(finalReply) || extractExplicitFilePaths(finalReply).length)
+      ) {
+        throw new Error('The model claimed that file changes were completed, but no workspace write tool actually succeeded.')
       }
 
       if (!finalReply && !executionState.modifiedWorkspace) {

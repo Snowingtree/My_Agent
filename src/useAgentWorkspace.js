@@ -9,7 +9,7 @@ import {
 
 const NEW_SESSION_TITLE = '新对话'
 const UNSELECTED_MODEL_LABEL = '未选择模型'
-const UNSELECTED_AGENT_LABEL = '未选择 Agent 配置'
+const UNSELECTED_AGENT_LABEL = '未选择模型配置'
 const LOADING_REPLY_SUMMARY = '正在生成首轮回复...'
 const WAITING_FOR_GOAL_SUMMARY = '等待你给出第一个目标，我会围绕当前会话持续推进。'
 const AI_CONFIG_REQUEST_TIMEOUT = 10000
@@ -66,19 +66,19 @@ function getFriendlyErrorMessage(errorMessage, fallbackMessage) {
 
   if (lowerMessage.includes('matched') && lowerMessage.includes('snippets')) {
     const matchCount = normalized.match(/(\d+)\s+snippets/) ? normalized.match(/(\d+)\s+snippets/)[1] : '多个'
-    return `Agent 在文件中找到了 ${matchCount} 个相同的内容，不确定要修改哪一个。请提供更多上下文，或者让 Agent 使用"全部替换"方式修改。`
+    return `助手在文件中找到了 ${matchCount} 个相同的内容，不确定要修改哪一个。请提供更多上下文，或者让助手使用“全部替换”的方式修改。`
   }
 
   if (lowerMessage.includes('no match found') || lowerMessage.includes('did not match')) {
-    return `Agent 没有在文件中找到要修改的内容，可能内容已经不同。请让 Agent 重新检查文件内容后再修改。`
+    return `助手没有在文件中找到要修改的内容，可能文件已经变化。请让助手重新检查文件内容后再修改。`
   }
 
   if (lowerMessage.includes('file not found') || lowerMessage.includes('no such file')) {
-    return `Agent 找不到指定的文件，请确认文件路径是否正确。`
+    return '助手找不到指定的文件，请确认文件路径是否正确。'
   }
 
   if (lowerMessage.includes('permission denied') || lowerMessage.includes('access denied')) {
-    return `Agent 没有权限执行该操作。`
+    return '助手没有权限执行该操作。'
   }
 
   if (lowerMessage.includes('timeout') || lowerMessage.includes('timed out')) {
@@ -86,7 +86,7 @@ function getFriendlyErrorMessage(errorMessage, fallbackMessage) {
   }
 
   if (lowerMessage.includes('final action without a reply') || lowerMessage.includes('without a reply')) {
-    return `Agent 执行了操作但没有给出说明。这是 AI 模型的问题，建议重新发起请求，并要求 Agent 给出修改说明。`
+    return '助手执行了操作但没有给出说明。这通常是模型响应不完整导致的，建议重新发起请求，并要求明确说明修改结果。'
   }
 
   if (lowerMessage.includes('model returned') && lowerMessage.includes('final')) {
@@ -219,7 +219,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   const activeMessages = computed(() => {
     const persistedMessages = Array.isArray(activeSession.value?.messages)
-      ? activeSession.value.messages.filter((item) => String(item?.role || '').trim().toLowerCase() !== 'tool')
+      ? activeSession.value.messages
       : []
     const transientMessages = [
       ...(taskProgressMessage.value ? [taskProgressMessage.value] : []),
