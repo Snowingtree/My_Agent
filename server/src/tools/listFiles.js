@@ -27,13 +27,13 @@ function formatEntryList(entries, maxEntries = 12) {
 export function createListFilesTool({ workspace } = {}) {
   return {
     name: 'list_files',
-    description: 'List files and directories under the workspace. Use this first to understand project structure.',
+    description: '列出工作区下的文件和目录。建议首先使用此工具了解项目结构。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Relative directory path inside the workspace. Defaults to ".".' },
-        maxDepth: { type: 'integer', description: 'Maximum recursion depth from 1 to 6. Defaults to 2.' },
-        limit: { type: 'integer', description: 'Maximum number of returned entries from 1 to 400. Defaults to 200.' }
+        path: { type: 'string', description: '工作区内的相对目录路径。默认为 "."。' },
+        maxDepth: { type: 'integer', description: '最大递归深度，范围 1 到 6。默认为 2。' },
+        limit: { type: 'integer', description: '返回的最大条目数，范围 1 到 400。默认为 200。' }
       }
     },
     async run(args = {}) {

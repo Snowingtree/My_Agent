@@ -171,7 +171,12 @@ function shouldTreatAsPlainTextFinal(rawText) {
 }
 
 function createPlainTextFinalFallback(rawText) {
-  const reply = String(rawText || '').trim()
+  let reply = String(rawText || '').trim()
+  const fenceMatch = reply.match(/^```[a-zA-Z0-9_-]*\s*\n?([\s\S]+?)\n?```\s*$/)
+
+  if (fenceMatch?.[1]) {
+    reply = fenceMatch[1].trim()
+  }
 
   return {
     action: 'final',

@@ -4,7 +4,17 @@
       <div class="model-config-header__copy">
         <p class="model-config-header__eyebrow">设置中心</p>
         <h1>{{ activeSectionMeta.title }}</h1>
-        <p>{{ activeSectionMeta.description }}</p>
+        <p class="model-config-header__desc">
+          <span>{{ activeSectionMeta.description }}</span>
+          <button
+            v-if="props.activeSection === 'settings-ai'"
+            type="button"
+            class="primary-btn"
+            @click="openAddAiModal"
+          >
+            添加接口
+          </button>
+        </p>
       </div>
 
       <div class="model-config-header__actions">
@@ -113,6 +123,63 @@
         <SettingsToolsExplorer />
       </section>
     </div>
+
+    <Teleport to="body">
+      <Transition name="modal-fade">
+        <div v-if="showAddAiModal" class="modal-overlay" @click.self="closeAddAiModal">
+          <div class="modal-dialog">
+            <div class="modal-header">
+              <h2>添加 AI 接口</h2>
+              <button type="button" class="modal-close" @click="closeAddAiModal">&times;</button>
+            </div>
+            <form class="modal-body" @submit.prevent="submitAddAi">
+              <label class="modal-field">
+                <span>名称</span>
+                <input
+                  v-model="addAiForm.name"
+                  type="text"
+                  placeholder="例如：MiMo、GPT-4"
+                  required
+                />
+              </label>
+              <label class="modal-field">
+                <span>模型版本（用 、 分隔）</span>
+                <input
+                  v-model="addAiForm.aiVersions"
+                  type="text"
+                  placeholder="例如：MiMo-7B-RL、MiMo-7B-SFT"
+                />
+              </label>
+              <label class="modal-field">
+                <span>接口地址</span>
+                <input
+                  v-model="addAiForm.aiBaseUrl"
+                  type="text"
+                  placeholder="例如：https://api.siliconflow.cn/v1"
+                  required
+                />
+              </label>
+              <label class="modal-field">
+                <span>API Key</span>
+                <input
+                  v-model="addAiForm.apiKey"
+                  type="password"
+                  placeholder="请输入 API Key"
+                  required
+                />
+              </label>
+              <p v-if="addAiError" class="modal-error">{{ addAiError }}</p>
+              <div class="modal-footer">
+                <button type="button" class="secondary-btn" @click="closeAddAiModal">取消</button>
+                <button type="submit" class="primary-btn" :disabled="isSubmittingAi">
+                  {{ isSubmittingAi ? '提交中...' : '确认添加' }}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -140,6 +207,48 @@ const aiError = ref('')
 const skillsError = ref('')
 const capabilitiesError = ref('')
 
+const showAddAiModal = ref(false)
+const isSubmittingAi = ref(false)
+const addAiError = ref('')
+const addAiForm = ref({
+  name: '',
+  aiVersions: '',
+  aiBaseUrl: '',
+  apiKey: ''
+})
+
+function openAddAiModal() {
+  addAiForm.value = { name: '', aiVersions: '', aiBaseUrl: '', apiKey: '' }
+  addAiError.value = ''
+  showAddAiModal.value = true
+}
+
+function closeAddAiModal() {
+  showAddAiModal.value = false
+  addAiError.value = ''
+}
+
+async function submitAddAi() {
+  addAiError.value = ''
+  isSubmittingAi.value = true
+
+  try {
+    await http.post('/api/ai/configs', {
+      name: addAiForm.value.name,
+      aiVersions: addAiForm.value.aiVersions,
+      aiBaseUrl: addAiForm.value.aiBaseUrl,
+      apiKey: addAiForm.value.apiKey
+    })
+
+    closeAddAiModal()
+    await loadAiConfigs()
+  } catch (error) {
+    addAiError.value = error instanceof Error ? error.message : '添加失败，请重试。'
+  } finally {
+    isSubmittingAi.value = false
+  }
+}
+
 const SECTION_META = {
   'settings-ai': {
     title: 'AI 配置',
@@ -154,7 +263,7 @@ const SECTION_META = {
     description: '查看已接入的 MCP 服务、状态和工具数量。'
   },
   'settings-tools': {
-    title: '工具 Tool',
+    title: '工具',
     description: '查看当前 Agent 可用工具，以及每个工具对应的实现源码。'
   }
 }
@@ -279,8 +388,14 @@ onMounted(async () => {
 <style scoped>
 .model-config-page {
   max-width: 1320px;
+  width: 100%;
   margin: 0 auto;
   padding: 24px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .model-config-header {
@@ -311,11 +426,20 @@ onMounted(async () => {
   font-weight: 700;
 }
 
-.model-config-header__copy p:last-child {
+.model-config-header__desc {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   margin: 0;
   color: #5d667a;
   font-size: 0.98rem;
   line-height: 1.7;
+}
+
+.model-config-header__desc span {
+  flex: 1;
+  min-width: 0;
 }
 
 .model-config-header__actions {
@@ -325,11 +449,17 @@ onMounted(async () => {
 }
 
 .model-config-content {
+  flex: 1;
   min-height: 0;
+  overflow-y: auto;
 }
 
 .model-config-section {
   min-height: 0;
+}
+
+.model-config-section:last-child {
+  height: 100%;
 }
 
 .config-grid {
@@ -504,6 +634,135 @@ onMounted(async () => {
 .secondary-btn:disabled {
   opacity: 0.56;
   cursor: not-allowed;
+}
+
+.primary-btn {
+  min-height: 40px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 12px;
+  background: rgb(125, 125, 125);
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.primary-btn:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+.modal-fade-enter-active,
+.modal-fade-leave-active {
+  transition: opacity 0.5s ease;
+}
+
+.modal-fade-enter-from,
+.modal-fade-leave-to {
+  opacity: 0;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(2px);
+}
+
+.modal-dialog {
+  width: 480px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  background: #ffffff;
+  border-radius: 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid #eef1f6;
+}
+
+.modal-header h2 {
+  margin: 0;
+  color: #171717;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.modal-close {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #7a869f;
+  font-size: 1.4rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-close:hover {
+  background: #f4f7fc;
+}
+
+.modal-body {
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+}
+
+.modal-field {
+  display: grid;
+  gap: 6px;
+}
+
+.modal-field span {
+  color: #364153;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.modal-field input {
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid #dfe5f1;
+  border-radius: 10px;
+  background: #f9fbfd;
+  color: #171717;
+  font: inherit;
+  font-size: 0.92rem;
+  outline: none;
+  transition: border-color 0.16s ease;
+}
+
+.modal-field input:focus {
+  border-color: rgb(125, 125, 125);
+}
+
+.modal-error {
+  margin: 0;
+  color: #b33d34;
+  font-size: 0.86rem;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 6px;
 }
 
 @media (max-width: 960px) {

@@ -134,7 +134,8 @@ onMounted(() => {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
   gap: 18px;
-  min-height: 640px;
+  height: 100%;
+  min-height: 400px;
 }
 
 .settings-tools__sidebar,
@@ -143,12 +144,9 @@ onMounted(() => {
   border: 1px solid #e7ebf3;
   border-radius: 20px;
   background: #ffffff;
-}
-
-.settings-tools__sidebar {
+  overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  overflow: hidden;
 }
 
 .settings-tools__sidebar-head,
@@ -222,9 +220,7 @@ onMounted(() => {
 }
 
 .settings-tools__detail {
-  display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  overflow: hidden;
 }
 
 .settings-tools__meta {
@@ -272,6 +268,7 @@ onMounted(() => {
 @media (max-width: 1080px) {
   .settings-tools {
     grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
   }
 }
 </style>

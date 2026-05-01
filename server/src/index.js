@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { createConfig } from './config.js'
 import { loadEnvFiles } from './env.js'
 import { createAuthToken, readBearerToken, safeCompare, verifyAuthToken } from './auth.js'
-import { getAiConfigById, loadAiConfigs, resolveModel, toPublicAiConfig } from './aiConfigs.js'
+import { getAiConfigById, insertAiConfig, loadAiConfigs, resolveModel, toPublicAiConfig } from './aiConfigs.js'
 import { createAgentRunner } from './agentRunner.js'
 import { createMcpRegistry } from './mcpRegistry.js'
 import { createSessionWorkspacesRepository } from './sessionWorkspaces.js'
@@ -419,6 +419,24 @@ async function handleListAiConfigs(response) {
   sendJson(response, 200, { items })
 }
 
+async function handleCreateAiConfig(request, response) {
+  try {
+    const body = await readJsonBody(request)
+    const result = await insertAiConfig({
+      name: body?.name,
+      aiVersions: body?.aiVersions,
+      aiBaseUrl: body?.aiBaseUrl,
+      apiKey: body?.apiKey
+    })
+
+    sendJson(response, 201, { item: result })
+  } catch (error) {
+    sendJson(response, 400, {
+      message: error instanceof Error ? error.message : '添加 AI 配置失败。'
+    })
+  }
+}
+
 async function attachWorkspaceState(item) {
   if (!item?.sessionId) {
     return item
@@ -729,6 +747,11 @@ async function handleRequest(request, response) {
 
   if (pathname === '/api/ai/configs' && request.method === 'GET') {
     await handleListAiConfigs(response)
+    return
+  }
+
+  if (pathname === '/api/ai/configs' && request.method === 'POST') {
+    await handleCreateAiConfig(request, response)
     return
   }
 

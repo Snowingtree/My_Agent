@@ -14,11 +14,11 @@ function truncatePreview(value, maxChars = 1000) {
 export function createReadFileTool({ workspace, workspaceConfig } = {}) {
   return {
     name: 'read_file',
-    description: 'Read a text file from the workspace. Use for source files, configs, and logs.',
+    description: '从工作区读取文本文件。适用于源代码、配置文件和日志。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Relative file path inside the workspace.' }
+        path: { type: 'string', description: '工作区内的相对文件路径。' }
       },
       required: ['path']
     },

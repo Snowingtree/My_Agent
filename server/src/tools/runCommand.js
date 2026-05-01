@@ -34,13 +34,13 @@ function truncatePreview(value, maxChars = 1200) {
 export function createRunCommandTool({ workspace, workspaceConfig, runtimeConfig } = {}) {
   return {
     name: 'run_command',
-    description: 'Run an allowed command inside the workspace. Use for build, test, lint, and repository inspection commands.',
+    description: '在工作区内执行允许的命令。适用于构建、测试、代码检查和仓库查看等命令。',
     inputSchema: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Command name. Must be included in the server allow-list.' },
-        args: { type: 'array', description: 'Command arguments as an array of strings.' },
-        cwd: { type: 'string', description: 'Relative working directory inside the workspace. Defaults to ".".' }
+        command: { type: 'string', description: '命令名称，必须在服务器允许列表中。' },
+        args: { type: 'array', description: '命令参数，字符串数组。' },
+        cwd: { type: 'string', description: '工作区内的相对工作目录。默认为 "."。' }
       },
       required: ['command']
     },

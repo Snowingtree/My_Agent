@@ -15,13 +15,13 @@ function truncatePreview(value, maxChars = 800) {
 export function createWriteFileTool({ workspace, workspaceConfig } = {}) {
   return {
     name: 'write_file',
-    description: 'Create or fully replace a text file in the workspace. Use for new files or when rewriting an entire file is simpler than patching.',
+    description: '在工作区中创建或完全替换文本文件。适用于新建文件或整体重写比补丁更简单的场景。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Relative file path inside the workspace.' },
-        content: { type: 'string', description: 'Full file content to write.' },
-        createDirectories: { type: 'boolean', description: 'Create parent directories automatically. Defaults to true.' }
+        path: { type: 'string', description: '工作区内的相对文件路径。' },
+        content: { type: 'string', description: '要写入的完整文件内容。' },
+        createDirectories: { type: 'boolean', description: '是否自动创建父目录。默认为 true。' }
       },
       required: ['path', 'content']
     },

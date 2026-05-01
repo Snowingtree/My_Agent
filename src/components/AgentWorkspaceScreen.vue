@@ -159,7 +159,7 @@
                   :class="{ 'is-active': activeSettingsSection === 'settings-tools' }"
                   @click="selectSettingsSection('settings-tools')"
                 >
-                  工具 Tool
+                  工具
                 </button>
               </div>
             </div>
@@ -712,8 +712,10 @@ const {
 
 .agent-settings-content {
   height: 100%;
-  overflow-y: auto;
+  overflow: hidden;
   background: #f6f8fb;
+  display: flex;
+  flex-direction: column;
 }
 
 @media (max-width: 1180px) {

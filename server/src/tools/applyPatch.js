@@ -288,16 +288,16 @@ function applySingleChange(content, change, index) {
 export function createApplyPatchTool({ workspace, workspaceConfig } = {}) {
   return {
     name: 'apply_patch',
-    description: 'Apply targeted text edits to an existing file. Supports replace, insert_before, insert_after, delete, append, prepend, and replace_between. For replace/delete, provide the target text in find/search/from/old and the replacement text in content/replace/replacement/replaceWith/to/new.',
+    description: '对已有文件进行精确文本编辑。支持替换、前插、后插、删除、追加、前置和区间替换。对于替换/删除操作，在 find/search/from/old 中提供目标文本，在 content/replace/replacement/replaceWith/to/new 中提供替换文本。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Relative file path inside the workspace.' },
+        path: { type: 'string', description: '工作区内的相对文件路径。' },
         changes: {
           type: 'array',
-          description: 'Ordered text edits. Supported types: replace, insert_before, insert_after, delete, append, prepend, replace_between.'
+          description: '按顺序执行的文本编辑操作。支持的类型：replace、insert_before、insert_after、delete、append、prepend、replace_between。'
         },
-        createIfMissing: { type: 'boolean', description: 'Create the file if it does not exist. Defaults to false.' }
+        createIfMissing: { type: 'boolean', description: '文件不存在时是否自动创建。默认为 false。' }
       },
       required: ['path', 'changes']
     },

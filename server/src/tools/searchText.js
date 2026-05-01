@@ -25,14 +25,14 @@ function normalizeBoolean(value) {
 export function createSearchTextTool({ workspace, workspaceConfig } = {}) {
   return {
     name: 'search_text',
-    description: 'Search for plain text across files in the workspace. Use to locate symbols, strings, and usages.',
+    description: '在工作区文件中搜索纯文本。用于定位符号、字符串和用法。',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Plain text to search for.' },
-        path: { type: 'string', description: 'Relative file or directory path. Defaults to ".".' },
-        caseSensitive: { type: 'boolean', description: 'Whether matching should be case-sensitive. Defaults to false.' },
-        limit: { type: 'integer', description: 'Maximum number of returned matches. Defaults to configured server limit.' }
+        query: { type: 'string', description: '要搜索的纯文本。' },
+        path: { type: 'string', description: '相对文件或目录路径。默认为 "."。' },
+        caseSensitive: { type: 'boolean', description: '是否区分大小写。默认为 false。' },
+        limit: { type: 'integer', description: '返回的最大匹配数。默认为服务器配置的限制。' }
       },
       required: ['query']
     },

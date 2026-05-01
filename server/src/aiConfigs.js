@@ -487,3 +487,54 @@ export function toPublicAiConfig(aiConfig) {
     hasApiKey: Boolean(aiConfig.apiKey)
   }
 }
+
+function generateAiId(name) {
+  const normalized = String(name || '').trim().toLowerCase()
+    .replace(/[^a-z0-9一-鿿]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+
+  return normalized || `config-${Date.now()}`
+}
+
+export async function insertAiConfig({ name, aiVersions, aiBaseUrl, apiKey } = {}) {
+  const normalizedName = normalizeTrimmedString(name)
+  const normalizedBaseUrl = normalizeBaseUrl(aiBaseUrl)
+  const normalizedVersions = normalizeTrimmedString(aiVersions)
+  const normalizedApiKey = normalizeStoredApiKey(apiKey) || normalizeTrimmedString(apiKey)
+
+  if (!normalizedName) {
+    throw new Error('AI 名称不能为空。')
+  }
+
+  if (!normalizedBaseUrl) {
+    throw new Error('接口地址不能为空。')
+  }
+
+  if (!normalizedApiKey) {
+    throw new Error('API Key 不能为空。')
+  }
+
+  const aiId = generateAiId(normalizedName)
+
+  await withMysqlConnection(async (connection, tableName) => {
+    const [existing] = await connection.query(
+      `SELECT id FROM ${tableName} WHERE ai_id = ? LIMIT 1`,
+      [aiId]
+    )
+
+    if (Array.isArray(existing) && existing.length > 0) {
+      await connection.query(
+        `UPDATE ${tableName} SET ai_name = ?, ai_versions = ?, ai_base_url = ?, api_key = ? WHERE ai_id = ?`,
+        [normalizedName, normalizedVersions, normalizedBaseUrl, normalizedApiKey, aiId]
+      )
+    } else {
+      await connection.query(
+        `INSERT INTO ${tableName} (ai_name, ai_id, ai_versions, ai_base_url, api_key) VALUES (?, ?, ?, ?, ?)`,
+        [normalizedName, aiId, normalizedVersions, normalizedBaseUrl, normalizedApiKey]
+      )
+    }
+  })
+
+  return { aiId, name: normalizedName }
+}

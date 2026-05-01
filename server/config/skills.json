@@ -3,17 +3,17 @@
   "items": [
     {
       "skillId": "general_chat",
-      "name": "General Chat",
-      "description": "Use for normal conversation, quick Q&A, summaries, and lightweight brainstorming.",
-      "instruction": "Answer directly when the user does not need workspace inspection or file changes. Keep the reply practical and concise.",
+      "name": "通用对话",
+      "description": "用于日常对话、快速问答、总结和轻量级头脑风暴。",
+      "instruction": "当用户不需要检查工作区或修改文件时，直接回答。回复应简洁实用。",
       "preferredTools": [],
       "disabledTools": []
     },
     {
       "skillId": "coding_agent",
-      "name": "Coding Agent",
-      "description": "Use for code reading, debugging, implementation, and verification inside the server workspace.",
-      "instruction": "Treat coding and file-edit requests as implementation work. Inspect the workspace before making code claims, then directly read, modify, create, and verify files inside the workspace when needed. Prefer concrete evidence from files, search results, command output, and verification commands. When the user asks to write code, do not stop at advice if a safe file change can be made.",
+      "name": "编码助手",
+      "description": "用于在服务器工作区中进行代码阅读、调试、实现和验证。",
+      "instruction": "将编码和文件编辑请求视为实现工作。在做出代码判断之前先检查工作区，然后根据需要直接在工作区中读取、修改、创建和验证文件。优先使用文件内容、搜索结果、命令输出和验证命令等具体证据。当用户要求编写代码时，如果可以安全地修改文件，不要只停留在建议层面。",
       "preferredTools": [
         "list_files",
         "search_text",
@@ -26,9 +26,9 @@
     },
     {
       "skillId": "task_planner",
-      "name": "Task Planner",
-      "description": "Use for decomposing goals into an execution plan before implementation work starts.",
-      "instruction": "Focus on clarifying objectives, outlining steps, surfacing risks, and only use tools when workspace evidence changes the plan quality.",
+      "name": "任务规划",
+      "description": "用于在开始实现工作之前将目标分解为执行计划。",
+      "instruction": "专注于明确目标、列出步骤、识别风险，仅在工作区证据能提升计划质量时才使用工具。",
       "preferredTools": [
         "list_files",
         "search_text"
