@@ -93,6 +93,19 @@ function getFriendlyErrorMessage(errorMessage, fallbackMessage) {
     return `AI 模型返回了不完整的响应。建议重新尝试该任务。`
   }
 
+  if (
+    lowerMessage.includes('html 错误页')
+    || (
+      lowerMessage.includes('<html')
+      && (
+        lowerMessage.includes('404 not found')
+        || lowerMessage.includes('openresty')
+      )
+    )
+  ) {
+    return 'AI 接口返回了 HTML 错误页，通常表示当前模型配置的 AI Base URL 不正确。请检查模型配置中的接口地址。'
+  }
+
   return normalized
 }
 

@@ -4,7 +4,8 @@
       "Bash(npm run *)",
       "Bash(git restore *)",
       "Bash(pkill -f \"vite\")",
-      "Bash(taskkill *)"
+      "Bash(taskkill *)",
+      "WebSearch"
     ]
   }
 }

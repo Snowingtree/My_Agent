@@ -222,19 +222,38 @@ function looksLikeCodeHeavyContent(value) {
     return false
   }
 
-  return [
-    '```',
+  const highConfidenceMarkers = [
     '<!doctype html',
     '<html',
-    '<style',
-    '<script',
-    '<template>',
     'export default',
-    'function ',
-    'const ',
     'body {',
     '.container {'
-  ].some((marker) => normalized.includes(marker))
+  ]
+
+  if (highConfidenceMarkers.some((marker) => normalized.includes(marker))) {
+    return true
+  }
+
+  const codeBlockMatch = normalized.match(/```/g)
+
+  if (codeBlockMatch && codeBlockMatch.length >= 2) {
+    return true
+  }
+
+  const hasStyleOrScriptBlock = (
+    (normalized.includes('<style') && normalized.includes('</style>'))
+    || (normalized.includes('<script') && normalized.includes('</script>'))
+    || (normalized.includes('<template>') && normalized.includes('</template>'))
+  )
+
+  if (hasStyleOrScriptBlock) {
+    return true
+  }
+
+  const lineCount = normalized.split(/\r?\n/).length
+  const isLongEnough = normalized.length >= 220 || lineCount >= 8
+
+  return isLongEnough && highConfidenceMarkers.some((marker) => normalized.includes(marker))
 }
 
 function extractCodeFence(value) {
@@ -335,6 +354,17 @@ function extractWritableContentFromReply(reply) {
   }
 }
 
+function stripWrappingCodeFences(value) {
+  const trimmed = String(value || '').trim()
+  const match = trimmed.match(/^```[a-zA-Z0-9_-]*\s*\n?([\s\S]+?)\n?```\s*$/)
+
+  if (match?.[1]) {
+    return match[1].trim()
+  }
+
+  return trimmed
+}
+
 function buildSafeAssistantReply({
   reply = '',
   fileChangesRequired = false,
@@ -342,7 +372,7 @@ function buildSafeAssistantReply({
   changedFiles = [],
   verifiedAfterModification = false
 } = {}) {
-  const normalizedReply = normalizeTrimmedString(reply)
+  const normalizedReply = stripWrappingCodeFences(normalizeTrimmedString(reply))
 
   if (modifiedWorkspace) {
     return buildWorkspaceCompletionReply({

@@ -60,8 +60,14 @@ function shouldPreferJsonResponseFormat({ aiConfig, model } = {}) {
   return (
     hostname.endsWith('bigmodel.cn')
     || hostname.endsWith('openai.com')
+    || hostname.endsWith('siliconflow.cn')
+    || hostname.endsWith('api.mimo.ai')
+    || hostname.endsWith('xiaomi.com')
     || normalizedModel.startsWith('glm-')
     || normalizedModel.startsWith('gpt-')
+    || normalizedModel.startsWith('mimo-')
+    || normalizedModel.startsWith('xiaomi/')
+    || normalizedModel.includes('/mimo-')
   )
 }
 
@@ -121,6 +127,37 @@ function summarizeRawText(value, maxChars = 240) {
   return normalized.length > maxChars
     ? `${normalized.slice(0, maxChars)}...`
     : normalized
+}
+
+function looksLikeHtmlErrorPage(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+
+  if (!normalized) {
+    return false
+  }
+
+  return (
+    normalized.includes('<html')
+    && normalized.includes('<title>')
+    && (
+      normalized.includes('404 not found')
+      || normalized.includes('openresty')
+      || normalized.includes('<center><h1>')
+    )
+  )
+}
+
+function createHtmlErrorPageMessage(aiConfig, responseText, statusCode) {
+  const baseURL = String(aiConfig?.baseURL || '').trim()
+  const suffix = baseURL
+    ? ` 当前配置的 AI Base URL 是：${baseURL}`
+    : ''
+
+  if (looksLikeHtmlErrorPage(responseText)) {
+    return `AI 接口返回了 HTML 错误页（${statusCode}）。这通常表示 AI Base URL 配置错误，应该填写 OpenAI 兼容接口根路径，而不是网页地址或错误的完整路径。${suffix}`
+  }
+
+  return ''
 }
 
 function shouldTreatAsPlainTextFinal(rawText) {
@@ -490,6 +527,12 @@ async function runStructuredCompletionAttempt({
       const { rawText, usage, responseText, payload, idleTimedOut } = streamedResult
 
       if (!response.ok) {
+        const htmlErrorMessage = createHtmlErrorPageMessage(aiConfig, responseText, response.status)
+
+        if (htmlErrorMessage) {
+          throw new Error(htmlErrorMessage)
+        }
+
         if (
           usedStructuredMode
           && index < requestBodies.length - 1

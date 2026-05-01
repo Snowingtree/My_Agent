@@ -779,27 +779,54 @@ function formatMessageContent(content, role) {
 
 function formatMessageContentForDisplay(content, role) {
   const normalizedRole = String(role || '').trim().toLowerCase()
-  const normalizedContent = String(content || '').trim()
+  let normalizedContent = String(content || '').trim()
 
   if (normalizedRole === 'user') {
     return normalizedContent
   }
 
-  const lowerContent = normalizedContent.toLowerCase()
+  const fenceMatch = normalizedContent.match(/^```[a-zA-Z0-9_-]*\s*\n?([\s\S]+?)\n?```\s*$/)
 
-  const looksLikeCodeHeavyMessage = [
-    '```',
-    '<!doctype html',
-    '<html',
-    '<style',
-    '<script',
-    '<template>',
+  if (fenceMatch?.[1]) {
+    normalizedContent = fenceMatch[1].trim()
+  }
+
+  const lowerContent = normalizedContent.toLowerCase()
+  const looksLikeHtmlErrorPage = (
+    lowerContent.includes('<html')
+    && lowerContent.includes('<title>')
+    && (
+      lowerContent.includes('404 not found')
+      || lowerContent.includes('openresty')
+      || lowerContent.includes('<center><h1>')
+    )
+  )
+
+  if (looksLikeHtmlErrorPage) {
+    return 'AI 接口返回了一个 HTML 错误页，通常表示当前模型配置的 AI Base URL 不正确。请检查模型配置中的接口地址。'
+  }
+
+  const lt = '<'
+  const highConfidenceMarkers = [
+    lt + '!doctype html',
+    lt + 'html',
     'export default',
-    'function ',
-    'const ',
     'body {',
     '.container {'
-  ].some((marker) => lowerContent.includes(marker))
+  ]
+
+  const hasHighConfidenceMarker = highConfidenceMarkers.some((marker) => lowerContent.includes(marker))
+  const codeBlockMatch = lowerContent.match(/```/g)
+  const hasMultipleCodeBlocks = codeBlockMatch && codeBlockMatch.length >= 2
+  const hasStyleOrScriptBlock = (
+    (lowerContent.includes(lt + 'style') && lowerContent.includes(lt + '/style>'))
+    || (lowerContent.includes(lt + 'script') && lowerContent.includes(lt + '/script>'))
+    || (lowerContent.includes(lt + 'template>') && lowerContent.includes(lt + '/template>'))
+  )
+
+  const lineCount = normalizedContent.split(/\r?\n/).length
+  const isLongEnough = normalizedContent.length >= 220 || lineCount >= 8
+  const looksLikeCodeHeavyMessage = hasMultipleCodeBlocks || hasStyleOrScriptBlock || (hasHighConfidenceMarker && isLongEnough)
 
   if (lowerContent.includes('tool summary:') && !lowerContent.includes('status: failed')) {
     return '本轮主要执行了文件或工具操作，代码正文已省略，请查看右侧会话文件。'
