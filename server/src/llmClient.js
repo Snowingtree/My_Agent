@@ -185,6 +185,198 @@ function createPlainTextFinalFallback(rawText) {
   }
 }
 
+function unescapeJsonLikeString(value) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  return value
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+}
+
+function extractJsonLikeStringField(rawText, fieldName, nextFieldNames = []) {
+  const source = String(rawText || '')
+  const fieldToken = `"${fieldName}"`
+  const startIndex = source.indexOf(fieldToken)
+
+  if (startIndex === -1) {
+    return ''
+  }
+
+  const colonIndex = source.indexOf(':', startIndex + fieldToken.length)
+
+  if (colonIndex === -1) {
+    return ''
+  }
+
+  const afterColon = source.slice(colonIndex + 1).trimStart()
+
+  if (!afterColon.startsWith('"')) {
+    return ''
+  }
+
+  const valueStartIndex = source.length - afterColon.length + 1
+  const delimiters = [
+    ...nextFieldNames.map((name) => `,"${name}"`),
+    '}'
+  ]
+  let bestEndIndex = -1
+
+  for (let index = valueStartIndex; index < source.length; index += 1) {
+    if (source[index] !== '"') {
+      continue
+    }
+
+    const remainder = source.slice(index + 1).trimStart()
+    const matchesDelimiter = delimiters.some((delimiter) => remainder.startsWith(delimiter))
+
+    if (!matchesDelimiter) {
+      continue
+    }
+
+    bestEndIndex = index
+    break
+  }
+
+  if (bestEndIndex === -1) {
+    return ''
+  }
+
+  return unescapeJsonLikeString(source.slice(valueStartIndex, bestEndIndex))
+}
+
+function extractJsonLikeObjectField(rawText, fieldName) {
+  const source = String(rawText || '')
+  const fieldToken = `"${fieldName}"`
+  const startIndex = source.indexOf(fieldToken)
+
+  if (startIndex === -1) {
+    return null
+  }
+
+  const colonIndex = source.indexOf(':', startIndex + fieldToken.length)
+
+  if (colonIndex === -1) {
+    return null
+  }
+
+  const objectStartIndex = source.indexOf('{', colonIndex + 1)
+
+  if (objectStartIndex === -1) {
+    return null
+  }
+
+  let depth = 0
+  let insideString = false
+  let escaped = false
+
+  for (let index = objectStartIndex; index < source.length; index += 1) {
+    const character = source[index]
+
+    if (insideString) {
+      if (escaped) {
+        escaped = false
+        continue
+      }
+
+      if (character === '\\') {
+        escaped = true
+        continue
+      }
+
+      if (character === '"') {
+        insideString = false
+      }
+
+      continue
+    }
+
+    if (character === '"') {
+      insideString = true
+      continue
+    }
+
+    if (character === '{') {
+      depth += 1
+      continue
+    }
+
+    if (character === '}') {
+      depth -= 1
+
+      if (depth === 0) {
+        try {
+          return JSON.parse(source.slice(objectStartIndex, index + 1))
+        } catch {
+          return null
+        }
+      }
+    }
+  }
+
+  return null
+}
+
+function tryRecoverJsonLikeResponse(rawText) {
+  const action = extractJsonLikeStringField(rawText, 'action', ['summary', 'reply', 'question', 'tool'])
+
+  if (!action) {
+    return null
+  }
+
+  if (action === 'final') {
+    const summary = extractJsonLikeStringField(rawText, 'summary', ['reply', 'question', 'tool'])
+    const reply = extractJsonLikeStringField(rawText, 'reply', ['question', 'tool', 'summary'])
+
+    if (!reply) {
+      return null
+    }
+
+    return {
+      action,
+      summary,
+      reply
+    }
+  }
+
+  if (action === 'ask_user') {
+    const summary = extractJsonLikeStringField(rawText, 'summary', ['question', 'reply', 'tool'])
+    const question = extractJsonLikeStringField(rawText, 'question', ['reply', 'tool', 'summary'])
+      || extractJsonLikeStringField(rawText, 'reply', ['tool', 'summary'])
+
+    if (!question) {
+      return null
+    }
+
+    return {
+      action,
+      summary,
+      question
+    }
+  }
+
+  if (action === 'tool') {
+    const summary = extractJsonLikeStringField(rawText, 'summary', ['tool', 'reply', 'question'])
+    const tool = extractJsonLikeObjectField(rawText, 'tool')
+
+    if (!tool?.name) {
+      return null
+    }
+
+    return {
+      action,
+      summary,
+      tool
+    }
+  }
+
+  return null
+}
+
 function extractFirstJsonObject(rawText) {
   const trimmedText = String(rawText || '').trim()
 
@@ -252,6 +444,12 @@ function extractFirstJsonObject(rawText) {
         return JSON.parse(trimmedText.slice(firstBraceIndex, index + 1))
       }
     }
+  }
+
+  const recovered = tryRecoverJsonLikeResponse(trimmedText)
+
+  if (recovered) {
+    return recovered
   }
 
   throw new Error('Model response contained malformed JSON.')

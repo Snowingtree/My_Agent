@@ -3,16 +3,16 @@
   "items": [
     {
       "skillId": "general_chat",
-      "name": "通用对话",
-      "description": "用于日常对话、快速问答、总结和轻量头脑风暴。",
+      "name": "General Chat",
+      "description": "Use for everyday conversation, quick Q&A, summaries, and lightweight brainstorming.",
       "instructionPath": "../../skills/general_chat/SKILL.md",
       "preferredTools": [],
       "disabledTools": []
     },
     {
       "skillId": "coding_agent",
-      "name": "编码助手",
-      "description": "用于在工作区中进行代码阅读、调试、实现和验证。",
+      "name": "Coding Agent",
+      "description": "Use for reading, debugging, implementing, and verifying code inside the workspace.",
       "instructionPath": "../../skills/coding_agent/SKILL.md",
       "preferredTools": [
         "list_files",
@@ -26,8 +26,8 @@
     },
     {
       "skillId": "task_planner",
-      "name": "任务规划",
-      "description": "用于在开始实现之前拆解目标、列出步骤并识别风险。",
+      "name": "Task Planner",
+      "description": "Use for decomposing goals, outlining steps, and identifying risks before implementation.",
       "instructionPath": "../../skills/task_planner/SKILL.md",
       "preferredTools": [
         "list_files",

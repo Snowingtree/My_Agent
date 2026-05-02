@@ -184,6 +184,7 @@
           :is-cancelling-task="isCancellingTask"
           :is-creating-session="isCreatingSession"
           :is-loading-ai-configs="isLoadingAiConfigs"
+          :is-loading-skills="isLoadingSkills"
           :is-loading-session="isLoadingSession"
           :is-loading-sessions="isLoadingSessions"
           :is-loading-workspace-file="isLoadingWorkspaceFile"
@@ -196,6 +197,9 @@
           :selected-ai-id="selectedAiId"
           :selected-model="selectedModel"
           :selected-model-label="selectedModelLabel"
+          :selected-skill-ids="selectedSkillIds"
+          :selected-skill-label="selectedSkillLabel"
+          :skills="skills"
           :selected-workspace-file-content="selectedWorkspaceFileContent"
           :selected-workspace-file-path="selectedWorkspaceFilePath"
           :selected-workspace-file-size-bytes="selectedWorkspaceFileSizeBytes"
@@ -214,6 +218,7 @@
           @update:ai-id="setSelectedAiId"
           @update:draft="draft = $event"
           @update:model="setSelectedModel"
+          @update:skill-ids="setSelectedSkillIds"
         />
       </section>
 
@@ -284,6 +289,7 @@ const {
   activeWorkspaceFiles,
   activeWorkspaceFolder,
   aiConfigs,
+  skills,
   cancelActiveTask,
   canSend,
   chatError,
@@ -296,6 +302,7 @@ const {
   isAgentRunning,
   isCreatingSession,
   isLoadingAiConfigs,
+  isLoadingSkills,
   isLoadingSession,
   isLoadingSessions,
   isLoadingWorkspaceFile,
@@ -310,6 +317,8 @@ const {
   selectedAiId,
   selectedModel,
   selectedModelLabel,
+  selectedSkillIds,
+  selectedSkillLabel,
   selectedWorkspaceFileContent,
   selectedWorkspaceFilePath,
   selectedWorkspaceFileSizeBytes,
@@ -318,6 +327,7 @@ const {
   sessionError,
   sessions,
   setSelectedAiId,
+  setSelectedSkillIds,
   setSelectedModel,
   workspaceFileError,
   workspaceMode

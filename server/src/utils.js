@@ -156,6 +156,7 @@ export function createSessionRecord() {
     lastAiId: '',
     lastModel: '',
     lastSkillId: '',
+    lastSkillIds: [],
     workspaceFolder: `sessions/${sessionId}`,
     workspaceFiles: [],
     messages: [],

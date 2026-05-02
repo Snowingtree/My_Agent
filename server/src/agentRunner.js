@@ -310,36 +310,71 @@ async function buildWorkspaceSnapshotText({
   return lines.join('\n')
 }
 
-function buildActiveSkillPrompt(skill) {
-  if (!skill) {
+function buildActiveSkillPrompt(skills) {
+  const normalizedSkills = (Array.isArray(skills) ? skills : [])
+    .filter(Boolean)
+
+  if (!normalizedSkills.length) {
     return ''
   }
 
-  const promptSections = [
-    `Active skill: ${skill.name} (${skill.skillId}).`
-  ]
+  return normalizedSkills.map((skill) => {
+    const promptSections = [
+      `Active skill: ${skill.name} (${skill.skillId}).`
+    ]
 
-  if (skill.description) {
-    promptSections.push(`Skill purpose: ${skill.description}`)
+    if (skill.description) {
+      promptSections.push(`Skill purpose: ${skill.description}`)
+    }
+
+    if (skill.instruction) {
+      promptSections.push(`Skill instruction: ${skill.instruction}`)
+    }
+
+    if (Array.isArray(skill.preferredTools) && skill.preferredTools.length) {
+      promptSections.push(`Prefer these tools or namespaces when relevant: ${skill.preferredTools.join(', ')}`)
+    }
+
+    if (Array.isArray(skill.allowedTools) && skill.allowedTools.length) {
+      promptSections.push(`Only use these tools or namespaces: ${skill.allowedTools.join(', ')}`)
+    }
+
+    if (Array.isArray(skill.disabledTools) && skill.disabledTools.length) {
+      promptSections.push(`Never use these tools or namespaces: ${skill.disabledTools.join(', ')}`)
+    }
+
+    return promptSections.join('\n')
+  }).join('\n\n')
+}
+
+function mergeActiveSkills(skills) {
+  const normalizedSkills = (Array.isArray(skills) ? skills : []).filter(Boolean)
+
+  if (!normalizedSkills.length) {
+    return null
   }
 
-  if (skill.instruction) {
-    promptSections.push(`Skill instruction: ${skill.instruction}`)
+  if (normalizedSkills.length === 1) {
+    return normalizedSkills[0]
   }
 
-  if (Array.isArray(skill.preferredTools) && skill.preferredTools.length) {
-    promptSections.push(`Prefer these tools or namespaces when relevant: ${skill.preferredTools.join(', ')}`)
-  }
+  const unique = (items) => [...new Set((Array.isArray(items) ? items : []).filter(Boolean))]
 
-  if (Array.isArray(skill.allowedTools) && skill.allowedTools.length) {
-    promptSections.push(`Only use these tools or namespaces: ${skill.allowedTools.join(', ')}`)
+  return {
+    skillId: normalizedSkills.map((item) => item.skillId).join('+'),
+    name: normalizedSkills.map((item) => item.name).join(' + '),
+    description: normalizedSkills
+      .map((item) => normalizeTrimmedString(item.description))
+      .filter(Boolean)
+      .join(' | '),
+    instruction: normalizedSkills
+      .map((item) => normalizeTrimmedString(item.instruction))
+      .filter(Boolean)
+      .join('\n\n'),
+    preferredTools: unique(normalizedSkills.flatMap((item) => item.preferredTools || [])),
+    allowedTools: unique(normalizedSkills.flatMap((item) => item.allowedTools || [])),
+    disabledTools: unique(normalizedSkills.flatMap((item) => item.disabledTools || []))
   }
-
-  if (Array.isArray(skill.disabledTools) && skill.disabledTools.length) {
-    promptSections.push(`Never use these tools or namespaces: ${skill.disabledTools.join(', ')}`)
-  }
-
-  return promptSections.join('\n')
 }
 
 function looksLikeToolSummaryContent(value) {
@@ -1182,7 +1217,7 @@ export function createAgentRunner({
     })
   }
 
-  async function runTask({ sessionId, requestedAiId, requestedModel, requestedSkillId, abortSignal }) {
+  async function runTask({ sessionId, requestedAiId, requestedModel, requestedSkillId, requestedSkillIds = [], abortSignal }) {
     const taskStartedAtMs = Date.now()
     const throwIfCancelled = () => {
       if (abortSignal?.aborted) {
@@ -1230,8 +1265,13 @@ export function createAgentRunner({
     }
 
     const aiConfig = await getAiConfigById(aiRuntimeConfig, requestedAiId)
-    const activeSkill = skillRegistry?.resolveSkill(requestedSkillId) || null
-    const activeSkillPrompt = buildActiveSkillPrompt(activeSkill)
+    const activeSkills = (
+      Array.isArray(requestedSkillIds) && requestedSkillIds.length
+        ? requestedSkillIds.map((skillId) => skillRegistry?.getSkillById(skillId)).filter(Boolean)
+        : [skillRegistry?.resolveSkill(requestedSkillId)].filter(Boolean)
+    )
+    const activeSkill = mergeActiveSkills(activeSkills)
+    const activeSkillPrompt = buildActiveSkillPrompt(activeSkills)
 
     if (!aiConfig || !aiConfig.apiKey) {
       const failureSummary = '\u5f53\u524d\u6ca1\u6709\u53ef\u7528\u7684 AI \u914d\u7f6e\uff0c\u8bf7\u5148\u68c0\u67e5 AI \u914d\u7f6e\u548c API Key\u3002'

@@ -304,6 +304,57 @@
           </div>
         </div>
       </section>
+
+      <Transition name="skill-picker-fade">
+        <div
+          v-if="isSkillPickerOpen"
+          class="agent-skill-picker"
+          role="dialog"
+          aria-modal="true"
+          aria-label="选择技能"
+          @click.self="closeSkillPicker"
+        >
+          <section class="agent-skill-picker__panel">
+            <div class="agent-skill-picker__head">
+              <div>
+                <p class="agent-panel__eyebrow">技能选择</p>
+                <h3>选择本轮要启用的技能</h3>
+                <small>可多选。默认不选时保持自动判断，点击已选技能可取消。</small>
+              </div>
+              <button
+                type="button"
+                class="agent-skill-picker__close"
+                aria-label="关闭技能选择"
+                @click="closeSkillPicker"
+              >
+                ×
+              </button>
+            </div>
+
+            <div class="agent-skill-picker__list">
+              <button
+                type="button"
+                class="agent-skill-option"
+                :class="{ 'is-active': !selectedSkillIds.length }"
+                @click="selectAutoSkill"
+              >
+                <strong>自动选择</strong>
+              </button>
+
+              <button
+                v-for="item in skills"
+                :key="item.skillId"
+                type="button"
+                class="agent-skill-option"
+                :class="{ 'is-active': selectedSkillIds.includes(item.skillId) }"
+                @click="toggleSkillSelection(item.skillId)"
+              >
+                <strong>{{ item.name }}</strong>
+              </button>
+            </div>
+          </section>
+        </div>
+      </Transition>
     </section>
 
     <aside class="agent-shell__inspector" :class="{ 'is-collapsed': isInspectorCollapsed }">
@@ -316,7 +367,7 @@
         {{ isInspectorCollapsed ? '‹' : '›' }}
       </button>
 
-      <section v-show="!isInspectorCollapsed" class="agent-panel">
+      <section class="agent-panel agent-inspector__panel" :class="{ 'is-hidden': isInspectorCollapsed }">
         <div class="agent-panel__head">
           <p class="agent-panel__eyebrow">模型信息</p>
           <h3>当前配置</h3>
@@ -372,6 +423,15 @@
             </small>
           </article>
 
+          <button
+            type="button"
+            class="agent-info-card agent-info-card--skill-launcher"
+            :disabled="isLoadingSkills"
+            @click="openSkillPicker"
+          >
+            <strong class="agent-info-card__value">当前技能</strong>
+          </button>
+
           <article class="agent-info-card agent-info-card--files">
             <span class="agent-info-card__label">会话文件</span>
             <strong class="agent-info-card__value">{{ activeWorkspaceFiles.length ? `${activeWorkspaceFiles.length} 个文件` : '暂无文件' }}</strong>
@@ -386,7 +446,7 @@
                 class="agent-file-item"
                 :class="{ 'is-active': item.path === selectedWorkspaceFilePath }"
                 :title="item.path"
-                @click="$emit('open-workspace-file', item.path)"
+                @click="handleWorkspaceFileClick(item.path)"
               >
                 <span class="agent-file-item__icon" aria-hidden="true">📄</span>
                 <strong class="agent-file-item__path">{{ getFileDisplayName(item.path) }}</strong>
@@ -398,15 +458,20 @@
     </aside>
 
     <div
-      v-if="hasWorkspaceFilePreview"
       class="agent-shell__resizer"
+      :class="{ 'is-visible': hasWorkspaceFilePreview }"
       role="separator"
       aria-orientation="vertical"
       aria-label="调整代码预览宽度"
+      :aria-hidden="hasWorkspaceFilePreview ? 'false' : 'true'"
       @pointerdown="startPreviewResize"
     ></div>
 
-    <aside v-if="hasWorkspaceFilePreview" class="agent-shell__preview">
+    <aside
+      class="agent-shell__preview"
+      :class="{ 'is-visible': hasWorkspaceFilePreview }"
+      :aria-hidden="hasWorkspaceFilePreview ? 'false' : 'true'"
+    >
       <section class="agent-code-viewer">
         <div class="agent-code-viewer__head">
           <div class="agent-code-viewer__head-copy">
@@ -417,10 +482,19 @@
           <button
             type="button"
             class="agent-code-viewer__close"
-            aria-label="关闭文件预览"
+            aria-label="收起文件预览"
             @click="$emit('close-workspace-file')"
           >
-            ×
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M9 6L15 12L9 18"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.9"
+              />
+            </svg>
           </button>
         </div>
 
@@ -444,7 +518,7 @@
               <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
             </svg>
           </button>
-          <pre class="agent-code-viewer__body"><code class="hljs" v-html="highlightedWorkspaceFileContent"></code></pre>
+          <pre class="agent-code-viewer__body"><code class="hljs" v-html="renderedWorkspaceFileContent"></code></pre>
         </div>
       </section>
     </aside>
@@ -481,6 +555,7 @@ const props = defineProps({
   isCreatingSession: { type: Boolean, default: false },
   isCancellingTask: { type: Boolean, default: false },
   isLoadingAiConfigs: { type: Boolean, default: false },
+  isLoadingSkills: { type: Boolean, default: false },
   isLoadingSession: { type: Boolean, default: false },
   isLoadingSessions: { type: Boolean, default: false },
   isLoadingWorkspaceFile: { type: Boolean, default: false },
@@ -494,6 +569,9 @@ const props = defineProps({
   selectedAiId: { type: String, default: '' },
   selectedModel: { type: String, default: '' },
   selectedModelLabel: { type: String, default: '' },
+  selectedSkillIds: { type: Array, default: () => [] },
+  selectedSkillLabel: { type: String, default: '自动选择' },
+  skills: { type: Array, default: () => [] },
   selectedWorkspaceFileContent: { type: String, default: '' },
   selectedWorkspaceFilePath: { type: String, default: '' },
   selectedWorkspaceFileSizeBytes: { type: Number, default: null },
@@ -519,7 +597,8 @@ const emit = defineEmits([
   'send',
   'update:ai-id',
   'update:draft',
-  'update:model'
+  'update:model',
+  'update:skill-ids'
 ])
 
 const composerRef = ref(null)
@@ -531,12 +610,16 @@ const isCopyingWorkspaceFile = ref(false)
 const hasCopiedWorkspaceFile = ref(false)
 const previewWidth = ref(520)
 const isInspectorCollapsed = ref(false)
+const isSkillPickerOpen = ref(false)
 const isResizingPreview = ref(false)
 const suppressAutoOpen = ref(false)
 const hasInitializedWorkspaceFilesForSession = ref(false)
+const renderedWorkspaceFileContent = ref('')
 let activeResizePointerId = null
 let workspaceFileCopyResetTimer = null
 let suppressAutoOpenTimer = null
+let workspaceFileHighlightTimer = null
+let workspaceFileHighlightFrameId = null
 
 const userInitial = computed(() => {
   const normalized = String(props.username || '').trim()
@@ -591,6 +674,43 @@ const resolvedModelLabel = computed(() => {
 
   return '未选择模型'
 })
+
+function openSkillPicker() {
+  if (props.isLoadingSkills) {
+    return
+  }
+
+  isSkillPickerOpen.value = true
+}
+
+function closeSkillPicker() {
+  isSkillPickerOpen.value = false
+}
+
+function selectAutoSkill() {
+  emit('update:skill-ids', [])
+}
+
+function toggleSkillSelection(skillId) {
+  const normalizedSkillId = String(skillId || '').trim()
+
+  if (!normalizedSkillId) {
+    return
+  }
+
+  const nextSkillIds = Array.isArray(props.selectedSkillIds)
+    ? [...props.selectedSkillIds]
+    : []
+  const existingIndex = nextSkillIds.indexOf(normalizedSkillId)
+
+  if (existingIndex >= 0) {
+    nextSkillIds.splice(existingIndex, 1)
+  } else {
+    nextSkillIds.push(normalizedSkillId)
+  }
+
+  emit('update:skill-ids', nextSkillIds)
+}
 
 const resolvedWorkspaceMode = computed(() => {
   const label = String(props.workspaceMode?.label || '').trim()
@@ -657,6 +777,15 @@ const selectedWorkspaceLanguage = computed(() => {
     jsx: 'javascript',
     ts: 'typescript',
     tsx: 'typescript',
+    c: 'c',
+    h: 'c',
+    cc: 'cpp',
+    cpp: 'cpp',
+    cxx: 'cpp',
+    hpp: 'cpp',
+    hxx: 'cpp',
+    py: 'python',
+    pyi: 'python',
     json: 'json',
     md: 'markdown',
     markdown: 'markdown',
@@ -718,7 +847,35 @@ const normalizedWorkspaceFileContent = computed(() => (
   decodeEscapedPreviewContent(props.selectedWorkspaceFileContent)
 ))
 
-const highlightedWorkspaceFileContent = computed(() => {
+function escapeWorkspacePreviewHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function shouldSkipSyntaxHighlight(content, language) {
+  const normalizedContent = String(content || '')
+  const lineCount = normalizedContent.split(/\r?\n/).length
+
+  if (!language) {
+    return true
+  }
+
+  if (normalizedContent.length > 16000) {
+    return true
+  }
+
+  if (lineCount > 500) {
+    return true
+  }
+
+  return false
+}
+
+function buildHighlightedWorkspaceFileContent() {
   const content = normalizedWorkspaceFileContent.value
 
   if (!content) {
@@ -727,16 +884,62 @@ const highlightedWorkspaceFileContent = computed(() => {
 
   const language = selectedWorkspaceLanguage.value
 
+  if (!hljs.getLanguage(language) || shouldSkipSyntaxHighlight(content, language)) {
+    return escapeWorkspacePreviewHtml(content)
+  }
+
   try {
-    if (language && hljs.getLanguage(language)) {
-      return hljs.highlight(content, { language }).value
+    return hljs.highlight(content, {
+      language,
+      ignoreIllegals: true
+    }).value
+  } catch {
+    return escapeWorkspacePreviewHtml(content)
+  }
+}
+
+function cancelWorkspaceFileHighlightSchedule() {
+  if (workspaceFileHighlightTimer) {
+    clearTimeout(workspaceFileHighlightTimer)
+    workspaceFileHighlightTimer = null
+  }
+
+  if (workspaceFileHighlightFrameId !== null && typeof window !== 'undefined') {
+    window.cancelAnimationFrame(workspaceFileHighlightFrameId)
+    workspaceFileHighlightFrameId = null
+  }
+}
+
+function scheduleWorkspaceFileHighlight() {
+  cancelWorkspaceFileHighlightSchedule()
+
+  const content = normalizedWorkspaceFileContent.value
+
+  if (!content) {
+    renderedWorkspaceFileContent.value = ''
+    return
+  }
+
+  renderedWorkspaceFileContent.value = escapeWorkspacePreviewHtml(content)
+
+  if (!hasWorkspaceFilePreview.value) {
+    return
+  }
+
+  workspaceFileHighlightTimer = setTimeout(() => {
+    workspaceFileHighlightTimer = null
+
+    if (typeof window === 'undefined') {
+      renderedWorkspaceFileContent.value = buildHighlightedWorkspaceFileContent()
+      return
     }
 
-    return hljs.highlightAuto(content).value
-  } catch {
-    return hljs.highlightAuto(content).value
-  }
-})
+    workspaceFileHighlightFrameId = window.requestAnimationFrame(() => {
+      workspaceFileHighlightFrameId = null
+      renderedWorkspaceFileContent.value = buildHighlightedWorkspaceFileContent()
+    })
+  }, 180)
+}
 
 const resolvedComposerPlaceholder = computed(() => {
   if (props.isAgentRunning) {
@@ -1386,6 +1589,18 @@ function handleComposerKeydown(event) {
   requestSend()
 }
 
+function handleWorkspaceFileClick(filePath) {
+  const normalizedPath = String(filePath || '').trim()
+  const selectedPath = String(props.selectedWorkspaceFilePath || '').trim()
+
+  if (normalizedPath && normalizedPath === selectedPath && hasWorkspaceFilePreview.value) {
+    emit('close-workspace-file')
+    return
+  }
+
+  emit('open-workspace-file', normalizedPath)
+}
+
 watch(
   () => props.isLoadingSession,
   (loading) => {
@@ -1508,6 +1723,15 @@ watch(
   }
 )
 
+watch(
+  [normalizedWorkspaceFileContent, selectedWorkspaceLanguage, hasWorkspaceFilePreview],
+  async () => {
+    await nextTick()
+    scheduleWorkspaceFileHighlight()
+  },
+  { immediate: true }
+)
+
 if (typeof window !== 'undefined') {
   window.addEventListener('pointermove', handlePreviewResizeMove)
   window.addEventListener('pointerup', handlePreviewResizeUp)
@@ -1526,6 +1750,7 @@ onBeforeUnmount(() => {
     suppressAutoOpenTimer = null
   }
 
+  cancelWorkspaceFileHighlightSchedule()
   resetWorkspaceFileCopyState()
   stopPreviewResize()
 })
@@ -1548,12 +1773,17 @@ onBeforeUnmount(() => {
   --agent-soft-surface-active: #e7e7e7;
   --agent-focus: rgba(23, 23, 23, 0.14);
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) var(--agent-inspector-width);
+  grid-template-columns: 280px minmax(0, 1fr) 0 minmax(0, 0) var(--agent-inspector-width);
   grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   background: var(--agent-surface);
   color: var(--agent-text);
+  transition: grid-template-columns 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agent-shell.is-resizing-preview {
+  transition: none;
 }
 
 .agent-shell.has-file-preview {
@@ -1561,7 +1791,7 @@ onBeforeUnmount(() => {
 }
 
 .agent-shell.is-sidebar-hidden {
-  grid-template-columns: minmax(0, 1fr) var(--agent-inspector-width);
+  grid-template-columns: minmax(0, 1fr) 0 minmax(0, 0) var(--agent-inspector-width);
 }
 
 .agent-shell.is-sidebar-hidden.has-file-preview {
@@ -1599,6 +1829,7 @@ onBeforeUnmount(() => {
   order: 2;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  position: relative;
   min-width: 0;
   overflow: hidden;
   background: var(--agent-surface);
@@ -1607,21 +1838,213 @@ onBeforeUnmount(() => {
 .agent-shell__inspector {
   order: 5;
   position: relative;
+  z-index: 3;
   padding: 18px 18px 18px 0;
   background: var(--agent-surface);
   border-left: 1px solid var(--agent-border);
   overflow: visible;
+  transition:
+    padding 0.48s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.24s ease;
 }
 
 .agent-shell__inspector.is-collapsed {
   padding: 18px 0 18px 0;
 }
 
+.agent-inspector__panel {
+  height: 100%;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateX(0);
+  transform-origin: right center;
+  transition:
+    opacity 0.42s ease,
+    transform 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.agent-inspector__panel.is-hidden {
+  opacity: 0;
+  transform: translateX(44px);
+  pointer-events: none;
+}
+
+.agent-info-card--skill-launcher {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  border: 1px solid var(--agent-border);
+  min-height: 74px;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.agent-info-card--skill-launcher:hover:not(:disabled) {
+  background: #f8fbff;
+  border-color: #d7def7;
+  box-shadow: 0 10px 24px rgba(38, 77, 183, 0.08);
+  transform: translateY(-1px);
+}
+
+.agent-info-card--skill-launcher:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.agent-info-card--skill-launcher .agent-info-card__value {
+  margin: 0;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.agent-skill-picker {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(6px);
+}
+
+.agent-skill-picker__panel {
+  width: min(720px, calc(100% - 40px));
+  max-height: min(720px, calc(100% - 48px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 18px;
+  padding: 22px;
+  border: 1px solid rgba(225, 229, 236, 0.92);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.14);
+}
+
+.agent-skill-picker__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.agent-skill-picker__head h3,
+.agent-skill-picker__head p,
+.agent-skill-picker__head small {
+  margin: 0;
+}
+
+.agent-skill-picker__head h3 {
+  margin-top: 6px;
+  color: var(--agent-text);
+  font-size: 1.1rem;
+}
+
+.agent-skill-picker__head small {
+  display: block;
+  margin-top: 8px;
+  color: var(--agent-subtle);
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+
+.agent-skill-picker__close {
+  width: 34px;
+  height: 34px;
+  border: 1px solid #e4e8ef;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #444444;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1.15rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.agent-skill-picker__close:hover {
+  background: #eef3ff;
+  border-color: #d4defc;
+  color: #264db7;
+}
+
+.agent-skill-picker__list {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  align-content: start;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.agent-skill-option {
+  width: 100%;
+  min-height: 58px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--agent-border);
+  border-radius: 14px;
+  background: #ffffff;
+  color: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    background-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.agent-skill-option:hover {
+  background: #f8fbff;
+  border-color: #d7def7;
+  box-shadow: 0 10px 24px rgba(38, 77, 183, 0.08);
+  transform: translateY(-1px);
+}
+
+.agent-skill-option.is-active {
+  border-color: #111111;
+  background: #111111;
+  color: #ffffff;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.18);
+}
+
+.agent-skill-option strong {
+  margin: 0;
+  color: currentColor;
+  font-size: 0.92rem;
+  line-height: 1.25;
+}
+
+.skill-picker-fade-enter-active,
+.skill-picker-fade-leave-active {
+  transition: opacity 0.22s ease;
+}
+
+.skill-picker-fade-enter-from,
+.skill-picker-fade-leave-to {
+  opacity: 0;
+}
+
 .agent-inspector__toggle {
   position: absolute;
   top: 50%;
   left: 0;
-  z-index: 4;
+  z-index: 8;
   width: 28px;
   height: 56px;
   transform: translate(-50%, -50%);
@@ -1651,8 +2074,17 @@ onBeforeUnmount(() => {
 .agent-shell__resizer {
   order: 3;
   position: relative;
+  z-index: 1;
   cursor: col-resize;
   background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.28s ease;
+}
+
+.agent-shell__resizer.is-visible {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .agent-shell__resizer::before {
@@ -1675,8 +2107,26 @@ onBeforeUnmount(() => {
 
 .agent-shell__preview {
   order: 4;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
   padding: 18px 18px 18px 0;
   background: var(--agent-surface);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateX(36px);
+  pointer-events: none;
+  will-change: transform, opacity;
+  transition:
+    opacity 0.42s ease,
+    transform 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agent-shell__preview.is-visible {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
 }
 
 .agent-sidebar__top {
@@ -3003,9 +3453,13 @@ onBeforeUnmount(() => {
 
 .agent-code-viewer {
   display: grid;
+  flex: 0 0 var(--agent-preview-width);
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 14px;
   height: 100%;
+  width: var(--agent-preview-width);
+  min-width: var(--agent-preview-width);
+  max-width: var(--agent-preview-width);
   padding: 22px 20px;
   border-radius: 24px;
   background: #ffffff;
@@ -3076,8 +3530,13 @@ onBeforeUnmount(() => {
 }
 
 .agent-code-viewer__close {
-  font-size: 1.25rem;
-  line-height: 1;
+  padding: 0;
+}
+
+.agent-code-viewer__close svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
 }
 
 .agent-code-viewer__copy:hover:not(:disabled),

@@ -23,6 +23,7 @@ function createSessionSummary(session) {
     lastAiId: session.lastAiId,
     lastModel: session.lastModel,
     lastSkillId: session.lastSkillId || '',
+    lastSkillIds: Array.isArray(session.lastSkillIds) ? session.lastSkillIds : [],
     workspaceFolder: String(session.workspaceFolder || '').trim(),
     workspaceFiles: Array.isArray(session.workspaceFiles) ? session.workspaceFiles : [],
     task: session.task
@@ -321,10 +322,17 @@ export class SessionRepository {
     return updatedSession
   }
 
-  async prepareSessionForTask({ sessionId, message, aiId, model, skillId = '' }) {
+  async prepareSessionForTask({ sessionId, message, aiId, model, skillId = '', skillIds = [] }) {
     const normalizedMessage = String(message ?? '')
     const timestamp = nowIso()
     const nextTaskId = createId('task')
+    const normalizedSkillIds = Array.isArray(skillIds)
+      ? [...new Set(
+        skillIds
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      )]
+      : []
 
     return this.updateSession(sessionId, (session) => {
       const nextTitle = session.title === '新对话'
@@ -337,6 +345,7 @@ export class SessionRepository {
       session.lastAiId = aiId
       session.lastModel = model
       session.lastSkillId = String(skillId || '').trim()
+      session.lastSkillIds = normalizedSkillIds
       session.messages = Array.isArray(session.messages) ? session.messages : []
       session.messages.push(createMessage({
         role: 'user',

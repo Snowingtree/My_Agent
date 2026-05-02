@@ -4,12 +4,14 @@ import {
   AGENT_ACTIVE_SESSION_KEY,
   AGENT_AI_ID_KEY,
   AGENT_AI_MODEL_KEY,
+  AGENT_SKILL_ID_KEY,
   AUTH_TOKEN_KEY
 } from './storage.js'
 
 const NEW_SESSION_TITLE = '新对话'
 const UNSELECTED_MODEL_LABEL = '未选择模型'
 const UNSELECTED_AGENT_LABEL = '未选择模型配置'
+const UNSELECTED_SKILL_LABEL = '自动选择'
 const LOADING_REPLY_SUMMARY = '正在生成首轮回复...'
 const WAITING_FOR_GOAL_SUMMARY = '等待你给出第一个目标，我会围绕当前会话持续推进。'
 const AI_CONFIG_REQUEST_TIMEOUT = 10000
@@ -53,6 +55,60 @@ function writeStorageValue(storage, storageKey, value) {
   }
 
   storage.setItem(storageKey, normalized)
+}
+
+function readStorageStringArray(storage, storageKey) {
+  if (!storage) {
+    return []
+  }
+
+  const rawValue = String(storage.getItem(storageKey) || '').trim()
+
+  if (!rawValue) {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue)
+
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return [...new Set(
+      parsed
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    )]
+  } catch {
+    return [...new Set(
+      rawValue
+        .split(',')
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    )]
+  }
+}
+
+function writeStorageStringArray(storage, storageKey, value) {
+  if (!storage) {
+    return
+  }
+
+  const normalized = Array.isArray(value)
+    ? [...new Set(
+      value
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    )]
+    : []
+
+  if (!normalized.length) {
+    storage.removeItem(storageKey)
+    return
+  }
+
+  storage.setItem(storageKey, JSON.stringify(normalized))
 }
 
 function getFriendlyErrorMessage(errorMessage, fallbackMessage) {
@@ -202,9 +258,12 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const isSending = ref(false)
   const isCreatingSession = ref(false)
   const aiConfigs = ref([])
+  const skills = ref([])
   const isLoadingAiConfigs = ref(false)
+  const isLoadingSkills = ref(false)
   const selectedAiId = ref(readStorageValue(resolvedStorage, AGENT_AI_ID_KEY))
   const selectedModel = ref(readStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY))
+  const selectedSkillIds = ref(readStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY))
   const isRefreshingActiveSession = ref(false)
   const isCancellingTask = ref(false)
   const isSessionStreamConnected = ref(false)
@@ -236,16 +295,45 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     Array.isArray(activeSession.value?.workspaceFiles) ? activeSession.value.workspaceFiles : []
   ))
   const isAgentRunning = computed(() => isTaskRunning(currentTask.value))
-  const activeSkillId = computed(() => String(activeSession.value?.lastSkillId || '').trim())
+  const activeSkillIds = computed(() => {
+    const explicitSkillIds = Array.isArray(activeSession.value?.lastSkillIds)
+      ? activeSession.value.lastSkillIds
+      : []
+
+    if (explicitSkillIds.length) {
+      return [...new Set(
+        explicitSkillIds
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      )]
+    }
+
+    const fallbackSkillId = String(activeSession.value?.lastSkillId || '').trim()
+    return fallbackSkillId ? [fallbackSkillId] : []
+  })
   const selectedAiConfig = computed(
     () => aiConfigs.value.find((item) => item.aiId === selectedAiId.value) || null
   )
+  const selectedSkills = computed(() => (
+    skills.value.filter((item) => selectedSkillIds.value.includes(item.skillId))
+  ))
   const modelOptions = computed(() => selectedAiConfig.value?.versions || [])
   const selectedModelLabel = computed(() => selectedModel.value || UNSELECTED_MODEL_LABEL)
   const selectedAgentLabel = computed(() => selectedAiConfig.value?.label || UNSELECTED_AGENT_LABEL)
+  const selectedSkillLabel = computed(() => {
+    if (!selectedSkills.value.length) {
+      return UNSELECTED_SKILL_LABEL
+    }
+
+    if (selectedSkills.value.length === 1) {
+      return selectedSkills.value[0].name
+    }
+
+    return `已选择 ${selectedSkills.value.length} 个技能`
+  })
   const hasDraftCodingIntent = computed(() => detectCodingIntent(draft.value))
   const workspaceMode = computed(() => {
-    if (activeSkillId.value === 'coding_agent') {
+    if (activeSkillIds.value.includes('coding_agent')) {
       return {
         id: 'coding',
         label: '编码模式',
@@ -288,6 +376,10 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   function persistSelectedAi() {
     writeStorageValue(resolvedStorage, AGENT_AI_ID_KEY, selectedAiId.value)
     writeStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY, selectedModel.value)
+  }
+
+  function persistSelectedSkill() {
+    writeStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY, selectedSkillIds.value)
   }
 
   function stopTaskPolling() {
@@ -597,6 +689,37 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     }
   }
 
+  async function loadSkills() {
+    isLoadingSkills.value = true
+
+    try {
+      const data = await http.get('/api/agent/skills')
+      skills.value = Array.isArray(data.items)
+        ? data.items
+          .map((item) => ({
+            skillId: String(item?.skillId || '').trim(),
+            name: String(item?.name || item?.skillId || '').trim(),
+            description: String(item?.description || '').trim(),
+            sourcePackage: String(item?.sourcePackage || '').trim(),
+            sourceFile: String(item?.sourceFile || '').trim()
+          }))
+          .filter((item) => item.skillId)
+        : []
+
+      if (selectedSkillIds.value.length) {
+        selectedSkillIds.value = selectedSkillIds.value.filter((skillId) => (
+          skills.value.some((item) => item.skillId === skillId)
+        ))
+      }
+
+      persistSelectedSkill()
+    } catch {
+      skills.value = []
+    } finally {
+      isLoadingSkills.value = false
+    }
+  }
+
   async function loadSessions() {
     isLoadingSessions.value = true
     sessionError.value = ''
@@ -793,6 +916,17 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     persistSelectedAi()
   }
 
+  function setSelectedSkillIds(nextSkillIds) {
+    selectedSkillIds.value = Array.isArray(nextSkillIds)
+      ? [...new Set(
+        nextSkillIds
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      )]
+      : []
+    persistSelectedSkill()
+  }
+
   function ensureSendReady(message) {
     if (!message) {
       return false
@@ -890,7 +1024,9 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         sessionId: activeSessionId.value,
         message,
         aiId: selectedAiId.value,
-        model: selectedModel.value
+        model: selectedModel.value,
+        skillId: selectedSkillIds.value[0] || '',
+        skillIds: selectedSkillIds.value
       })
 
       if (!data.session?.sessionId) {
@@ -985,6 +1121,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   async function refreshWorkspace() {
     await Promise.all([
       loadAiConfigs(),
+      loadSkills(),
       loadSessions()
     ])
 
@@ -1064,6 +1201,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     activeSession,
     activeSessionId,
     aiConfigs,
+    skills,
     activeWorkspaceFiles,
     activeWorkspaceFolder,
     closeWorkspaceFile,
@@ -1085,6 +1223,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     isCancellingTask,
     isCreatingSession,
     isLoadingAiConfigs,
+    isLoadingSkills,
     isLoadingSession,
     isLoadingSessions,
     isRefreshingActiveSession,
@@ -1099,10 +1238,13 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     selectedAiId,
     selectedModel,
     selectedModelLabel,
+    selectedSkillIds,
+    selectedSkillLabel,
     sendMessage,
     sessionError,
     sessions,
     setSelectedAiId,
-    setSelectedModel
+    setSelectedModel,
+    setSelectedSkillIds
   }
 }

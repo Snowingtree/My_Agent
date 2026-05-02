@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, resolve } from 'node:path'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { normalizeTrimmedString } from './utils.js'
 
 function readJsonFile(filePath) {
@@ -26,6 +26,68 @@ function normalizeStringArray(value) {
       .map((item) => normalizeTrimmedString(item))
       .filter(Boolean)
   )]
+}
+
+function readMarkdownSummary(filePath) {
+  if (!filePath || !existsSync(filePath)) {
+    return ''
+  }
+
+  const content = readFileSync(filePath, 'utf8')
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  const summaryLine = lines.find((line) => !/^#/.test(line)) || lines[0] || ''
+
+  return summaryLine
+    .replace(/^#+\s*/, '')
+    .replace(/[`*_~]/g, '')
+    .trim()
+}
+
+function walkSkillPackages(currentDir, items) {
+  if (!existsSync(currentDir)) {
+    return
+  }
+
+  const entries = readdirSync(currentDir, { withFileTypes: true })
+  const hasSkillFile = entries.some((entry) => entry.isFile() && entry.name.toLowerCase() === 'skill.md')
+
+  if (hasSkillFile) {
+    items.push(currentDir)
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) {
+      continue
+    }
+
+    walkSkillPackages(join(currentDir, entry.name), items)
+  }
+}
+
+function createLibrarySkillItem(packageDir) {
+  const skillFilePath = join(packageDir, 'SKILL.md')
+
+  if (!existsSync(skillFilePath)) {
+    return null
+  }
+
+  const descriptionFilePath = join(packageDir, 'description.md')
+  const packageName = basename(packageDir)
+  const description = readMarkdownSummary(descriptionFilePath) || readMarkdownSummary(skillFilePath)
+
+  return {
+    skillId: packageName,
+    name: packageName,
+    description,
+    instructionPath: skillFilePath,
+    preferredTools: [],
+    disabledTools: [],
+    allowedTools: []
+  }
 }
 
 function readInstructionText(item, configPath) {
@@ -105,20 +167,34 @@ function normalizeSkill(item, index, configPath) {
 
 export function createSkillRegistry({
   configPath,
-  defaultSkillId = ''
+  defaultSkillId = '',
+  libraryDir = ''
 } = {}) {
   let skills = []
   let resolvedDefaultSkillId = normalizeTrimmedString(defaultSkillId)
 
   function reload() {
     const rawValue = readJsonFile(configPath)
-    const items = Array.isArray(rawValue)
+    const configItems = Array.isArray(rawValue)
       ? rawValue
       : Array.isArray(rawValue?.items)
         ? rawValue.items
         : []
+    const normalizedConfigItems = configItems.map((item, index) => normalizeSkill(item, index, configPath))
+    const existingSkillIds = new Set(normalizedConfigItems.map((item) => item.skillId))
+    const libraryPackageDirs = []
 
-    skills = items.map((item, index) => normalizeSkill(item, index, configPath))
+    if (normalizeTrimmedString(libraryDir)) {
+      walkSkillPackages(resolve(libraryDir), libraryPackageDirs)
+    }
+
+    const normalizedLibraryItems = libraryPackageDirs
+      .map((packageDir) => createLibrarySkillItem(packageDir))
+      .filter(Boolean)
+      .filter((item) => !existingSkillIds.has(item.skillId))
+      .map((item, index) => normalizeSkill(item, normalizedConfigItems.length + index, configPath))
+
+    skills = [...normalizedConfigItems, ...normalizedLibraryItems]
     resolvedDefaultSkillId = normalizeTrimmedString(rawValue?.defaultSkillId) || normalizeTrimmedString(defaultSkillId)
   }
 

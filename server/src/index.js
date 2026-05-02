@@ -292,24 +292,38 @@ function looksLikeCodingSkillRequest(message) {
   return CODING_SKILL_HINT_PATTERNS.some((pattern) => pattern.test(normalizedMessage))
 }
 
-function resolveSkillForMessage(requestedSkillId, message) {
-  const explicitSkill = skillRegistry.getSkillById(requestedSkillId)
+function normalizeSkillIdArray(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
 
-  if (explicitSkill) {
-    return explicitSkill
+  return [...new Set(
+    value
+      .map((item) => normalizeTrimmedString(item))
+      .filter(Boolean)
+  )]
+}
+
+function resolveSkillsForMessage(requestedSkillIds, message) {
+  const explicitSkills = normalizeSkillIdArray(requestedSkillIds)
+    .map((skillId) => skillRegistry.getSkillById(skillId))
+    .filter(Boolean)
+
+  if (explicitSkills.length) {
+    return explicitSkills
   }
 
   if (looksLikeCodingSkillRequest(message)) {
-    return (
+    return [
       skillRegistry.getSkillById('coding_agent')
-      || skillRegistry.resolveSkill(requestedSkillId)
-    )
+      || skillRegistry.resolveSkill('')
+    ].filter(Boolean)
   }
 
-  return (
+  return [
     skillRegistry.getSkillById('general_chat')
-    || skillRegistry.resolveSkill(requestedSkillId)
-  )
+    || skillRegistry.resolveSkill('')
+  ].filter(Boolean)
 }
 
 async function trySharedAuthLogin(payload) {
@@ -648,8 +662,13 @@ async function handleChat(request, response) {
   const message = normalizeTrimmedString(payload?.message)
   const aiId = normalizeTrimmedString(payload?.aiId)
   const requestedModel = normalizeTrimmedString(payload?.model)
-  const requestedSkillId = normalizeTrimmedString(payload?.skillId)
-  const activeSkill = resolveSkillForMessage(requestedSkillId, message)
+  const requestedSkillIds = normalizeSkillIdArray(
+    Array.isArray(payload?.skillIds)
+      ? payload.skillIds
+      : [payload?.skillId]
+  )
+  const activeSkills = resolveSkillsForMessage(requestedSkillIds, message)
+  const primarySkill = activeSkills[0] || null
 
   if (!message) {
     sendJson(response, 400, {
@@ -709,7 +728,8 @@ async function handleChat(request, response) {
     message,
     aiId: aiConfig.aiId,
     model: selectedModel,
-    skillId: activeSkill?.skillId || ''
+    skillId: primarySkill?.skillId || '',
+    skillIds: activeSkills.map((item) => item.skillId)
   })
 
   if (!preparedSession) {
@@ -723,7 +743,8 @@ async function handleChat(request, response) {
     sessionId,
     requestedAiId: aiConfig.aiId,
     requestedModel: selectedModel,
-    requestedSkillId: activeSkill?.skillId || ''
+    requestedSkillId: primarySkill?.skillId || '',
+    requestedSkillIds: activeSkills.map((item) => item.skillId)
   })
 
   sendJson(response, 200, {
