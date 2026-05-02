@@ -169,6 +169,7 @@ export function createConfig() {
     },
     skills: {
       configPath: resolveServerPath(process.env.AGENT_SKILLS_CONFIG_PATH, 'config/skills.json'),
+      libraryDir: resolveServerPath(process.env.AGENT_SKILLS_LIBRARY_DIR, '../skills'),
       defaultSkillId: String(process.env.AGENT_DEFAULT_SKILL_ID || '').trim()
     },
     mcp: {

@@ -4,16 +4,16 @@
     {
       "skillId": "general_chat",
       "name": "通用对话",
-      "description": "用于日常对话、快速问答、总结和轻量级头脑风暴。",
-      "instruction": "当用户不需要检查工作区或修改文件时，直接回答。回复应简洁实用。",
+      "description": "用于日常对话、快速问答、总结和轻量头脑风暴。",
+      "instructionPath": "../../skills/general_chat/SKILL.md",
       "preferredTools": [],
       "disabledTools": []
     },
     {
       "skillId": "coding_agent",
       "name": "编码助手",
-      "description": "用于在服务器工作区中进行代码阅读、调试、实现和验证。",
-      "instruction": "将编码和文件编辑请求视为实现工作。在做出代码判断之前先检查工作区，然后根据需要直接在工作区中读取、修改、创建和验证文件。优先使用文件内容、搜索结果、命令输出和验证命令等具体证据。当用户要求编写代码时，如果可以安全地修改文件，不要只停留在建议层面。",
+      "description": "用于在工作区中进行代码阅读、调试、实现和验证。",
+      "instructionPath": "../../skills/coding_agent/SKILL.md",
       "preferredTools": [
         "list_files",
         "search_text",
@@ -27,8 +27,8 @@
     {
       "skillId": "task_planner",
       "name": "任务规划",
-      "description": "用于在开始实现工作之前将目标分解为执行计划。",
-      "instruction": "专注于明确目标、列出步骤、识别风险，仅在工作区证据能提升计划质量时才使用工具。",
+      "description": "用于在开始实现之前拆解目标、列出步骤并识别风险。",
+      "instructionPath": "../../skills/task_planner/SKILL.md",
       "preferredTools": [
         "list_files",
         "search_text"

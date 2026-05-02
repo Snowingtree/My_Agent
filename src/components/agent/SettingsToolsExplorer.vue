@@ -22,7 +22,7 @@
           @click="selectTool(tool.name)"
         >
           <strong>{{ tool.name }}</strong>
-          <span>{{ tool.source === 'mcp' ? 'MCP 工具' : tool.displayPath }}</span>
+          <span>{{ tool.source === 'mcp' ? 'MCP 工具' : (tool.displayPath || '未提供路径') }}</span>
         </button>
       </div>
     </aside>
@@ -34,9 +34,9 @@
           <h3>{{ selectedToolDetail.name }}</h3>
           <p class="settings-tools__meta">
             <span>{{ selectedToolDetail.source === 'mcp' ? 'MCP' : '内置工具' }}</span>
-            <span>{{ selectedToolDetail.displayPath }}</span>
+            <span>{{ selectedToolDetail.displayPath || '未提供路径' }}</span>
           </p>
-          <p class="settings-tools__description">{{ selectedToolDetail.description }}</p>
+          <p class="settings-tools__description">{{ selectedToolDetail.description || '暂无说明。' }}</p>
         </div>
       </div>
 

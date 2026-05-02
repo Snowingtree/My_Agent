@@ -54,37 +54,6 @@
         </div>
       </section>
 
-      <section v-else-if="props.activeSection === 'settings-skills'" class="model-config-section">
-        <div v-if="isLoadingSkills" class="model-config-state">正在读取技能配置...</div>
-        <div v-else-if="skillsError" class="model-config-state is-error">{{ skillsError }}</div>
-        <div v-else-if="!skills.length" class="model-config-state">当前没有技能配置。</div>
-
-        <div v-else class="config-grid">
-          <article v-for="item in skills" :key="item.skillId" class="config-card">
-            <div class="config-card__head">
-              <h3>{{ item.name || item.skillId }}</h3>
-              <span class="config-chip">{{ item.skillId }}</span>
-            </div>
-            <p class="config-description">{{ item.description || '暂无描述。' }}</p>
-            <div class="config-tags">
-              <span v-for="tool in item.preferredTools || []" :key="`${item.skillId}-preferred-${tool}`" class="config-tag">
-                优先：{{ tool }}
-              </span>
-              <span v-for="tool in item.allowedTools || []" :key="`${item.skillId}-allowed-${tool}`" class="config-tag is-allowed">
-                可用：{{ tool }}
-              </span>
-              <span v-for="tool in item.disabledTools || []" :key="`${item.skillId}-disabled-${tool}`" class="config-tag is-blocked">
-                禁用：{{ tool }}
-              </span>
-            </div>
-            <div v-if="item.instruction" class="config-instruction">
-              <strong>指令</strong>
-              <p>{{ item.instruction }}</p>
-            </div>
-          </article>
-        </div>
-      </section>
-
       <section v-else-if="props.activeSection === 'settings-mcp'" class="model-config-section">
         <div v-if="isLoadingCapabilities" class="model-config-state">正在读取 MCP 工具...</div>
         <div v-else-if="capabilitiesError" class="model-config-state is-error">{{ capabilitiesError }}</div>
@@ -119,6 +88,10 @@
         </div>
       </section>
 
+      <section v-else-if="props.activeSection === 'settings-agent-skills'" class="model-config-section">
+        <SettingsSkillsExplorer />
+      </section>
+
       <section v-else-if="props.activeSection === 'settings-tools'" class="model-config-section">
         <SettingsToolsExplorer />
       </section>
@@ -143,11 +116,11 @@
                 />
               </label>
               <label class="modal-field">
-                <span>模型版本（用 、 分隔）</span>
+                <span>模型版本（用 `|` 分隔）</span>
                 <input
                   v-model="addAiForm.aiVersions"
                   type="text"
-                  placeholder="例如：MiMo-7B-RL、MiMo-7B-SFT"
+                  placeholder="例如：MiMo-7B-RL|MiMo-7B-SFT"
                 />
               </label>
               <label class="modal-field">
@@ -184,8 +157,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import http from '../../http.js'
+import SettingsSkillsExplorer from './SettingsSkillsExplorer.vue'
 import SettingsToolsExplorer from './SettingsToolsExplorer.vue'
 
 const props = defineProps({
@@ -195,16 +169,13 @@ const props = defineProps({
 defineEmits(['back', 'config-updated'])
 
 const aiConfigs = ref([])
-const skills = ref([])
 const mcpServers = ref([])
 
 const isLoadingAi = ref(false)
-const isLoadingSkills = ref(false)
 const isLoadingCapabilities = ref(false)
 const isRefreshing = ref(false)
 
 const aiError = ref('')
-const skillsError = ref('')
 const capabilitiesError = ref('')
 
 const showAddAiModal = ref(false)
@@ -254,13 +225,13 @@ const SECTION_META = {
     title: 'AI 配置',
     description: '查看当前可用的模型配置、接口地址和模型列表。'
   },
-  'settings-skills': {
-    title: '技能配置',
-    description: '查看当前 Agent 已注册的技能、指令和工具偏好。'
-  },
   'settings-mcp': {
-    title: 'MCP 工具',
+    title: 'MCP',
     description: '查看已接入的 MCP 服务、状态和工具数量。'
+  },
+  'settings-agent-skills': {
+    title: 'Skills',
+    description: '查看项目 skills 目录中的技能包说明文件，例如 description.md 和 SKILL.md。'
   },
   'settings-tools': {
     title: '工具',
@@ -323,21 +294,6 @@ async function loadAiConfigs() {
   }
 }
 
-async function loadSkills() {
-  isLoadingSkills.value = true
-  skillsError.value = ''
-
-  try {
-    const response = await http.get('/api/agent/skills')
-    skills.value = Array.isArray(response?.items) ? response.items : []
-  } catch (error) {
-    skillsError.value = error instanceof Error ? error.message : '读取技能配置失败。'
-    skills.value = []
-  } finally {
-    isLoadingSkills.value = false
-  }
-}
-
 async function loadCapabilities() {
   isLoadingCapabilities.value = true
   capabilitiesError.value = ''
@@ -353,36 +309,38 @@ async function loadCapabilities() {
   }
 }
 
+async function ensureSectionLoaded(section, force = false) {
+  if (section === 'settings-ai') {
+    if (force || (!aiConfigs.value.length && !isLoadingAi.value)) {
+      await loadAiConfigs()
+    }
+    return
+  }
+
+  if (section === 'settings-mcp') {
+    if (force || (!mcpServers.value.length && !isLoadingCapabilities.value)) {
+      await loadCapabilities()
+    }
+  }
+}
+
 async function refreshActiveSection() {
   isRefreshing.value = true
 
   try {
-    if (props.activeSection === 'settings-ai') {
-      await loadAiConfigs()
-      return
-    }
-
-    if (props.activeSection === 'settings-skills') {
-      await loadSkills()
-      return
-    }
-
-    if (props.activeSection === 'settings-mcp') {
-      await loadCapabilities()
-      return
-    }
+    await ensureSectionLoaded(props.activeSection, true)
   } finally {
     isRefreshing.value = false
   }
 }
 
-onMounted(async () => {
-  await Promise.all([
-    loadAiConfigs(),
-    loadSkills(),
-    loadCapabilities()
-  ])
-})
+watch(
+  () => props.activeSection,
+  (section) => {
+    void ensureSectionLoaded(section, false)
+  },
+  { immediate: true }
+)
 </script>
 
 <style scoped>
@@ -589,19 +547,10 @@ onMounted(async () => {
   color: #a6382c;
 }
 
-.config-instruction {
-  display: grid;
-  gap: 6px;
-}
-
-.config-instruction strong {
-  color: #5f6880;
-  font-size: 0.82rem;
-}
-
-.config-instruction p {
+.config-footnote {
   margin: 0;
-  color: #30394b;
+  color: #667085;
+  font-size: 0.84rem;
   line-height: 1.7;
 }
 

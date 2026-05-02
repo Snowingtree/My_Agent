@@ -989,7 +989,9 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     ])
 
     if (activeSessionId.value) {
-      await loadSessionDetail(activeSessionId.value, { silent: true })
+      await loadSessionDetail(activeSessionId.value, {
+        silent: true
+      })
       return
     }
 

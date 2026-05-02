@@ -43,6 +43,7 @@ select:disabled {
   width: min(1120px, calc(100% - 32px));
   display: flex;
   align-items: center;
+  justify-content: center;
   min-height: 100vh;
   margin: 0 auto;
   padding: 32px 0 40px;

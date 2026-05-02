@@ -140,18 +140,18 @@
                 <button
                   type="button"
                   class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeSettingsSection === 'settings-skills' }"
-                  @click="selectSettingsSection('settings-skills')"
+                  :class="{ 'is-active': activeSettingsSection === 'settings-mcp' }"
+                  @click="selectSettingsSection('settings-mcp')"
                 >
-                  技能配置
+                  MCP
                 </button>
                 <button
                   type="button"
                   class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeSettingsSection === 'settings-mcp' }"
-                  @click="selectSettingsSection('settings-mcp')"
+                  :class="{ 'is-active': activeSettingsSection === 'settings-agent-skills' }"
+                  @click="selectSettingsSection('settings-agent-skills')"
                 >
-                  MCP 工具
+                  Skills
                 </button>
                 <button
                   type="button"

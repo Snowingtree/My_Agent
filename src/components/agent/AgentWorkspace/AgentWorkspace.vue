@@ -411,7 +411,7 @@
         <div class="agent-code-viewer__head">
           <div class="agent-code-viewer__head-copy">
             <p class="agent-panel__eyebrow">文件预览</p>
-            <h3>{{ selectedWorkspaceFilePath }}</h3>
+            <h3>{{ selectedWorkspaceFileDisplayName }}</h3>
             <small>{{ selectedWorkspaceFileMeta }}</small>
           </div>
           <button
@@ -532,8 +532,11 @@ const hasCopiedWorkspaceFile = ref(false)
 const previewWidth = ref(520)
 const isInspectorCollapsed = ref(false)
 const isResizingPreview = ref(false)
+const suppressAutoOpen = ref(false)
+const hasInitializedWorkspaceFilesForSession = ref(false)
 let activeResizePointerId = null
 let workspaceFileCopyResetTimer = null
+let suppressAutoOpenTimer = null
 
 const userInitial = computed(() => {
   const normalized = String(props.username || '').trim()
@@ -675,6 +678,10 @@ const selectedWorkspaceFileMeta = computed(() => {
   const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleString('zh-CN') : ''
 
   return [sizeLabel, updatedLabel].filter(Boolean).join(' · ')
+})
+
+const selectedWorkspaceFileDisplayName = computed(() => {
+  return getFileDisplayName(props.selectedWorkspaceFilePath)
 })
 
 function decodeEscapedPreviewContent(value) {
@@ -1191,6 +1198,18 @@ function getFileDisplayName(filePath) {
   }
 
   const segments = normalized.split('/').filter(Boolean)
+  const fileName = String(segments[segments.length - 1] || '').trim().toLowerCase()
+  const parentDir = String(segments[segments.length - 2] || '').trim()
+  const rootDir = String(segments[0] || '').trim().toLowerCase()
+
+  if (
+    rootDir === 'skills'
+    && parentDir
+    && (fileName === 'skill.md' || fileName === 'description.md')
+  ) {
+    return parentDir
+  }
+
   return segments[segments.length - 1] || normalized
 }
 
@@ -1368,6 +1387,26 @@ function handleComposerKeydown(event) {
 }
 
 watch(
+  () => props.isLoadingSession,
+  (loading) => {
+    if (suppressAutoOpenTimer) {
+      clearTimeout(suppressAutoOpenTimer)
+      suppressAutoOpenTimer = null
+    }
+
+    if (loading) {
+      suppressAutoOpen.value = true
+    } else {
+      suppressAutoOpenTimer = setTimeout(() => {
+        suppressAutoOpen.value = false
+        suppressAutoOpenTimer = null
+      }, 500)
+    }
+  },
+  { immediate: true }
+)
+
+watch(
   () => props.isSending,
   (isSending, wasSending) => {
     if (isSending) {
@@ -1396,7 +1435,7 @@ watch(
 watch(
   () => props.messages[props.messages.length - 1],
   (latestMessage) => {
-    if (!latestMessage || latestMessage.role !== 'tool') {
+    if (!latestMessage || latestMessage.role !== 'tool' || suppressAutoOpen.value) {
       return
     }
 
@@ -1418,9 +1457,22 @@ watch(
 )
 
 watch(
+  () => props.activeSessionId,
+  () => {
+    hasInitializedWorkspaceFilesForSession.value = false
+  },
+  { immediate: true }
+)
+
+watch(
   () => props.activeWorkspaceFiles.map((item) => `${item.path || ''}:${item.updatedAt || ''}`).join('|'),
   (nextSignature, previousSignature) => {
-    if (!nextSignature || nextSignature === previousSignature) {
+    if (!nextSignature || nextSignature === previousSignature || suppressAutoOpen.value) {
+      return
+    }
+
+    if (!hasInitializedWorkspaceFilesForSession.value) {
+      hasInitializedWorkspaceFilesForSession.value = true
       return
     }
 
@@ -1467,6 +1519,11 @@ onBeforeUnmount(() => {
     window.removeEventListener('pointermove', handlePreviewResizeMove)
     window.removeEventListener('pointerup', handlePreviewResizeUp)
     window.removeEventListener('pointercancel', handlePreviewResizeUp)
+  }
+
+  if (suppressAutoOpenTimer) {
+    clearTimeout(suppressAutoOpenTimer)
+    suppressAutoOpenTimer = null
   }
 
   resetWorkspaceFileCopyState()
@@ -2059,7 +2116,6 @@ onBeforeUnmount(() => {
     34px
     max(24px, calc((100% - var(--agent-content-width)) / 2))
     18px;
-  scroll-behavior: smooth;
 }
 
 .agent-conversation__welcome {

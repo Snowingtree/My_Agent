@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, resolve } from 'node:path'
 import { normalizeTrimmedString } from './utils.js'
 
 function readJsonFile(filePath) {
@@ -52,15 +52,51 @@ function readInstructionText(item, configPath) {
   return readFileSync(absolutePath, 'utf8').trim()
 }
 
+function resolveInstructionMetadata(item, configPath) {
+  const inlineInstruction = normalizeTrimmedString(item?.instruction)
+
+  if (inlineInstruction) {
+    return {
+      instructionPath: '',
+      sourcePackage: '',
+      sourceFile: ''
+    }
+  }
+
+  const instructionPath = normalizeTrimmedString(item?.instructionPath)
+
+  if (!instructionPath) {
+    return {
+      instructionPath: '',
+      sourcePackage: '',
+      sourceFile: ''
+    }
+  }
+
+  const absolutePath = isAbsolute(instructionPath)
+    ? instructionPath
+    : resolve(dirname(configPath), instructionPath)
+
+  return {
+    instructionPath,
+    sourcePackage: basename(dirname(absolutePath)),
+    sourceFile: basename(absolutePath)
+  }
+}
+
 function normalizeSkill(item, index, configPath) {
   const skillId = normalizeTrimmedString(item?.skillId) || `skill_${index + 1}`
   const instruction = readInstructionText(item, configPath)
+  const instructionMeta = resolveInstructionMetadata(item, configPath)
 
   return {
     skillId,
     name: normalizeTrimmedString(item?.name) || skillId,
     description: normalizeTrimmedString(item?.description),
     instruction,
+    instructionPath: instructionMeta.instructionPath,
+    sourcePackage: instructionMeta.sourcePackage,
+    sourceFile: instructionMeta.sourceFile,
     preferredTools: normalizeStringArray(item?.preferredTools),
     disabledTools: normalizeStringArray(item?.disabledTools),
     allowedTools: normalizeStringArray(item?.allowedTools)
@@ -91,6 +127,9 @@ export function createSkillRegistry({
       skillId: item.skillId,
       name: item.name,
       description: item.description,
+      instructionPath: item.instructionPath,
+      sourcePackage: item.sourcePackage,
+      sourceFile: item.sourceFile,
       preferredTools: [...item.preferredTools],
       disabledTools: [...item.disabledTools],
       allowedTools: [...item.allowedTools],

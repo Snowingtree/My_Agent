@@ -6,6 +6,7 @@ import { getAiConfigById, insertAiConfig, loadAiConfigs, resolveModel, toPublicA
 import { createAgentRunner } from './agentRunner.js'
 import { createMcpRegistry } from './mcpRegistry.js'
 import { createSessionWorkspacesRepository } from './sessionWorkspaces.js'
+import { createSkillLibrary } from './skillLibrary.js'
 import { SessionRepository } from './sessionStore.js'
 import { createSkillRegistry } from './skillRegistry.js'
 import { getToolDetailItem, listToolPreviewItems } from './toolCatalogDetails.js'
@@ -84,6 +85,9 @@ const sessionRepository = new SessionRepository({
   }
 })
 const skillRegistry = createSkillRegistry(config.skills)
+const skillLibrary = createSkillLibrary({
+  rootDir: config.skills.libraryDir
+})
 const sourceWorkspace = createWorkspace(config.workspace)
 const mcpRegistry = createMcpRegistry({
   mcpConfig: config.mcp
@@ -462,6 +466,34 @@ async function handleListSkills(response) {
   })
 }
 
+async function handleListSkillFiles(response) {
+  sendJson(response, 200, {
+    items: skillLibrary.listSkillFiles()
+  })
+}
+
+async function handleGetSkillFileDetail(response, requestUrl) {
+  const skillPath = normalizeTrimmedString(requestUrl.searchParams.get('path'))
+
+  if (!skillPath) {
+    sendJson(response, 400, {
+      message: 'Skill path is required.'
+    })
+    return
+  }
+
+  const item = skillLibrary.getSkillFileDetail(skillPath)
+
+  if (!item) {
+    sendJson(response, 404, {
+      message: 'Skill file not found.'
+    })
+    return
+  }
+
+  sendJson(response, 200, { item })
+}
+
 async function handleGetCapabilities(response) {
   sendJson(response, 200, {
     skills: skillRegistry.listSkills(),
@@ -762,6 +794,16 @@ async function handleRequest(request, response) {
 
   if (pathname === '/api/agent/skills' && request.method === 'GET') {
     await handleListSkills(response)
+    return
+  }
+
+  if (pathname === '/api/agent/skill-files' && request.method === 'GET') {
+    await handleListSkillFiles(response)
+    return
+  }
+
+  if (pathname === '/api/agent/skill-file-detail' && request.method === 'GET') {
+    await handleGetSkillFileDetail(response, requestUrl)
     return
   }
 
