@@ -185,7 +185,7 @@ async function readJsonBody(request) {
   for await (const chunk of request) {
     size += chunk.length
 
-    if (size > 1024 * 1024) {
+    if (size > 24 * 1024 * 1024) {
       throw new Error('Request body is too large.')
     }
 
@@ -279,6 +279,7 @@ function validateLocalLoginCredentials(payload) {
 const CODING_SKILL_HINT_PATTERNS = [
   /([A-Za-z0-9_./-]+\.(html|css|js|ts|tsx|jsx|vue|json|md|txt))/i,
   /\b(html|css|javascript|typescript|js|ts|vue|react|node|sql|api|bug|debug|build|compile|patch|diff|command|git|npm)\b/i,
+  /写一个页面|写个页面|写一个网页|写个网页|写一个界面|写个界面|写一个组件|写个组件|写一个脚本|写个脚本|写代码|改代码|生成代码|创建页面|新建页面|创建组件|新建组件|前端|后端|项目|工作区|代码库|样式|脚本/,
   /写代码|改代码|生成代码|创建页面|新建页面|创建组件|修改文件|读取文件|搜索文件|报错|调试|修复|构建|运行命令|接口|前端|后端|项目|工作区|代码库|样式|脚本|组件/
 ]
 
@@ -302,6 +303,34 @@ function normalizeSkillIdArray(value) {
       .map((item) => normalizeTrimmedString(item))
       .filter(Boolean)
   )]
+}
+
+function normalizeConversationAttachments(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value
+    .map((item, index) => {
+      const name = normalizeTrimmedString(item?.name) || `attachment-${index + 1}.txt`
+      const type = normalizeTrimmedString(item?.type)
+      const content = String(item?.content ?? '')
+      const sizeBytes = Number(item?.sizeBytes)
+
+      if (!content.trim()) {
+        return null
+      }
+
+      return {
+        name,
+        type,
+        sizeBytes: Number.isFinite(sizeBytes) && sizeBytes >= 0
+          ? Math.round(sizeBytes)
+          : Buffer.byteLength(content, 'utf8'),
+        content
+      }
+    })
+    .filter(Boolean)
 }
 
 function resolveSkillsForMessage(requestedSkillIds, message) {
@@ -667,6 +696,7 @@ async function handleChat(request, response) {
       ? payload.skillIds
       : [payload?.skillId]
   )
+  const requestedAttachments = normalizeConversationAttachments(payload?.attachments)
   const activeSkills = resolveSkillsForMessage(requestedSkillIds, message)
   const primarySkill = activeSkills[0] || null
 
@@ -744,7 +774,8 @@ async function handleChat(request, response) {
     requestedAiId: aiConfig.aiId,
     requestedModel: selectedModel,
     requestedSkillId: primarySkill?.skillId || '',
-    requestedSkillIds: activeSkills.map((item) => item.skillId)
+    requestedSkillIds: activeSkills.map((item) => item.skillId),
+    requestedAttachments
   })
 
   sendJson(response, 200, {

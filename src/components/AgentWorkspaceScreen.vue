@@ -171,6 +171,8 @@
     <section class="agent-page__content" :class="{ 'is-settings-open': showModelConfig }">
       <section class="agent-page__stage agent-page__stage--workspace" :aria-hidden="showModelConfig ? 'true' : 'false'">
         <AgentWorkspace
+          :ephemeral-attachments="activeEphemeralAttachments"
+          :expired-attachment-notice="expiredAttachmentNotice"
           :active-session-id="activeSessionId"
           :active-session-title="activeSession?.title || '新对话'"
           :active-workspace-files="activeWorkspaceFiles"
@@ -212,9 +214,12 @@
           :workspace-mode="workspaceMode"
           @cancel-task="cancelActiveTask"
           @close-workspace-file="closeWorkspaceFile"
+          @dismiss-expired-attachment-notice="dismissExpiredAttachmentNotice"
           @open-workspace-file="openWorkspaceFile"
+          @remove-ephemeral-attachment="removeEphemeralAttachment"
           @refresh-session="refreshActiveSession"
           @send="sendMessage"
+          @upload-attachments="addEphemeralAttachments"
           @update:ai-id="setSelectedAiId"
           @update:draft="draft = $event"
           @update:model="setSelectedModel"
@@ -283,11 +288,13 @@ const userInitial = computed(() => {
 })
 
 const {
+  activeEphemeralAttachments,
   activeMessages,
   activeSession,
   activeSessionId,
   activeWorkspaceFiles,
   activeWorkspaceFolder,
+  addEphemeralAttachments,
   aiConfigs,
   skills,
   cancelActiveTask,
@@ -297,7 +304,9 @@ const {
   createSession,
   currentTask,
   deleteSession,
+  dismissExpiredAttachmentNotice,
   draft,
+  expiredAttachmentNotice,
   isCancellingTask,
   isAgentRunning,
   isCreatingSession,
@@ -312,6 +321,7 @@ const {
   modelOptions,
   openWorkspaceFile,
   refreshActiveSession,
+  removeEphemeralAttachment,
   selectSession,
   selectedAgentLabel,
   selectedAiId,

@@ -133,7 +133,7 @@ export function createToolRunner({
       .join('\n')
   }
 
-  async function executeToolCall({ name, args } = {}, { skill = null, signal = null, sessionId = '' } = {}) {
+  async function executeToolCall({ name, args } = {}, { skill = null, signal = null, sessionId = '', onProgress = null } = {}) {
     const normalizedName = String(name || '').trim()
     const activeWorkspace = getWorkspaceForSession(sessionId)
     const allToolsByName = new Map(getAllTools(activeWorkspace).map((tool) => [tool.name, tool]))
@@ -155,7 +155,7 @@ export function createToolRunner({
       args && typeof args === 'object' && !Array.isArray(args)
         ? args
         : {}
-    const result = await tool.run(normalizedArgs, { signal })
+    const result = await tool.run(normalizedArgs, { signal, onProgress })
 
     return {
       tool: tool.name,

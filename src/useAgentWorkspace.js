@@ -4,6 +4,7 @@ import {
   AGENT_ACTIVE_SESSION_KEY,
   AGENT_AI_ID_KEY,
   AGENT_AI_MODEL_KEY,
+  AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY,
   AGENT_SKILL_ID_KEY,
   AUTH_TOKEN_KEY
 } from './storage.js'
@@ -16,6 +17,10 @@ const LOADING_REPLY_SUMMARY = '正在生成首轮回复...'
 const WAITING_FOR_GOAL_SUMMARY = '等待你给出第一个目标，我会围绕当前会话持续推进。'
 const AI_CONFIG_REQUEST_TIMEOUT = 10000
 const TASK_POLL_INTERVAL_MS = 2500
+const DRAFT_ATTACHMENT_BUCKET_KEY = '__draft__'
+const MAX_EPHEMERAL_ATTACHMENT_COUNT = 12
+const MAX_EPHEMERAL_ATTACHMENT_SIZE_BYTES = 2 * 1024 * 1024
+const MAX_EPHEMERAL_ATTACHMENT_TOTAL_BYTES = 12 * 1024 * 1024
 const RUNNING_TASK_STATUSES = new Set(['queued', 'pending', 'running', 'in_progress'])
 const CODING_MODE_PATTERNS = [
   /代码|改代码|写代码|编程|重构|修复|bug|报错|报错信息|新增文件|新建文件|创建文件|修改文件|读文件|写文件|函数|组件|接口|脚本|构建|打包|依赖|样式|css|html|js|ts|tsx|jsx|vue|react|node|npm/i,
@@ -109,6 +114,72 @@ function writeStorageStringArray(storage, storageKey, value) {
   }
 
   storage.setItem(storageKey, JSON.stringify(normalized))
+}
+
+function readAttachmentMarkers(storage) {
+  if (!storage) {
+    return {}
+  }
+
+  const rawValue = String(storage.getItem(AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY) || '').trim()
+
+  if (!rawValue) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeAttachmentMarkers(storage, value) {
+  if (!storage) {
+    return
+  }
+
+  const normalized = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const sessionIds = Object.keys(normalized)
+
+  if (!sessionIds.length) {
+    storage.removeItem(AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY)
+    return
+  }
+
+  storage.setItem(AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY, JSON.stringify(normalized))
+}
+
+function getAttachmentBucketKey(sessionId) {
+  const normalizedSessionId = String(sessionId || '').trim()
+  return normalizedSessionId || DRAFT_ATTACHMENT_BUCKET_KEY
+}
+
+function formatAttachmentSize(sizeBytes) {
+  const normalizedSize = Number(sizeBytes)
+
+  if (!Number.isFinite(normalizedSize) || normalizedSize < 0) {
+    return ''
+  }
+
+  if (normalizedSize >= 1024 * 1024) {
+    return `${(normalizedSize / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  if (normalizedSize >= 1024) {
+    return `${(normalizedSize / 1024).toFixed(1)} KB`
+  }
+
+  return `${normalizedSize} B`
+}
+
+function createAttachmentMetaList(value) {
+  return Array.isArray(value)
+    ? value
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+    : []
 }
 
 function getFriendlyErrorMessage(errorMessage, fallbackMessage) {
@@ -268,7 +339,10 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const isCancellingTask = ref(false)
   const isSessionStreamConnected = ref(false)
   const taskProgressMessage = ref(null)
+  const currentToolMessage = ref(null)
   const partialAssistantReply = ref(null)
+  const sessionAttachments = ref({})
+  const expiredAttachmentNotice = ref(null)
   const selectedWorkspaceFilePath = ref('')
   const selectedWorkspaceFileContent = ref('')
   const selectedWorkspaceFileUpdatedAt = ref('')
@@ -282,6 +356,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       : []
     const transientMessages = [
       ...(taskProgressMessage.value ? [taskProgressMessage.value] : []),
+      ...(currentToolMessage.value ? [currentToolMessage.value] : []),
       ...(partialAssistantReply.value ? [partialAssistantReply.value] : [])
     ]
 
@@ -293,6 +368,12 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const activeWorkspaceFolder = computed(() => String(activeSession.value?.workspaceFolder || '').trim())
   const activeWorkspaceFiles = computed(() => (
     Array.isArray(activeSession.value?.workspaceFiles) ? activeSession.value.workspaceFiles : []
+  ))
+  const activeAttachmentBucketKey = computed(() => getAttachmentBucketKey(activeSessionId.value))
+  const activeEphemeralAttachments = computed(() => (
+    Array.isArray(sessionAttachments.value[activeAttachmentBucketKey.value])
+      ? sessionAttachments.value[activeAttachmentBucketKey.value]
+      : []
   ))
   const isAgentRunning = computed(() => isTaskRunning(currentTask.value))
   const activeSkillIds = computed(() => {
@@ -382,6 +463,153 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     writeStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY, selectedSkillIds.value)
   }
 
+  function getAttachmentMarkerSnapshot() {
+    return readAttachmentMarkers(resolvedStorage)
+  }
+
+  function persistAttachmentMarkerSnapshot(value) {
+    writeAttachmentMarkers(resolvedStorage, value)
+  }
+
+  function setAttachmentMarker(sessionId, attachments) {
+    const normalizedSessionId = String(sessionId || '').trim()
+
+    if (!normalizedSessionId) {
+      return
+    }
+
+    const normalizedAttachments = Array.isArray(attachments)
+      ? attachments.filter(Boolean)
+      : []
+
+    const nextMarkers = getAttachmentMarkerSnapshot()
+
+    if (!normalizedAttachments.length) {
+      delete nextMarkers[normalizedSessionId]
+      persistAttachmentMarkerSnapshot(nextMarkers)
+      return
+    }
+
+    nextMarkers[normalizedSessionId] = {
+      names: normalizedAttachments.map((item) => item.name),
+      updatedAt: new Date().toISOString()
+    }
+    persistAttachmentMarkerSnapshot(nextMarkers)
+  }
+
+  function clearAttachmentMarker(sessionId) {
+    const normalizedSessionId = String(sessionId || '').trim()
+
+    if (!normalizedSessionId) {
+      return
+    }
+
+    const nextMarkers = getAttachmentMarkerSnapshot()
+
+    if (!(normalizedSessionId in nextMarkers)) {
+      return
+    }
+
+    delete nextMarkers[normalizedSessionId]
+    persistAttachmentMarkerSnapshot(nextMarkers)
+  }
+
+  function updateAttachmentBucket(bucketKey, attachments) {
+    const normalizedBucketKey = getAttachmentBucketKey(bucketKey)
+    const normalizedAttachments = Array.isArray(attachments) ? attachments : []
+
+    if (!normalizedAttachments.length) {
+      const nextBuckets = { ...sessionAttachments.value }
+      delete nextBuckets[normalizedBucketKey]
+      sessionAttachments.value = nextBuckets
+
+      if (normalizedBucketKey !== DRAFT_ATTACHMENT_BUCKET_KEY) {
+        clearAttachmentMarker(normalizedBucketKey)
+      }
+      return
+    }
+
+    sessionAttachments.value = {
+      ...sessionAttachments.value,
+      [normalizedBucketKey]: normalizedAttachments
+    }
+
+    if (normalizedBucketKey !== DRAFT_ATTACHMENT_BUCKET_KEY) {
+      setAttachmentMarker(normalizedBucketKey, normalizedAttachments)
+    }
+  }
+
+  function moveAttachmentBucket(fromSessionId, toSessionId) {
+    const fromBucketKey = getAttachmentBucketKey(fromSessionId)
+    const toBucketKey = getAttachmentBucketKey(toSessionId)
+
+    if (fromBucketKey === toBucketKey) {
+      return
+    }
+
+    const existingAttachments = Array.isArray(sessionAttachments.value[fromBucketKey])
+      ? sessionAttachments.value[fromBucketKey]
+      : []
+
+    if (!existingAttachments.length) {
+      return
+    }
+
+    const nextBuckets = { ...sessionAttachments.value }
+    delete nextBuckets[fromBucketKey]
+    nextBuckets[toBucketKey] = existingAttachments
+    sessionAttachments.value = nextBuckets
+
+    if (fromBucketKey !== DRAFT_ATTACHMENT_BUCKET_KEY) {
+      clearAttachmentMarker(fromBucketKey)
+    }
+
+    if (toBucketKey !== DRAFT_ATTACHMENT_BUCKET_KEY) {
+      setAttachmentMarker(toBucketKey, existingAttachments)
+    }
+  }
+
+  function maybeShowExpiredAttachmentNotice(sessionId) {
+    const normalizedSessionId = String(sessionId || '').trim()
+
+    if (!normalizedSessionId) {
+      expiredAttachmentNotice.value = null
+      return
+    }
+
+    const activeAttachments = Array.isArray(sessionAttachments.value[getAttachmentBucketKey(normalizedSessionId)])
+      ? sessionAttachments.value[getAttachmentBucketKey(normalizedSessionId)]
+      : []
+
+    if (activeAttachments.length) {
+      expiredAttachmentNotice.value = null
+      clearAttachmentMarker(normalizedSessionId)
+      return
+    }
+
+    const marker = getAttachmentMarkerSnapshot()[normalizedSessionId]
+
+    if (!marker) {
+      expiredAttachmentNotice.value = null
+      return
+    }
+
+    expiredAttachmentNotice.value = {
+      sessionId: normalizedSessionId,
+      names: createAttachmentMetaList(marker.names)
+    }
+  }
+
+  function dismissExpiredAttachmentNotice() {
+    const sessionId = String(expiredAttachmentNotice.value?.sessionId || '').trim()
+
+    if (sessionId) {
+      clearAttachmentMarker(sessionId)
+    }
+
+    expiredAttachmentNotice.value = null
+  }
+
   function stopTaskPolling() {
     if (typeof window === 'undefined' || taskPollTimer === null) {
       return
@@ -433,8 +661,104 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     workspaceFileError.value = ''
   }
 
+  async function decodeEphemeralAttachment(file) {
+    if (!(file instanceof File)) {
+      throw new Error('无效的上传文件。')
+    }
+
+    if (file.size > MAX_EPHEMERAL_ATTACHMENT_SIZE_BYTES) {
+      throw new Error(`文件 ${file.name} 超过 ${formatAttachmentSize(MAX_EPHEMERAL_ATTACHMENT_SIZE_BYTES)}，请缩小后再上传。`)
+    }
+
+    const buffer = await file.arrayBuffer()
+    const bytes = new Uint8Array(buffer)
+
+    if (bytes.includes(0)) {
+      throw new Error(`文件 ${file.name} 看起来是二进制文件，当前只支持文本类文件。`)
+    }
+
+    const decoder = new TextDecoder('utf-8')
+    const content = decoder.decode(bytes).replace(/^\uFEFF/, '')
+
+    return {
+      attachmentId: createId('upload'),
+      name: String(file.name || 'untitled').trim() || 'untitled',
+      type: String(file.type || '').trim(),
+      sizeBytes: Number(file.size) || 0,
+      content
+    }
+  }
+
+  async function addEphemeralAttachments(files) {
+    const fileList = Array.isArray(files) ? files.filter(Boolean) : []
+
+    if (!fileList.length) {
+      return
+    }
+
+    try {
+      const bucketKey = activeAttachmentBucketKey.value
+      const existingAttachments = Array.isArray(sessionAttachments.value[bucketKey])
+        ? sessionAttachments.value[bucketKey]
+        : []
+
+      if (existingAttachments.length + fileList.length > MAX_EPHEMERAL_ATTACHMENT_COUNT) {
+        emitNotify({
+          message: `当前对话最多保留 ${MAX_EPHEMERAL_ATTACHMENT_COUNT} 个临时文件。`,
+          type: 'danger'
+        })
+        return
+      }
+
+      const decodedAttachments = []
+      let totalBytes = existingAttachments.reduce((sum, item) => sum + Number(item?.sizeBytes || 0), 0)
+
+      for (const file of fileList) {
+        const nextAttachment = await decodeEphemeralAttachment(file)
+
+        if (totalBytes + nextAttachment.sizeBytes > MAX_EPHEMERAL_ATTACHMENT_TOTAL_BYTES) {
+          throw new Error(`临时文件总大小不能超过 ${formatAttachmentSize(MAX_EPHEMERAL_ATTACHMENT_TOTAL_BYTES)}。`)
+        }
+
+        totalBytes += nextAttachment.sizeBytes
+        decodedAttachments.push(nextAttachment)
+      }
+
+      updateAttachmentBucket(bucketKey, [...existingAttachments, ...decodedAttachments])
+
+      if (activeSessionId.value) {
+        maybeShowExpiredAttachmentNotice(activeSessionId.value)
+      }
+    } catch (error) {
+      emitNotify({
+        message: normalizeErrorMessage(error, '上传临时文件失败。'),
+        type: 'danger'
+      })
+    }
+  }
+
+  function removeEphemeralAttachment(attachmentId) {
+    const normalizedAttachmentId = String(attachmentId || '').trim()
+
+    if (!normalizedAttachmentId) {
+      return
+    }
+
+    const bucketKey = activeAttachmentBucketKey.value
+    const existingAttachments = Array.isArray(sessionAttachments.value[bucketKey])
+      ? sessionAttachments.value[bucketKey]
+      : []
+    const nextAttachments = existingAttachments.filter((item) => item.attachmentId !== normalizedAttachmentId)
+
+    updateAttachmentBucket(bucketKey, nextAttachments)
+  }
+
   function resetPartialAssistantReply() {
     partialAssistantReply.value = null
+  }
+
+  function resetCurrentToolMessage() {
+    currentToolMessage.value = null
   }
 
   function resetTaskProgressMessage() {
@@ -448,6 +772,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
     if (!isTaskRunning(activeSession.value?.task)) {
       resetTaskProgressMessage()
+      resetCurrentToolMessage()
     }
 
     if (
@@ -545,8 +870,64 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
             return
           }
 
+          if (eventName === 'tool.started') {
+            currentToolMessage.value = {
+              messageId: `tool-progress-${String(payload?.executionId || normalizedSessionId)}`,
+              role: 'tool',
+              content: String(payload?.content || ''),
+              createdAt: new Date().toISOString(),
+              model: '',
+              usage: {
+                inputTokens: null,
+                outputTokens: null,
+                totalTokens: null
+              }
+            }
+            return
+          }
+
+          if (eventName === 'tool.output') {
+            const executionId = String(payload?.executionId || '').trim()
+
+            if (!executionId) {
+              return
+            }
+
+            const currentMessageId = `tool-progress-${executionId}`
+
+            if (String(currentToolMessage.value?.messageId || '').trim() !== currentMessageId) {
+              return
+            }
+
+            currentToolMessage.value = {
+              ...(currentToolMessage.value || {}),
+              messageId: currentMessageId,
+              role: 'tool',
+              content: String(payload?.content || currentToolMessage.value?.content || ''),
+              createdAt: currentToolMessage.value?.createdAt || new Date().toISOString(),
+              model: '',
+              usage: {
+                inputTokens: null,
+                outputTokens: null,
+                totalTokens: null
+              }
+            }
+            return
+          }
+
+          if (eventName === 'tool.finished') {
+            const finishedExecutionId = String(payload?.executionId || '').trim()
+            const currentMessageId = String(currentToolMessage.value?.messageId || '').trim()
+
+            if (!finishedExecutionId || currentMessageId === `tool-progress-${finishedExecutionId}`) {
+              resetCurrentToolMessage()
+            }
+            return
+          }
+
           if (eventName === 'assistant.partial') {
             resetTaskProgressMessage()
+            resetCurrentToolMessage()
             partialAssistantReply.value = {
               messageId: `partial-${normalizedSessionId}`,
               role: 'assistant',
@@ -564,6 +945,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
           if (eventName === 'assistant.finalized') {
             resetTaskProgressMessage()
+            resetCurrentToolMessage()
             resetPartialAssistantReply()
             return
           }
@@ -575,6 +957,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
             persistActiveSessionId()
             resetWorkspaceFilePreview()
             resetTaskProgressMessage()
+            resetCurrentToolMessage()
             resetPartialAssistantReply()
           }
         } catch {
@@ -832,6 +1215,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       return
     }
 
+    const previousSessionId = String(activeSessionId.value || '').trim()
     isCreatingSession.value = true
     chatError.value = ''
 
@@ -847,6 +1231,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       activeSessionId.value = item.sessionId
       persistActiveSessionId()
       upsertSessionSummary(item)
+      moveAttachmentBucket(previousSessionId, item.sessionId)
       draft.value = ''
     } catch (error) {
       chatError.value = normalizeErrorMessage(error, '新建会话失败。')
@@ -876,6 +1261,8 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     try {
       await http.delete(`/api/agent/sessions/${normalizedSessionId}`)
       removeSessionSummary(normalizedSessionId)
+      updateAttachmentBucket(normalizedSessionId, [])
+      clearAttachmentMarker(normalizedSessionId)
 
       if (activeSessionId.value === normalizedSessionId) {
         const nextSessionId = sessions.value[0]?.sessionId || ''
@@ -959,6 +1346,11 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   async function sendMessage() {
     const message = draft.value.trim()
+    const previousSessionId = String(activeSessionId.value || '').trim()
+    const attachmentBucketKey = getAttachmentBucketKey(previousSessionId)
+    const conversationAttachments = Array.isArray(sessionAttachments.value[attachmentBucketKey])
+      ? sessionAttachments.value[attachmentBucketKey]
+      : []
 
     if (!ensureSendReady(message)) {
       return
@@ -1017,6 +1409,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     chatError.value = ''
     isSending.value = true
     resetTaskProgressMessage()
+    resetCurrentToolMessage()
     resetPartialAssistantReply()
 
     try {
@@ -1026,19 +1419,27 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         aiId: selectedAiId.value,
         model: selectedModel.value,
         skillId: selectedSkillIds.value[0] || '',
-        skillIds: selectedSkillIds.value
+        skillIds: selectedSkillIds.value,
+        attachments: conversationAttachments.map((item) => ({
+          name: item.name,
+          type: item.type,
+          sizeBytes: item.sizeBytes,
+          content: item.content
+        }))
       })
 
       if (!data.session?.sessionId) {
         throw new Error('Agent chat returned an invalid session payload.')
       }
 
+      moveAttachmentBucket(previousSessionId, data.session.sessionId)
       applyActiveSessionSnapshot(data.session)
       upsertSessionSummary(data.session)
     } catch (error) {
       activeSession.value = previousActiveSession
       draft.value = message
       resetTaskProgressMessage()
+      resetCurrentToolMessage()
       resetPartialAssistantReply()
       chatError.value = normalizeErrorMessage(error, '发送消息失败。')
     } finally {
@@ -1162,6 +1563,8 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     (nextSessionId) => {
       resetPartialAssistantReply()
       resetTaskProgressMessage()
+      resetCurrentToolMessage()
+      maybeShowExpiredAttachmentNotice(nextSessionId)
 
       if (!nextSessionId) {
         stopSessionStream()
@@ -1193,14 +1596,17 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     stopTaskPolling()
     stopSessionStream()
     resetTaskProgressMessage()
+    resetCurrentToolMessage()
     resetPartialAssistantReply()
   })
 
   return {
+    activeEphemeralAttachments,
     activeMessages,
     activeSession,
     activeSessionId,
     aiConfigs,
+    addEphemeralAttachments,
     skills,
     activeWorkspaceFiles,
     activeWorkspaceFolder,
@@ -1211,9 +1617,12 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     createSession: createSessionEntry,
     currentTask,
     deleteSession,
+    dismissExpiredAttachmentNotice,
     draft,
+    expiredAttachmentNotice,
     isAgentRunning,
     openWorkspaceFile,
+    removeEphemeralAttachment,
     selectedWorkspaceFileContent,
     selectedWorkspaceFilePath,
     selectedWorkspaceFileSizeBytes,

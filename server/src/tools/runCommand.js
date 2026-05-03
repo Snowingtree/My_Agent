@@ -47,6 +47,9 @@ export function createRunCommandTool({ workspace, workspaceConfig, runtimeConfig
     async run(args = {}, executionContext = {}) {
       const command = String(args.command || '').trim()
       const signal = executionContext.signal
+      const onProgress = typeof executionContext.onProgress === 'function'
+        ? executionContext.onProgress
+        : null
 
       if (!command) {
         throw new Error('run_command requires a command.')
@@ -123,12 +126,26 @@ export function createRunCommandTool({ workspace, workspaceConfig, runtimeConfig
           const nextState = appendOutput(stdout, chunk.toString('utf8'), workspaceConfig.maxCommandOutputChars)
           stdout = nextState.value
           stdoutTruncated = stdoutTruncated || nextState.truncated
+          onProgress?.({
+            stream: 'stdout',
+            stdout,
+            stderr,
+            stdoutTruncated,
+            stderrTruncated
+          })
         })
 
         child.stderr.on('data', (chunk) => {
           const nextState = appendOutput(stderr, chunk.toString('utf8'), workspaceConfig.maxCommandOutputChars)
           stderr = nextState.value
           stderrTruncated = stderrTruncated || nextState.truncated
+          onProgress?.({
+            stream: 'stderr',
+            stdout,
+            stderr,
+            stdoutTruncated,
+            stderrTruncated
+          })
         })
 
         child.on('error', (error) => {

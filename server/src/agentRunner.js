@@ -20,8 +20,8 @@ const FILE_CHANGE_REQUEST_PATTERNS = [
 ]
 
 const UI_FILE_CHANGE_REQUEST_PATTERNS = [
-  /\u5199\u4ee3\u7801|\u6539\u4ee3\u7801|\u751f\u6210\u4ee3\u7801|\u521b\u5efa\u4ee3\u7801|\u65b0\u5efa\u9875\u9762|\u521b\u5efa\u9875\u9762|\u505a\u4e00\u4e2a\u9875\u9762|\u505a\u4e00\u4e2a\u754c\u9762|\u521b\u5efa\u754c\u9762|\u751f\u6210\u9875\u9762|\u751f\u6210\u754c\u9762|\u521b\u5efa\u7ec4\u4ef6|\u65b0\u5efa\u7ec4\u4ef6|\u5199\u4e00\u4e2a html|\u5199\u4e00\u4e2a vue/i,
-  /\b(create|build|make|generate)\b.*\b(page|ui|interface|html|css|javascript|js|vue|react|component)\b/i,
+  /\u5199\u4ee3\u7801|\u6539\u4ee3\u7801|\u751f\u6210\u4ee3\u7801|\u521b\u5efa\u4ee3\u7801|\u5199\u4e00\u4e2a\u9875\u9762|\u5199\u4e2a\u9875\u9762|\u5199\u4e00\u4e2a\u7f51\u9875|\u5199\u4e2a\u7f51\u9875|\u65b0\u5efa\u9875\u9762|\u521b\u5efa\u9875\u9762|\u505a\u4e00\u4e2a\u9875\u9762|\u505a\u4e2a\u9875\u9762|\u505a\u4e00\u4e2a\u754c\u9762|\u505a\u4e2a\u754c\u9762|\u5199\u4e00\u4e2a\u754c\u9762|\u5199\u4e2a\u754c\u9762|\u521b\u5efa\u754c\u9762|\u751f\u6210\u9875\u9762|\u751f\u6210\u754c\u9762|\u521b\u5efa\u7ec4\u4ef6|\u65b0\u5efa\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u7ec4\u4ef6|\u5199\u4e2a\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u811a\u672c|\u5199\u4e2a\u811a\u672c|\u5199\u4e00\u4e2a html|\u5199\u4e00\u4e2a vue|\u5199\u4e00\u4e2a python|\u5199\u4e00\u4e2a py/i,
+  /\b(create|build|make|generate|write)\b.*\b(page|webpage|ui|interface|html|css|javascript|js|python|py|vue|react|component|script)\b/i,
   /\b(page|ui|interface|html|css|javascript|js|vue|react|component)\b.*\b(create|build|make|generate|write)\b/i
 ]
 
@@ -39,9 +39,9 @@ const FILE_CHANGE_CONFIRMATION_PATTERNS = [
 ]
 
 const SAFE_FILE_CHANGE_REQUEST_PATTERNS = [
-  /(?:\u4fee\u6539\u6587\u4ef6|\u5199\u5165\u6587\u4ef6|\u65b0\u589e\u6587\u4ef6|\u65b0\u5efa\u6587\u4ef6|\u521b\u5efa\u6587\u4ef6|\u5220\u9664\u6587\u4ef6|\u6539\u4ee3\u7801|\u5199\u4ee3\u7801|\u751f\u6210\u6587\u4ef6|\u4fdd\u5b58\u5230\u6587\u4ef6|\u843d\u5730\u6587\u4ef6|\u66f4\u65b0\u6587\u4ef6|\u91cd\u5199\u6587\u4ef6|\u8865\u4e01)/i,
-  /\b(create|write|modify|edit|rewrite|update|delete|remove|save)\b.*\b(file|code|component|script|module)\b/i,
-  /\b(file|code|component|script|module)\b.*\b(create|write|modify|edit|rewrite|update|delete|remove|save)\b/i
+  /(?:\u4fee\u6539\u6587\u4ef6|\u5199\u5165\u6587\u4ef6|\u65b0\u589e\u6587\u4ef6|\u65b0\u5efa\u6587\u4ef6|\u521b\u5efa\u6587\u4ef6|\u5220\u9664\u6587\u4ef6|\u6539\u4ee3\u7801|\u5199\u4ee3\u7801|\u5199\u4e00\u4e2a\u9875\u9762|\u5199\u4e2a\u9875\u9762|\u5199\u4e00\u4e2a\u7f51\u9875|\u5199\u4e2a\u7f51\u9875|\u5199\u4e00\u4e2a\u754c\u9762|\u5199\u4e2a\u754c\u9762|\u5199\u4e00\u4e2a\u7ec4\u4ef6|\u5199\u4e2a\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u811a\u672c|\u5199\u4e2a\u811a\u672c|\u751f\u6210\u6587\u4ef6|\u4fdd\u5b58\u5230\u6587\u4ef6|\u843d\u5730\u6587\u4ef6|\u66f4\u65b0\u6587\u4ef6|\u91cd\u5199\u6587\u4ef6|\u8865\u4e01)/i,
+  /\b(create|write|modify|edit|rewrite|update|delete|remove|save)\b.*\b(file|code|component|script|module|page|webpage|ui|interface)\b/i,
+  /\b(file|code|component|script|module|page|webpage|ui|interface)\b.*\b(create|write|modify|edit|rewrite|update|delete|remove|save)\b/i
 ]
 
 const SAFE_FILE_MUTATION_HINT_PATTERNS = [
@@ -308,6 +308,51 @@ async function buildWorkspaceSnapshotText({
   }
 
   return lines.join('\n')
+}
+
+function buildAttachmentContextText(attachments = []) {
+  const normalizedAttachments = Array.isArray(attachments)
+    ? attachments.filter(Boolean)
+    : []
+
+  if (!normalizedAttachments.length) {
+    return ''
+  }
+
+  const lines = [
+    'Ephemeral uploaded files are available for this conversation only.',
+    'They are not persisted to the workspace or session storage on the server.',
+    'Use them as read-only reference material unless you explicitly write new workspace files.'
+  ]
+  let remainingChars = 60000
+
+  normalizedAttachments.slice(0, 8).forEach((item, index) => {
+    if (remainingChars <= 0) {
+      return
+    }
+
+    const header = `${index + 1}. ${item.name}${item.type ? ` (${item.type})` : ''}${Number.isFinite(item.sizeBytes) ? ` - ${item.sizeBytes} bytes` : ''}`
+    const rawContent = String(item.content || '')
+    const safeContent = rawContent.length > 20000
+      ? `${rawContent.slice(0, 20000)}\n...truncated...`
+      : rawContent
+    const nextBlock = [
+      header,
+      'Content:',
+      safeContent
+    ].join('\n')
+
+    if (nextBlock.length > remainingChars) {
+      lines.push(nextBlock.slice(0, remainingChars))
+      remainingChars = 0
+      return
+    }
+
+    lines.push(nextBlock)
+    remainingChars -= nextBlock.length
+  })
+
+  return lines.join('\n\n')
 }
 
 function buildActiveSkillPrompt(skills) {
@@ -601,6 +646,7 @@ function buildAgentLoopMessages({
   systemPrompt,
   remainingIterations,
   workspaceContextText = '',
+  attachmentContextText = '',
   currentDateContextText = ''
 }) {
   const promptSections = [
@@ -621,6 +667,7 @@ function buildAgentLoopMessages({
     'Do not ask clarifying questions unless the missing detail truly blocks a useful next response.',
     'When the user asks for the current date, weekday, or time, use the provided current date context directly.',
     'When the request is about the codebase or file changes, prefer inspecting the workspace before making code claims.',
+    'If ephemeral uploaded files are provided, treat them as conversation-scoped reference material for this run.',
     'Use apply_patch for targeted edits and write_file for new files or full rewrites.',
     'Never claim that a file changed unless a write tool actually succeeded.',
     'When you modify files and a verification command is available, expect a follow-up verification step before the final answer.',
@@ -670,6 +717,12 @@ function buildAgentLoopMessages({
           content: `Current session workspace snapshot:\n${workspaceContextText}`
         }]
       : []),
+    ...(attachmentContextText
+      ? [{
+          role: 'user',
+          content: `Ephemeral uploaded file context:\n${attachmentContextText}`
+        }]
+      : []),
     ...conversationHistory,
     ...toolMessages,
     {
@@ -691,6 +744,7 @@ function buildForcedFinalMessages({
   toolMessages,
   systemPrompt,
   workspaceContextText = '',
+  attachmentContextText = '',
   currentDateContextText = ''
 }) {
   const promptSections = [
@@ -704,6 +758,7 @@ function buildForcedFinalMessages({
     'You must now finish without calling more tools.',
     'Base the answer on the gathered workspace evidence.',
     'If the request never needed workspace tools, answer naturally and directly.',
+    'If ephemeral uploaded files were provided, treat them as reference material for the final answer.',
     'When the user asks for the current date, weekday, or time, use the provided current date context directly.',
     'If file changes were verified, mention the verification result clearly.',
     ...(modifiedWorkspace
@@ -746,6 +801,12 @@ function buildForcedFinalMessages({
       ? [{
           role: 'user',
           content: `Current session workspace snapshot:\n${workspaceContextText}`
+        }]
+      : []),
+    ...(attachmentContextText
+      ? [{
+          role: 'user',
+          content: `Ephemeral uploaded file context:\n${attachmentContextText}`
         }]
       : []),
     ...conversationHistory,
@@ -882,6 +943,47 @@ function createNormalizedToolMessageContent(toolExecution) {
   ].filter(Boolean).join('\n')
 }
 
+function createRunningToolMessageContent(toolRequest, liveOutput = '') {
+  const toolName = normalizeTrimmedString(toolRequest?.name) || 'unknown_tool'
+  const toolTarget = summarizeToolTarget({
+    tool: toolName,
+    args: toolRequest?.args && typeof toolRequest.args === 'object' ? toolRequest.args : {}
+  })
+  const normalizedLiveOutput = normalizeTrimmedString(liveOutput)
+
+  return [
+    `工具：${toolName}`,
+    '状态：running',
+    toolTarget,
+    `结果：${normalizedLiveOutput || `正在执行 ${toolName}。`}`
+  ].filter(Boolean).join('\n')
+}
+
+function buildRunCommandLiveOutput(progress = {}) {
+  const stdout = normalizeTrimmedString(progress?.stdout)
+  const stderr = normalizeTrimmedString(progress?.stderr)
+  const output = stdout || stderr
+
+  if (!output) {
+    return ''
+  }
+
+  const suffixParts = []
+
+  if (progress?.stdoutTruncated) {
+    suffixParts.push('stdout 已截断')
+  }
+
+  if (progress?.stderrTruncated) {
+    suffixParts.push('stderr 已截断')
+  }
+
+  const truncatedOutput = truncateText(output, 800)
+  const suffix = suffixParts.length ? `\n[${suffixParts.join('，')}]` : ''
+
+  return `${truncatedOutput}${suffix}`.trim()
+}
+
 function createToolMessageContent(toolExecution) {
   const toolName = normalizeTrimmedString(toolExecution?.tool) || 'unknown_tool'
   const toolSummary = normalizeTrimmedString(toolExecution?.summary) || `${toolName} 已执行。`
@@ -895,6 +997,30 @@ function createToolMessageContent(toolExecution) {
     durationLabel ? `耗时：${durationLabel}` : '',
     toolTarget,
     `结果：${toolSummary}`
+  ].filter(Boolean).join('\n')
+}
+
+function createSkillMessageContent(skills = []) {
+  const normalizedSkills = (Array.isArray(skills) ? skills : [])
+    .filter(Boolean)
+
+  if (!normalizedSkills.length) {
+    return ''
+  }
+
+  const skillNames = normalizedSkills
+    .map((item) => normalizeTrimmedString(item.name) || normalizeTrimmedString(item.skillId))
+    .filter(Boolean)
+
+  const skillIds = normalizedSkills
+    .map((item) => normalizeTrimmedString(item.skillId))
+    .filter(Boolean)
+
+  return [
+    `技能：${skillNames.join(' + ')}`,
+    '状态：已启用',
+    skillIds.length ? `目标：${skillIds.join(', ')}` : '',
+    `结果：本轮已启用技能：${skillNames.join('、')}。`
   ].filter(Boolean).join('\n')
 }
 
@@ -1217,7 +1343,15 @@ export function createAgentRunner({
     })
   }
 
-  async function runTask({ sessionId, requestedAiId, requestedModel, requestedSkillId, requestedSkillIds = [], abortSignal }) {
+  async function runTask({
+    sessionId,
+    requestedAiId,
+    requestedModel,
+    requestedSkillId,
+    requestedSkillIds = [],
+    requestedAttachments = [],
+    abortSignal
+  }) {
     const taskStartedAtMs = Date.now()
     const throwIfCancelled = () => {
       if (abortSignal?.aborted) {
@@ -1301,6 +1435,7 @@ export function createAgentRunner({
     const fileChangesRequired = looksLikeFileChangeRequestSafe(latestGoal)
     const requiredCompanionExtensions = getRequiredCompanionExtensionsSafe(latestGoal)
     const currentDateContextText = buildCurrentDateContext(runtimeConfig?.timezone)
+    const attachmentContextText = buildAttachmentContextText(requestedAttachments)
     const toolMessages = []
     const verificationCommands = await resolveVerificationCommands({
       workspaceConfig,
@@ -1342,6 +1477,14 @@ export function createAgentRunner({
       return draftSession
     })
 
+    const skillMessageContent = createSkillMessageContent(activeSkills)
+
+    if (skillMessageContent) {
+      await sessionRepository.appendToolMessage(sessionId, {
+        content: skillMessageContent
+      })
+    }
+
     async function executeToolRequest(toolRequest, {
       summary = '',
       stepTitle = ''
@@ -1350,11 +1493,17 @@ export function createAgentRunner({
       throwIfTaskTimedOut()
 
       const normalizedRequest = normalizeToolRequest(toolRequest)
+      const toolExecutionId = createId('tool')
       publishTaskProgress(
         sessionId,
         summary || `正在执行工具 ${normalizedRequest.name}。`,
         selectedModel
       )
+      pushSessionEvent(sessionId, 'tool.started', {
+        executionId: toolExecutionId,
+        content: createRunningToolMessageContent(normalizedRequest)
+      })
+
       const toolStep = createTaskStep({
         title: stepTitle || createToolStepTitle(normalizedRequest.name, normalizedRequest.args),
         status: 'in_progress',
@@ -1383,7 +1532,23 @@ export function createAgentRunner({
         toolExecution = await toolRunner.executeToolCall(normalizedRequest, {
           skill: activeSkill,
           signal: abortSignal,
-          sessionId
+          sessionId,
+          onProgress: (progress) => {
+            if (normalizedRequest.name !== 'run_command') {
+              return
+            }
+
+            const liveOutput = buildRunCommandLiveOutput(progress)
+
+            if (!liveOutput) {
+              return
+            }
+
+            pushSessionEvent(sessionId, 'tool.output', {
+              executionId: toolExecutionId,
+              content: createRunningToolMessageContent(normalizedRequest, liveOutput)
+            })
+          }
         })
         toolExecution = {
           ...toolExecution,
@@ -1405,6 +1570,11 @@ export function createAgentRunner({
             '',
             errorMessage
           ].join('\n')
+        })
+
+        pushSessionEvent(sessionId, 'tool.finished', {
+          executionId: toolExecutionId,
+          status: 'failed'
         })
 
         await sessionRepository.updateSession(sessionId, (draftSession) => {
@@ -1437,6 +1607,11 @@ export function createAgentRunner({
 
       await sessionRepository.appendToolMessage(sessionId, {
         content: createNormalizedToolMessageContent(toolExecution)
+      })
+
+      pushSessionEvent(sessionId, 'tool.finished', {
+        executionId: toolExecutionId,
+        status: 'success'
       })
 
       if (isWriteToolName(toolExecution.tool) && toolExecution.result?.changed !== false) {
@@ -1619,12 +1794,13 @@ export function createAgentRunner({
             conversationHistory,
             requireFileChanges: fileChangesRequired,
             toolMessages,
-            toolPromptText: toolRunner.getPromptText({ skill: activeSkill }),
-            systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-            remainingIterations: runtimeConfig.maxToolIterations - iteration,
-            workspaceContextText,
-            currentDateContextText
-          })
+          toolPromptText: toolRunner.getPromptText({ skill: activeSkill }),
+          systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+          remainingIterations: runtimeConfig.maxToolIterations - iteration,
+          workspaceContextText,
+          attachmentContextText,
+          currentDateContextText
+        })
         })
         throwIfCancelled()
         throwIfTaskTimedOut()
@@ -1827,12 +2003,13 @@ export function createAgentRunner({
           conversationHistory,
           fileChangesRequired,
           modifiedWorkspace: executionState.modifiedWorkspace,
-          toolMessages,
-          systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-          workspaceContextText,
-          currentDateContextText
-        })
-      })
+              toolMessages,
+              systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+              workspaceContextText,
+              attachmentContextText,
+              currentDateContextText
+            })
+          })
       const finalReply = normalizeTrimmedString(forcedFinal.json?.reply)
 
       if (
@@ -1868,6 +2045,7 @@ export function createAgentRunner({
               toolMessages,
               systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
               workspaceContextText: refreshedWorkspaceContextText,
+              attachmentContextText,
               currentDateContextText
             })
           })

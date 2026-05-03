@@ -26,7 +26,7 @@ import PrivateAccessLoadingOverlay from './components/PrivateAccessLoadingOverla
 import { usePrivateAppAccess } from './hooks/usePrivateAppAccess.js'
 import { clearAgentAuthSession, persistAgentAuthSession } from './auth.js'
 import http from './http.js'
-import { AGENT_AUTH_KEY, AUTH_TOKEN_KEY } from './storage.js'
+import { AGENT_AUTH_CHANGED_EVENT, AGENT_AUTH_KEY, AUTH_TOKEN_KEY } from './storage.js'
 import AgentWorkspaceScreen from './components/AgentWorkspaceScreen.vue'
 
 const agentTitle = 'Agent'
@@ -81,6 +81,18 @@ function readAgentAuthState() {
 
 function refreshAuthState() {
   isAuthenticated.value = readAgentAuthState()
+}
+
+function handleAuthStateChanged() {
+  refreshAuthState()
+}
+
+function handleStorageChanged(event) {
+  const changedKey = String(event?.key || '').trim()
+
+  if (!changedKey || [AGENT_AUTH_KEY, AUTH_TOKEN_KEY].includes(changedKey)) {
+    refreshAuthState()
+  }
 }
 
 async function loginWithSharedBlogAuth(payload) {
@@ -161,9 +173,19 @@ watch(isAuthenticated, (value) => {
 
 onMounted(() => {
   syncDocumentScrollLock(isAuthenticated.value)
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener(AGENT_AUTH_CHANGED_EVENT, handleAuthStateChanged)
+    window.addEventListener('storage', handleStorageChanged)
+  }
 })
 
 onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener(AGENT_AUTH_CHANGED_EVENT, handleAuthStateChanged)
+    window.removeEventListener('storage', handleStorageChanged)
+  }
+
   syncDocumentScrollLock(false)
 })
 </script>

@@ -1,4 +1,4 @@
-﻿import { AGENT_AUTH_KEY, AGENT_USERNAME_KEY } from './storage.js'
+import { AGENT_AUTH_CHANGED_EVENT, AGENT_AUTH_KEY, AGENT_USERNAME_KEY } from './storage.js'
 
 const DEFAULT_AGENT_USERNAME = '访客'
 
@@ -16,6 +16,14 @@ function resolveStorage(storage) {
 
 function normalizeValue(value) {
   return String(value ?? '').trim()
+}
+
+function notifyAgentAuthChanged() {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  window.dispatchEvent(new Event(AGENT_AUTH_CHANGED_EVENT))
 }
 
 export function getAgentUsername({ storage, fallback = DEFAULT_AGENT_USERNAME } = {}) {
@@ -55,6 +63,8 @@ export function persistAgentAuthSession({
   if (authTokenKey) {
     resolvedStorage.setItem(authTokenKey, normalizedToken)
   }
+
+  notifyAgentAuthChanged()
 }
 
 export function clearAgentAuthSession({ storage, authTokenKey } = {}) {
@@ -70,4 +80,6 @@ export function clearAgentAuthSession({ storage, authTokenKey } = {}) {
   if (authTokenKey) {
     resolvedStorage.removeItem(authTokenKey)
   }
+
+  notifyAgentAuthChanged()
 }

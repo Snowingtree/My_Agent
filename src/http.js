@@ -1,5 +1,5 @@
 ﻿import axios from 'axios'
-import { AGENT_AUTH_KEY, AGENT_USERNAME_KEY, AUTH_TOKEN_KEY } from './storage.js'
+import { AGENT_AUTH_CHANGED_EVENT, AGENT_AUTH_KEY, AGENT_USERNAME_KEY, AUTH_TOKEN_KEY } from './storage.js'
 
 const EXPLICIT_API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/$/, '')
 const EXPLICIT_PRIVATE_APP_BASE_URL = String(import.meta.env.VITE_PRIVATE_APP_BASE_URL || '')
@@ -45,6 +45,10 @@ function clearAgentStoredAuth() {
   localStorage.removeItem(AGENT_AUTH_KEY)
   localStorage.removeItem(AGENT_USERNAME_KEY)
   localStorage.removeItem(AUTH_TOKEN_KEY)
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(AGENT_AUTH_CHANGED_EVENT))
+  }
 }
 
 function createHttpError(error) {

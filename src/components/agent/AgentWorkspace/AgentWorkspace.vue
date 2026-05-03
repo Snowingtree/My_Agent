@@ -206,7 +206,7 @@
                 <div
                   class="agent-tool-card"
                   :class="[
-                    `is-${resolveToolVisual(parseToolMessage(item.content).tool).tone}`,
+                    `is-${resolveToolVisual(parseToolMessage(item.content)).tone}`,
                     `is-status-${parseToolMessage(item.content).status || 'success'}`,
                     { 'is-expanded': isToolMessageExpanded(item.messageId) }
                   ]"
@@ -217,14 +217,17 @@
                   </div>
                   <div class="agent-tool-card__copy">
                     <div class="agent-tool-card__head">
-                      <strong>工具调用</strong>
-                      <span class="agent-tool-card__icon" aria-hidden="true">{{ resolveToolVisual(parseToolMessage(item.content).tool).icon }}</span>
+                      <strong>{{ parseToolMessage(item.content).kind === 'skill' ? '技能调用' : '工具调用' }}</strong>
+                      <span class="agent-tool-card__icon" aria-hidden="true">{{ resolveToolVisual(parseToolMessage(item.content)).icon }}</span>
                       <span class="agent-tool-card__name">{{ parseToolMessage(item.content).tool || 'unknown_tool' }}</span>
                       <span
                         class="agent-tool-card__status"
-                        :class="{ 'is-failed': parseToolMessage(item.content).status === 'failed' }"
+                        :class="{
+                          'is-failed': parseToolMessage(item.content).status === 'failed',
+                          'is-running': parseToolMessage(item.content).status === 'running'
+                        }"
                       >
-                        {{ parseToolMessage(item.content).status === 'failed' ? '失败' : '成功' }}
+                        {{ resolveToolStatusLabel(parseToolMessage(item.content).status) }}
                       </span>
                       <button
                         type="button"
@@ -273,6 +276,13 @@
         </div>
 
         <div class="agent-composer">
+          <input
+            ref="attachmentInputRef"
+            class="agent-composer__attachment-input"
+            type="file"
+            multiple
+            @change="handleAttachmentInputChange"
+          />
           <textarea
             ref="composerRef"
             :value="draft"
@@ -283,7 +293,45 @@
             @keydown="handleComposerKeydown"
           />
 
+          <div v-if="ephemeralAttachments.length" class="agent-composer__attachments">
+            <article
+              v-for="item in ephemeralAttachments"
+              :key="item.attachmentId"
+              class="agent-composer__attachment-chip"
+            >
+              <div class="agent-composer__attachment-copy">
+                <strong>{{ item.name }}</strong>
+                <small>{{ formatEphemeralAttachmentMeta(item) }}</small>
+              </div>
+              <button
+                type="button"
+                class="agent-composer__attachment-remove"
+                aria-label="移除临时文件"
+                @click="$emit('remove-ephemeral-attachment', item.attachmentId)"
+              >
+                ×
+              </button>
+            </article>
+          </div>
+
           <div class="agent-composer__actions">
+            <button
+              type="button"
+              class="agent-composer__upload"
+              :disabled="isSending || isLoadingSession"
+              @click="openAttachmentPicker"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M8.5 12.5L14.8 6.2C16.4 4.6 19 4.6 20.6 6.2C22.2 7.8 22.2 10.4 20.6 12L11.7 20.9C9.5 23.1 6 23.1 3.8 20.9C1.6 18.7 1.6 15.2 3.8 13L13.2 3.6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.8"
+                />
+              </svg>
+            </button>
             <button
               v-if="isAgentRunning"
               type="button"
@@ -350,6 +398,58 @@
                 @click="toggleSkillSelection(item.skillId)"
               >
                 <strong>{{ item.name }}</strong>
+              </button>
+            </div>
+          </section>
+        </div>
+      </Transition>
+
+      <Transition name="skill-picker-fade">
+        <div
+          v-if="expiredAttachmentNotice"
+          class="agent-skill-picker"
+          role="dialog"
+          aria-modal="true"
+          aria-label="上传文件已失效"
+          @click.self="$emit('dismiss-expired-attachment-notice')"
+        >
+          <section class="agent-skill-picker__panel agent-skill-picker__panel--notice">
+            <div class="agent-skill-picker__head">
+              <div>
+                <p class="agent-panel__eyebrow">临时文件提醒</p>
+                <h3>之前上传的文件已失效</h3>
+                <small>这些文件只会保留在当前浏览器会话中。刷新页面或重新打开后，需要重新上传。</small>
+              </div>
+              <button
+                type="button"
+                class="agent-skill-picker__close"
+                aria-label="关闭文件失效提醒"
+                @click="$emit('dismiss-expired-attachment-notice')"
+              >
+                ×
+              </button>
+            </div>
+
+            <div v-if="expiredAttachmentNotice.names?.length" class="agent-skill-picker__expired-list">
+              <p>已失效的文件：</p>
+              <div class="agent-skill-picker__expired-chips">
+                <span
+                  v-for="name in expiredAttachmentNotice.names"
+                  :key="name"
+                  class="agent-skill-picker__expired-chip"
+                >
+                  {{ name }}
+                </span>
+              </div>
+            </div>
+
+            <div class="agent-skill-picker__footer">
+              <button
+                type="button"
+                class="agent-skill-picker__confirm"
+                @click="$emit('dismiss-expired-attachment-notice')"
+              >
+                我知道了
               </button>
             </div>
           </section>
@@ -551,6 +651,8 @@ const props = defineProps({
   canSend: { type: Boolean, default: false },
   chatError: { type: String, default: '' },
   draft: { type: String, default: '' },
+  ephemeralAttachments: { type: Array, default: () => [] },
+  expiredAttachmentNotice: { type: Object, default: null },
   isAgentRunning: { type: Boolean, default: false },
   isCreatingSession: { type: Boolean, default: false },
   isCancellingTask: { type: Boolean, default: false },
@@ -589,18 +691,22 @@ const emit = defineEmits([
   'cancel-task',
   'close-workspace-file',
   'delete-session',
+  'dismiss-expired-attachment-notice',
   'logout',
   'open-model-config',
   'open-workspace-file',
   'refresh-session',
+  'remove-ephemeral-attachment',
   'select-session',
   'send',
+  'upload-attachments',
   'update:ai-id',
   'update:draft',
   'update:model',
   'update:skill-ids'
 ])
 
+const attachmentInputRef = ref(null)
 const composerRef = ref(null)
 const messagesRef = ref(null)
 const shellRef = ref(null)
@@ -960,6 +1066,29 @@ const resolvedSendButtonLabel = computed(() => {
 
   return '发送消息'
 })
+
+function formatEphemeralAttachmentMeta(item) {
+  const sizeLabel = (() => {
+    const sizeBytes = Number(item?.sizeBytes)
+
+    if (!Number.isFinite(sizeBytes) || sizeBytes < 0) {
+      return ''
+    }
+
+    if (sizeBytes >= 1024 * 1024) {
+      return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+    }
+
+    if (sizeBytes >= 1024) {
+      return `${(sizeBytes / 1024).toFixed(1)} KB`
+    }
+
+    return `${sizeBytes} B`
+  })()
+
+  const typeLabel = String(item?.type || '').trim()
+  return [sizeLabel, typeLabel].filter(Boolean).join(' · ')
+}
 
 const totalTokens = computed(() => {
   if (!Array.isArray(props.messages)) {
@@ -1323,6 +1452,7 @@ function parseToolMessage(content) {
     .map((line) => String(line || '').trim())
     .filter(Boolean)
 
+  const skillLine = lines.find((line) => line.startsWith('技能：') || line.toLowerCase().startsWith('skill:')) || ''
   const toolLine = lines.find((line) => line.startsWith('工具：') || line.toLowerCase().startsWith('tool:')) || ''
   const statusLine = lines.find((line) => line.startsWith('状态：') || line.toLowerCase().startsWith('status:')) || ''
   const durationLine = lines.find((line) => line.startsWith('耗时：') || line.toLowerCase().startsWith('duration:')) || ''
@@ -1342,17 +1472,41 @@ function parseToolMessage(content) {
     ? statusLine.replace(/^(状态：|status:\s*)/i, '').trim().toLowerCase()
     : (/(失败|error|not found|timed out|timeout|denied|forbidden)/i.test(normalizedContent) ? 'failed' : 'success')
 
+  const normalizedStatus = inferredStatus === '运行中' || inferredStatus === 'running'
+    ? 'running'
+    : (inferredStatus === '失败' || inferredStatus === 'failed' ? 'failed' : 'success')
+
   return {
-    tool: toolLine.replace(/^(工具：|tool:\s*)/i, '').trim(),
-    status: inferredStatus === '失败' || inferredStatus === 'failed' ? 'failed' : 'success',
+    kind: skillLine ? 'skill' : 'tool',
+    tool: (skillLine || toolLine).replace(/^(技能：|skill:\s*|工具：|tool:\s*)/i, '').trim(),
+    status: normalizedStatus,
     duration: durationLine.replace(/^(耗时：|duration:\s*)/i, '').trim(),
     target: targetLine.replace(/^(目标：|target:\s*)/i, '').trim(),
     result
   }
 }
 
-function resolveToolVisual(toolName) {
-  const normalizedToolName = String(toolName || '').trim().toLowerCase()
+function resolveToolStatusLabel(status) {
+  const normalizedStatus = String(status || '').trim().toLowerCase()
+
+  if (normalizedStatus === 'failed') {
+    return '失败'
+  }
+
+  if (normalizedStatus === 'running') {
+    return '执行中'
+  }
+
+  return '成功'
+}
+
+function resolveToolVisual(toolEntry) {
+  const normalizedKind = String(toolEntry?.kind || '').trim().toLowerCase()
+  const normalizedToolName = String(toolEntry?.tool || toolEntry || '').trim().toLowerCase()
+
+  if (normalizedKind === 'skill') {
+    return { icon: '✨', tone: 'skill' }
+  }
 
   if (normalizedToolName === 'read_file') {
     return { icon: '📖', tone: 'read' }
@@ -1417,7 +1571,17 @@ function getFileDisplayName(filePath) {
 }
 
 function isToolMessageExpanded(messageId) {
-  return Boolean(expandedToolMessages.value[String(messageId || '')])
+  const normalizedMessageId = String(messageId || '').trim()
+
+  if (!normalizedMessageId) {
+    return false
+  }
+
+  if (normalizedMessageId.startsWith('tool-progress-') && !(normalizedMessageId in expandedToolMessages.value)) {
+    return true
+  }
+
+  return Boolean(expandedToolMessages.value[normalizedMessageId])
 }
 
 function toggleToolMessage(messageId) {
@@ -1513,6 +1677,22 @@ function focusComposer() {
   nextTick(() => {
     composerRef.value?.focus()
   })
+}
+
+function openAttachmentPicker() {
+  attachmentInputRef.value?.click()
+}
+
+function handleAttachmentInputChange(event) {
+  const files = Array.from(event?.target?.files || [])
+
+  if (files.length) {
+    emit('upload-attachments', files)
+  }
+
+  if (event?.target) {
+    event.target.value = ''
+  }
 }
 
 function requestSend() {
@@ -2947,6 +3127,11 @@ onBeforeUnmount(() => {
   color: #b83434;
 }
 
+.agent-tool-card__status.is-running {
+  background: rgba(59, 95, 189, 0.12);
+  color: #3558b8;
+}
+
 .agent-tool-card__meta-row {
   display: flex;
   flex-wrap: wrap;
@@ -3087,13 +3272,33 @@ onBeforeUnmount(() => {
   color: #227a48;
 }
 
+.agent-tool-card.is-skill {
+  border-color: #efdfb6;
+  background: linear-gradient(180deg, #fffdf8, #faf6eb);
+}
+
+.agent-tool-card.is-skill .agent-tool-card__dot {
+  background: #c89a33;
+  box-shadow: 0 0 0 6px rgba(200, 154, 51, 0.12);
+}
+
+.agent-tool-card.is-skill .agent-tool-card__line {
+  background: linear-gradient(180deg, rgba(200, 154, 51, 0.42), rgba(200, 154, 51, 0));
+}
+
+.agent-tool-card.is-skill .agent-tool-card__name {
+  background: #faefcf;
+  color: #8a6613;
+}
+
 .agent-tool-card.is-status-failed,
 .agent-tool-card.is-status-failed.is-read,
 .agent-tool-card.is-status-failed.is-browse,
 .agent-tool-card.is-status-failed.is-search,
 .agent-tool-card.is-status-failed.is-command,
 .agent-tool-card.is-status-failed.is-write,
-.agent-tool-card.is-status-failed.is-patch {
+.agent-tool-card.is-status-failed.is-patch,
+.agent-tool-card.is-status-failed.is-skill {
   border-color: #f3d1d1;
   background: linear-gradient(180deg, #fff9f9, #fff3f3);
 }
@@ -3104,7 +3309,8 @@ onBeforeUnmount(() => {
 .agent-tool-card.is-status-failed.is-search .agent-tool-card__dot,
 .agent-tool-card.is-status-failed.is-command .agent-tool-card__dot,
 .agent-tool-card.is-status-failed.is-write .agent-tool-card__dot,
-.agent-tool-card.is-status-failed.is-patch .agent-tool-card__dot {
+.agent-tool-card.is-status-failed.is-patch .agent-tool-card__dot,
+.agent-tool-card.is-status-failed.is-skill .agent-tool-card__dot {
   background: #d64c4c;
   box-shadow: 0 0 0 6px rgba(214, 76, 76, 0.12);
 }
@@ -3115,7 +3321,8 @@ onBeforeUnmount(() => {
 .agent-tool-card.is-status-failed.is-search .agent-tool-card__line,
 .agent-tool-card.is-status-failed.is-command .agent-tool-card__line,
 .agent-tool-card.is-status-failed.is-write .agent-tool-card__line,
-.agent-tool-card.is-status-failed.is-patch .agent-tool-card__line {
+.agent-tool-card.is-status-failed.is-patch .agent-tool-card__line,
+.agent-tool-card.is-status-failed.is-skill .agent-tool-card__line {
   background: linear-gradient(180deg, rgba(214, 76, 76, 0.42), rgba(214, 76, 76, 0));
 }
 
@@ -3125,7 +3332,8 @@ onBeforeUnmount(() => {
 .agent-tool-card.is-status-failed.is-search .agent-tool-card__name,
 .agent-tool-card.is-status-failed.is-command .agent-tool-card__name,
 .agent-tool-card.is-status-failed.is-write .agent-tool-card__name,
-.agent-tool-card.is-status-failed.is-patch .agent-tool-card__name {
+.agent-tool-card.is-status-failed.is-patch .agent-tool-card__name,
+.agent-tool-card.is-status-failed.is-skill .agent-tool-card__name {
   background: #fdeaea;
   color: #b83434;
 }
@@ -3213,6 +3421,10 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(10px);
 }
 
+.agent-composer__attachment-input {
+  display: none;
+}
+
 .agent-composer__input {
   width: 100%;
   min-height: 62px;
@@ -3232,10 +3444,99 @@ onBeforeUnmount(() => {
   color: #979797;
 }
 
+.agent-composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.agent-composer__attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid rgba(23, 23, 23, 0.08);
+  border-radius: 14px;
+  background: #f7f7f8;
+}
+
+.agent-composer__attachment-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.agent-composer__attachment-copy strong,
+.agent-composer__attachment-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer__attachment-copy strong {
+  color: var(--agent-text);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.agent-composer__attachment-copy small {
+  color: var(--agent-subtle);
+  font-size: 0.74rem;
+}
+
+.agent-composer__attachment-remove {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #666666;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.agent-composer__attachment-remove:hover {
+  background: rgba(23, 23, 23, 0.08);
+  color: #171717;
+}
+
 .agent-composer__actions {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
+}
+
+.agent-composer__upload,
+.agent-composer__send,
+.agent-composer__stop {
+  transition: transform 150ms ease, opacity 150ms ease, background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.agent-composer__upload {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid var(--agent-border-strong);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #4f4f4f;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.agent-composer__upload svg {
+  width: 16px;
+  height: 16px;
+}
+
+.agent-composer__upload:hover:not(:disabled) {
+  background: #f5f5f5;
+  color: #171717;
 }
 
 .agent-composer__send {
@@ -3250,10 +3551,12 @@ onBeforeUnmount(() => {
 }
 
 .agent-composer__send:hover:not(:disabled),
+.agent-composer__upload:hover:not(:disabled),
 .agent-composer__stop:hover:not(:disabled) {
   transform: translateY(-1px);
 }
 
+.agent-composer__upload:disabled,
 .agent-composer__send:disabled,
 .agent-composer__stop:disabled {
   opacity: 0.56;
@@ -3270,6 +3573,57 @@ onBeforeUnmount(() => {
   color: #a6382c;
   cursor: pointer;
   font-weight: 700;
+}
+
+.agent-skill-picker__panel--notice {
+  max-width: 520px;
+}
+
+.agent-skill-picker__expired-list {
+  display: grid;
+  gap: 12px;
+  color: var(--agent-text);
+}
+
+.agent-skill-picker__expired-list p {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.agent-skill-picker__expired-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.agent-skill-picker__expired-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: #f4f4f5;
+  color: #171717;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.agent-skill-picker__footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.agent-skill-picker__confirm {
+  min-width: 96px;
+  min-height: 40px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 999px;
+  background: #171717;
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .agent-panel {
