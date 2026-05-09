@@ -259,6 +259,33 @@
                   </div>
                 </div>
               </template>
+              <template v-else-if="isLarkChatListMessage(item)">
+                <div class="agent-lark-chat-list">
+                  <div class="agent-lark-chat-list__intro">
+                    <strong>飞书群聊列表</strong>
+                    <p>{{ parseLarkChatListMessage(item.content).intro }}</p>
+                  </div>
+                  <div
+                    v-if="parseLarkChatListMessage(item.content).items.length"
+                    class="agent-lark-chat-list__items"
+                  >
+                    <button
+                      v-for="chat in parseLarkChatListMessage(item.content).items"
+                      :key="chat.chatId"
+                      type="button"
+                      class="agent-lark-chat-list__item"
+                      :class="{ 'is-selected': chat.chatId === selectedLarkChatId }"
+                      @click="selectLarkChatFromMessage(chat)"
+                    >
+                      <span class="agent-lark-chat-list__name">{{ chat.name }}</span>
+                      <code class="agent-lark-chat-list__id">{{ chat.chatId }}</code>
+                    </button>
+                  </div>
+                  <p v-else class="agent-lark-chat-list__empty">
+                    没有读取到机器人可见的群聊。请确认机器人已加入目标群，并且飞书应用已开通群聊相关权限。
+                  </p>
+                </div>
+              </template>
               <div
                 v-else-if="shouldRenderMarkdownMessage(item)"
                 class="agent-markdown-content"
@@ -532,6 +559,42 @@
             <strong class="agent-info-card__value">当前技能</strong>
           </button>
 
+          <article class="agent-info-card">
+            <span class="agent-info-card__label">飞书群聊</span>
+            <select
+              class="agent-info-card__select"
+              :value="selectedLarkChatId"
+              :disabled="isLoadingLarkChats"
+              @change="$emit('update:lark-chat-id', $event.target.value)"
+            >
+              <option value="">不指定群聊</option>
+              <option
+                v-if="selectedLarkChatId && !larkChats.some((item) => item.chatId === selectedLarkChatId)"
+                :value="selectedLarkChatId"
+              >
+                {{ selectedLarkChatLabel }}
+              </option>
+              <option
+                v-for="item in larkChats"
+                :key="item.chatId"
+                :value="item.chatId"
+              >
+                {{ item.name }}
+              </option>
+            </select>
+            <small class="agent-info-card__meta">
+              {{ larkChatStatusText }}
+            </small>
+            <button
+              type="button"
+              class="agent-info-card__mini-action"
+              :disabled="isLoadingLarkChats"
+              @click="$emit('refresh-lark-chats')"
+            >
+              {{ isLoadingLarkChats ? '刷新中...' : '刷新群聊' }}
+            </button>
+          </article>
+
           <article class="agent-info-card agent-info-card--files">
             <span class="agent-info-card__label">会话文件</span>
             <strong class="agent-info-card__value">{{ activeWorkspaceFiles.length ? `${activeWorkspaceFiles.length} 个文件` : '暂无文件' }}</strong>
@@ -641,6 +704,8 @@ const TASK_STATUS_LABELS = {
   failed: '失败',
   cancelled: '已取消'
 }
+const LARK_CHAT_LIST_MARKER_START = ':::agent-lark-chat-list'
+const LARK_CHAT_LIST_MARKER_END = ':::'
 
 const props = defineProps({
   activeSessionId: { type: String, default: '' },
@@ -657,6 +722,7 @@ const props = defineProps({
   isCreatingSession: { type: Boolean, default: false },
   isCancellingTask: { type: Boolean, default: false },
   isLoadingAiConfigs: { type: Boolean, default: false },
+  isLoadingLarkChats: { type: Boolean, default: false },
   isLoadingSkills: { type: Boolean, default: false },
   isLoadingSession: { type: Boolean, default: false },
   isLoadingSessions: { type: Boolean, default: false },
@@ -664,6 +730,8 @@ const props = defineProps({
   isRefreshingActiveSession: { type: Boolean, default: false },
   isSending: { type: Boolean, default: false },
   loadError: { type: String, default: '' },
+  larkChatError: { type: String, default: '' },
+  larkChats: { type: Array, default: () => [] },
   messages: { type: Array, default: () => [] },
   modelOptions: { type: Array, default: () => [] },
   hideSidebar: { type: Boolean, default: false },
@@ -671,6 +739,8 @@ const props = defineProps({
   selectedAiId: { type: String, default: '' },
   selectedModel: { type: String, default: '' },
   selectedModelLabel: { type: String, default: '' },
+  selectedLarkChatId: { type: String, default: '' },
+  selectedLarkChatLabel: { type: String, default: '不指定群聊' },
   selectedSkillIds: { type: Array, default: () => [] },
   selectedSkillLabel: { type: String, default: '自动选择' },
   skills: { type: Array, default: () => [] },
@@ -695,13 +765,16 @@ const emit = defineEmits([
   'logout',
   'open-model-config',
   'open-workspace-file',
+  'refresh-lark-chats',
   'refresh-session',
   'remove-ephemeral-attachment',
   'select-session',
+  'select-lark-chat',
   'send',
   'upload-attachments',
   'update:ai-id',
   'update:draft',
+  'update:lark-chat-id',
   'update:model',
   'update:skill-ids'
 ])
@@ -780,6 +853,102 @@ const resolvedModelLabel = computed(() => {
 
   return '未选择模型'
 })
+
+const larkChatStatusText = computed(() => {
+  if (props.isLoadingLarkChats) {
+    return '正在读取机器人所在群聊...'
+  }
+
+  if (props.larkChatError) {
+    return props.larkChatError
+  }
+
+  if (!props.larkChats.length) {
+    return '发送“获取群聊信息”或点击刷新群聊读取列表。'
+  }
+
+  if (props.selectedLarkChatId) {
+    return `当前目标：${props.selectedLarkChatLabel || props.selectedLarkChatId}`
+  }
+
+  return `共 ${props.larkChats.length} 个可选群聊`
+})
+
+function normalizeLarkChatFromMessage(item) {
+  const chatId = String(item?.chatId || item?.chat_id || '').trim()
+
+  if (!chatId) {
+    return null
+  }
+
+  return {
+    chatId,
+    name: String(item?.name || item?.chatName || chatId).trim() || chatId,
+    description: String(item?.description || '').trim()
+  }
+}
+
+function parseLarkChatListMessage(content) {
+  const normalizedContent = String(content || '').trim()
+  const markerIndex = normalizedContent.indexOf(LARK_CHAT_LIST_MARKER_START)
+
+  if (markerIndex < 0) {
+    return {
+      intro: normalizedContent,
+      items: [],
+      tool: ''
+    }
+  }
+
+  const intro = normalizedContent.slice(0, markerIndex).trim()
+  const payloadStart = markerIndex + LARK_CHAT_LIST_MARKER_START.length
+  const payloadEnd = normalizedContent.indexOf(LARK_CHAT_LIST_MARKER_END, payloadStart)
+  const payloadText = normalizedContent
+    .slice(payloadStart, payloadEnd >= 0 ? payloadEnd : undefined)
+    .trim()
+
+  try {
+    const payload = JSON.parse(payloadText)
+
+    return {
+      intro: intro || '点击下面的群聊，后续对话会默认使用该群。',
+      items: Array.isArray(payload?.items)
+        ? payload.items.map((item) => normalizeLarkChatFromMessage(item)).filter(Boolean)
+        : [],
+      tool: String(payload?.tool || '').trim()
+    }
+  } catch {
+    return {
+      intro: intro || '群聊列表解析失败，请重新发送“获取群聊信息”。',
+      items: [],
+      tool: ''
+    }
+  }
+}
+
+function isLarkChatListMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return false
+  }
+
+  if (isProgressMessage(message) || resolveMessageVariant(message) === 'tool') {
+    return false
+  }
+
+  const normalizedRole = String(message.role || '').trim().toLowerCase()
+  return normalizedRole === 'assistant'
+    && String(message.content || '').includes(LARK_CHAT_LIST_MARKER_START)
+}
+
+function selectLarkChatFromMessage(chat) {
+  const normalizedChat = normalizeLarkChatFromMessage(chat)
+
+  if (!normalizedChat) {
+    return
+  }
+
+  emit('select-lark-chat', normalizedChat)
+}
 
 function openSkillPicker() {
   if (props.isLoadingSkills) {
@@ -3338,6 +3507,83 @@ onBeforeUnmount(() => {
   color: #b83434;
 }
 
+.agent-lark-chat-list {
+  width: min(100%, 780px);
+  display: grid;
+  gap: 14px;
+}
+
+.agent-lark-chat-list__intro {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-lark-chat-list__intro strong {
+  color: var(--agent-text);
+  font-size: 0.98rem;
+  font-weight: 800;
+}
+
+.agent-lark-chat-list__intro p,
+.agent-lark-chat-list__empty {
+  margin: 0;
+  color: var(--agent-subtle);
+  font-size: 0.9rem;
+  line-height: 1.7;
+}
+
+.agent-lark-chat-list__items {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-lark-chat-list__item {
+  width: 100%;
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border: 1px solid rgba(23, 23, 23, 0.1);
+  border-radius: 16px;
+  background: #ffffff;
+  color: var(--agent-text);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.agent-lark-chat-list__item:hover {
+  border-color: rgba(23, 23, 23, 0.22);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.08);
+  transform: translateY(-1px);
+}
+
+.agent-lark-chat-list__item.is-selected {
+  border-color: #171717;
+  background: #171717;
+  color: #ffffff;
+}
+
+.agent-lark-chat-list__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.94rem;
+  font-weight: 800;
+}
+
+.agent-lark-chat-list__id {
+  overflow: hidden;
+  color: inherit;
+  font-size: 0.78rem;
+  opacity: 0.72;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-message.is-partial .agent-message__bubble p::after {
   content: '';
   display: inline-block;
@@ -3730,6 +3976,30 @@ onBeforeUnmount(() => {
 
 .agent-info-card__button:hover {
   background: #f7f7f7;
+}
+
+.agent-info-card__mini-action {
+  width: fit-content;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--agent-border-strong);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #4f4f4f;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.agent-info-card__mini-action:hover:not(:disabled) {
+  background: #f7f7f7;
+  color: #171717;
+}
+
+.agent-info-card__mini-action:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
 }
 
 .agent-info-card__meta {

@@ -20,8 +20,14 @@ export function createToolRunner({
   const workspace = baseWorkspace || createWorkspace(workspaceConfig)
 
   function getWorkspaceForSession(sessionId = '') {
+    const normalizedSessionId = String(sessionId || '').trim()
+
+    if (!normalizedSessionId) {
+      return workspace
+    }
+
     if (typeof resolveWorkspace === 'function') {
-      return resolveWorkspace(sessionId) || workspace
+      return resolveWorkspace(normalizedSessionId) || workspace
     }
 
     return workspace

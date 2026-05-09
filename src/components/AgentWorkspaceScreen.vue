@@ -186,6 +186,7 @@
           :is-cancelling-task="isCancellingTask"
           :is-creating-session="isCreatingSession"
           :is-loading-ai-configs="isLoadingAiConfigs"
+          :is-loading-lark-chats="isLoadingLarkChats"
           :is-loading-skills="isLoadingSkills"
           :is-loading-session="isLoadingSession"
           :is-loading-sessions="isLoadingSessions"
@@ -193,12 +194,16 @@
           :is-refreshing-active-session="isRefreshingActiveSession"
           :is-sending="isSending"
           :load-error="loadError"
+          :lark-chat-error="larkChatError"
+          :lark-chats="larkChats"
           :messages="activeMessages"
           :model-options="modelOptions"
           :selected-agent-label="selectedAgentLabel"
           :selected-ai-id="selectedAiId"
           :selected-model="selectedModel"
           :selected-model-label="selectedModelLabel"
+          :selected-lark-chat-id="selectedLarkChatId"
+          :selected-lark-chat-label="selectedLarkChatLabel"
           :selected-skill-ids="selectedSkillIds"
           :selected-skill-label="selectedSkillLabel"
           :skills="skills"
@@ -217,11 +222,14 @@
           @dismiss-expired-attachment-notice="dismissExpiredAttachmentNotice"
           @open-workspace-file="openWorkspaceFile"
           @remove-ephemeral-attachment="removeEphemeralAttachment"
+          @refresh-lark-chats="refreshLarkChats"
           @refresh-session="refreshActiveSession"
+          @select-lark-chat="selectLarkChat"
           @send="sendMessage"
           @upload-attachments="addEphemeralAttachments"
           @update:ai-id="setSelectedAiId"
           @update:draft="draft = $event"
+          @update:lark-chat-id="setSelectedLarkChatId"
           @update:model="setSelectedModel"
           @update:skill-ids="setSelectedSkillIds"
         />
@@ -311,6 +319,7 @@ const {
   isAgentRunning,
   isCreatingSession,
   isLoadingAiConfigs,
+  isLoadingLarkChats,
   isLoadingSkills,
   isLoadingSession,
   isLoadingSessions,
@@ -318,15 +327,21 @@ const {
   isRefreshingActiveSession,
   isSending,
   loadError,
+  larkChatError,
+  larkChats,
   modelOptions,
   openWorkspaceFile,
+  refreshLarkChats,
   refreshActiveSession,
   removeEphemeralAttachment,
   selectSession,
+  selectLarkChat,
   selectedAgentLabel,
   selectedAiId,
   selectedModel,
   selectedModelLabel,
+  selectedLarkChatId,
+  selectedLarkChatLabel,
   selectedSkillIds,
   selectedSkillLabel,
   selectedWorkspaceFileContent,
@@ -337,6 +352,7 @@ const {
   sessionError,
   sessions,
   setSelectedAiId,
+  setSelectedLarkChatId,
   setSelectedSkillIds,
   setSelectedModel,
   workspaceFileError,

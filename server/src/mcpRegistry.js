@@ -81,10 +81,33 @@ function resolveConfigRelativePath(configPath, candidatePath) {
     : resolve(dirname(configPath), normalizedPath)
 }
 
+function expandEnvTemplate(value) {
+  const normalizedValue = String(value ?? '')
+
+  if (!normalizedValue) {
+    return ''
+  }
+
+  return normalizedValue.replace(/\$\{([A-Z0-9_]+)\}/gi, (_, envName) => (
+    String(process.env?.[envName] ?? '')
+  ))
+}
+
 function normalizeServerDefinition(item, index, configPath, mcpConfig) {
   const serverId = normalizeTrimmedString(item?.serverId) || `mcp_server_${index + 1}`
   const transport = normalizeTrimmedString(item?.transport).toLowerCase() || 'stdio'
-  const command = normalizeTrimmedString(item?.command)
+  const command = normalizeTrimmedString(expandEnvTemplate(item?.command))
+  const rawArgs = Array.isArray(item?.args)
+    ? item.args.map((arg) => expandEnvTemplate(arg)).map((arg) => String(arg ?? '')).filter(Boolean)
+    : []
+  const rawEnv = item?.env && typeof item.env === 'object' && !Array.isArray(item.env)
+    ? Object.fromEntries(
+      Object.entries(item.env)
+        .map(([key, value]) => [String(key || '').trim(), expandEnvTemplate(value)])
+        .filter(([key]) => Boolean(key))
+    )
+    : {}
+  const resolvedCwd = resolveConfigRelativePath(configPath, expandEnvTemplate(item?.cwd)) || dirname(configPath)
 
   return {
     serverId,
@@ -92,9 +115,9 @@ function normalizeServerDefinition(item, index, configPath, mcpConfig) {
     enabled: normalizeBoolean(item?.enabled, false),
     transport,
     command,
-    args: Array.isArray(item?.args) ? item.args.map((arg) => String(arg ?? '')).filter(Boolean) : [],
-    cwd: resolveConfigRelativePath(configPath, item?.cwd) || dirname(configPath),
-    env: item?.env && typeof item.env === 'object' && !Array.isArray(item.env) ? item.env : {},
+    args: rawArgs,
+    cwd: resolvedCwd,
+    env: rawEnv,
     toolNamePrefix: normalizeTrimmedString(item?.toolNamePrefix) || `mcp.${serverId}`,
     includeTools: normalizeStringArray(item?.includeTools),
     excludeTools: normalizeStringArray(item?.excludeTools),

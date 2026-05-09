@@ -5,6 +5,7 @@ import {
   AGENT_AI_ID_KEY,
   AGENT_AI_MODEL_KEY,
   AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY,
+  AGENT_LARK_CHAT_ID_KEY,
   AGENT_SKILL_ID_KEY,
   AUTH_TOKEN_KEY
 } from './storage.js'
@@ -16,6 +17,7 @@ const UNSELECTED_SKILL_LABEL = '自动选择'
 const LOADING_REPLY_SUMMARY = '正在生成首轮回复...'
 const WAITING_FOR_GOAL_SUMMARY = '等待你给出第一个目标，我会围绕当前会话持续推进。'
 const AI_CONFIG_REQUEST_TIMEOUT = 10000
+const LARK_CHAT_REQUEST_TIMEOUT = 15000
 const TASK_POLL_INTERVAL_MS = 2500
 const DRAFT_ATTACHMENT_BUCKET_KEY = '__draft__'
 const MAX_EPHEMERAL_ATTACHMENT_COUNT = 12
@@ -274,6 +276,20 @@ function normalizeAiConfigOption(item) {
   }
 }
 
+function normalizeLarkChatOption(item) {
+  const chatId = String(item?.chatId || item?.chat_id || '').trim()
+
+  if (!chatId) {
+    return null
+  }
+
+  return {
+    chatId,
+    name: String(item?.name || item?.chatName || chatId).trim() || chatId,
+    description: String(item?.description || '').trim()
+  }
+}
+
 function createFallbackSessionTitle(value) {
   const normalized = String(value || '').trim().replace(/\s+/g, ' ')
 
@@ -335,6 +351,10 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const selectedAiId = ref(readStorageValue(resolvedStorage, AGENT_AI_ID_KEY))
   const selectedModel = ref(readStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY))
   const selectedSkillIds = ref(readStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY))
+  const selectedLarkChatId = ref(readStorageValue(resolvedStorage, AGENT_LARK_CHAT_ID_KEY))
+  const larkChats = ref([])
+  const larkChatError = ref('')
+  const isLoadingLarkChats = ref(false)
   const isRefreshingActiveSession = ref(false)
   const isCancellingTask = ref(false)
   const isSessionStreamConnected = ref(false)
@@ -412,6 +432,20 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
     return `已选择 ${selectedSkills.value.length} 个技能`
   })
+  const selectedLarkChat = computed(() => {
+    const chatId = String(selectedLarkChatId.value || '').trim()
+
+    if (!chatId) {
+      return null
+    }
+
+    return larkChats.value.find((item) => item.chatId === chatId) || {
+      chatId,
+      name: chatId,
+      description: ''
+    }
+  })
+  const selectedLarkChatLabel = computed(() => selectedLarkChat.value?.name || '不指定群聊')
   const hasDraftCodingIntent = computed(() => detectCodingIntent(draft.value))
   const workspaceMode = computed(() => {
     if (activeSkillIds.value.includes('coding_agent')) {
@@ -461,6 +495,10 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   function persistSelectedSkill() {
     writeStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY, selectedSkillIds.value)
+  }
+
+  function persistSelectedLarkChat() {
+    writeStorageValue(resolvedStorage, AGENT_LARK_CHAT_ID_KEY, selectedLarkChatId.value)
   }
 
   function getAttachmentMarkerSnapshot() {
@@ -1103,6 +1141,28 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     }
   }
 
+  async function loadLarkChats() {
+    isLoadingLarkChats.value = true
+    larkChatError.value = ''
+
+    try {
+      const query = activeSessionId.value
+        ? `?sessionId=${encodeURIComponent(activeSessionId.value)}`
+        : ''
+      const data = await http.get(`/api/integrations/lark/chats${query}`, {
+        timeout: LARK_CHAT_REQUEST_TIMEOUT
+      })
+      larkChats.value = Array.isArray(data.items)
+        ? data.items.map((item) => normalizeLarkChatOption(item)).filter(Boolean)
+        : []
+    } catch (error) {
+      larkChats.value = []
+      larkChatError.value = normalizeErrorMessage(error, '读取飞书群聊列表失败。')
+    } finally {
+      isLoadingLarkChats.value = false
+    }
+  }
+
   async function loadSessions() {
     isLoadingSessions.value = true
     sessionError.value = ''
@@ -1314,6 +1374,64 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     persistSelectedSkill()
   }
 
+  function setSelectedLarkChatId(nextChatId) {
+    selectedLarkChatId.value = String(nextChatId || '').trim()
+    persistSelectedLarkChat()
+  }
+
+  function selectLarkChat(chat) {
+    const normalizedChat = normalizeLarkChatOption(chat)
+
+    if (!normalizedChat) {
+      return
+    }
+
+    const existingIndex = larkChats.value.findIndex((item) => item.chatId === normalizedChat.chatId)
+
+    if (existingIndex >= 0) {
+      larkChats.value = larkChats.value.map((item, index) => (
+        index === existingIndex ? { ...item, ...normalizedChat } : item
+      ))
+    } else {
+      larkChats.value = [normalizedChat, ...larkChats.value]
+    }
+
+    selectedLarkChatId.value = normalizedChat.chatId
+    persistSelectedLarkChat()
+
+    emitNotify({
+      type: 'success',
+      message: `已选择飞书群聊：${normalizedChat.name}`
+    })
+  }
+
+  function createSelectedLarkChatAttachment() {
+    const chat = selectedLarkChat.value
+
+    if (!chat?.chatId) {
+      return null
+    }
+
+    const content = [
+      'Selected Feishu/Lark group chat context for this Agent request.',
+      'When the user asks to send a message to the group, use this exact target.',
+      '',
+      JSON.stringify({
+        chatId: chat.chatId,
+        name: chat.name,
+        receiveIdType: 'chat_id',
+        preferredToolHint: 'Use the Lark MCP message create tool with receive_id_type=chat_id.'
+      }, null, 2)
+    ].join('\n')
+
+    return {
+      name: 'selected-feishu-chat-context.json',
+      type: 'application/json',
+      sizeBytes: content.length,
+      content
+    }
+  }
+
   function ensureSendReady(message) {
     if (!message) {
       return false
@@ -1351,6 +1469,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     const conversationAttachments = Array.isArray(sessionAttachments.value[attachmentBucketKey])
       ? sessionAttachments.value[attachmentBucketKey]
       : []
+    const selectedLarkChatAttachment = createSelectedLarkChatAttachment()
 
     if (!ensureSendReady(message)) {
       return
@@ -1420,12 +1539,15 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         model: selectedModel.value,
         skillId: selectedSkillIds.value[0] || '',
         skillIds: selectedSkillIds.value,
-        attachments: conversationAttachments.map((item) => ({
-          name: item.name,
-          type: item.type,
-          sizeBytes: item.sizeBytes,
-          content: item.content
-        }))
+        attachments: [
+          ...conversationAttachments.map((item) => ({
+            name: item.name,
+            type: item.type,
+            sizeBytes: item.sizeBytes,
+            content: item.content
+          })),
+          ...(selectedLarkChatAttachment ? [selectedLarkChatAttachment] : [])
+        ]
       })
 
       if (!data.session?.sessionId) {
@@ -1633,26 +1755,34 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     isCreatingSession,
     isLoadingAiConfigs,
     isLoadingSkills,
+    isLoadingLarkChats,
     isLoadingSession,
     isLoadingSessions,
     isRefreshingActiveSession,
     isSending,
     loadError,
+    larkChatError,
+    larkChats,
     modelOptions,
     refreshActiveSession,
+    refreshLarkChats: loadLarkChats,
     refreshWorkspace,
     cancelActiveTask,
     selectSession,
+    selectLarkChat,
     selectedAgentLabel,
     selectedAiId,
     selectedModel,
     selectedModelLabel,
     selectedSkillIds,
     selectedSkillLabel,
+    selectedLarkChatId,
+    selectedLarkChatLabel,
     sendMessage,
     sessionError,
     sessions,
     setSelectedAiId,
+    setSelectedLarkChatId,
     setSelectedModel,
     setSelectedSkillIds
   }

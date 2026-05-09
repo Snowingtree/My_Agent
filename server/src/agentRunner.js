@@ -13,29 +13,10 @@ import {
 
 const WRITE_TOOL_NAMES = new Set(['write_file', 'apply_patch'])
 const TASK_CANCELLED_CODE = 'TASK_CANCELLED'
-const FILE_CHANGE_REQUEST_PATTERNS = [
-  /修改文件|写入文件|新增文件|新建文件|创建文件|删除文件|改代码|写代码|生成文件|保存到文件|落文件|更新文件|重写文件|补丁/i,
-  /\b(create|write|modify|edit|rewrite|update|delete|remove|save)\b.*\b(file|code|component|script|module)\b/i,
-  /\b(file|code|component|script|module)\b.*\b(create|write|modify|edit|rewrite|update|delete|remove|save)\b/i
-]
-
 const UI_FILE_CHANGE_REQUEST_PATTERNS = [
   /\u5199\u4ee3\u7801|\u6539\u4ee3\u7801|\u751f\u6210\u4ee3\u7801|\u521b\u5efa\u4ee3\u7801|\u5199\u4e00\u4e2a\u9875\u9762|\u5199\u4e2a\u9875\u9762|\u5199\u4e00\u4e2a\u7f51\u9875|\u5199\u4e2a\u7f51\u9875|\u65b0\u5efa\u9875\u9762|\u521b\u5efa\u9875\u9762|\u505a\u4e00\u4e2a\u9875\u9762|\u505a\u4e2a\u9875\u9762|\u505a\u4e00\u4e2a\u754c\u9762|\u505a\u4e2a\u754c\u9762|\u5199\u4e00\u4e2a\u754c\u9762|\u5199\u4e2a\u754c\u9762|\u521b\u5efa\u754c\u9762|\u751f\u6210\u9875\u9762|\u751f\u6210\u754c\u9762|\u521b\u5efa\u7ec4\u4ef6|\u65b0\u5efa\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u7ec4\u4ef6|\u5199\u4e2a\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u811a\u672c|\u5199\u4e2a\u811a\u672c|\u5199\u4e00\u4e2a html|\u5199\u4e00\u4e2a vue|\u5199\u4e00\u4e2a python|\u5199\u4e00\u4e2a py/i,
   /\b(create|build|make|generate|write)\b.*\b(page|webpage|ui|interface|html|css|javascript|js|python|py|vue|react|component|script)\b/i,
   /\b(page|ui|interface|html|css|javascript|js|vue|react|component)\b.*\b(create|build|make|generate|write)\b/i
-]
-
-const FILE_MUTATION_HINT_PATTERNS = [
-  /修改|删除|替换|分离|抽离|拆分|拆出|提取|创建|新建|生成|保存|写入|更新|重写|引入|引用|添加|追加/,
-  /\b(edit|modify|delete|remove|replace|split|extract|separate|create|generate|save|write|update|rewrite|link|import|add)\b/i
-]
-
-const FILE_CHANGE_CONFIRMATION_PATTERNS = [
-  /\b(created|generated|saved|updated|modified|rewritten|split|extracted|separated)\b/i,
-  /已经[^。；\n]{0,24}(创建|生成|保存|写入|修改|更新|分离|拆分|抽离|完成)/,
-  /已[^。；\n]{0,24}(创建|生成|保存|写入|修改|更新|分离|拆分|抽离|完成)/,
-  /我已经[^。；\n]{0,32}(创建|生成|保存|写入|修改|更新|分离|拆分|抽离|完成)/,
-  /文件已[^。；\n]{0,24}(创建|生成|保存|写入|修改|更新)/
 ]
 
 const SAFE_FILE_CHANGE_REQUEST_PATTERNS = [
@@ -65,33 +46,6 @@ const SAFE_SPLIT_MARKERS = [
   'extract',
   'separate'
 ]
-
-function toChatHistory(messages) {
-  return messages.flatMap((message) => {
-    const role = normalizeTrimmedString(message?.role).toLowerCase()
-    const content = String(message?.content ?? '')
-
-    if (!content) {
-      return []
-    }
-
-    if (role === 'assistant' || role === 'user') {
-      return [{
-        role,
-        content
-      }]
-    }
-
-    if (role === 'tool') {
-      return [{
-        role: 'assistant',
-        content: `工具摘要：\n${content}`
-      }]
-    }
-
-    return []
-  })
-}
 
 function toChatHistorySafe(messages) {
   return messages.flatMap((message) => {
@@ -172,35 +126,6 @@ function normalizeAction(value) {
   return normalizeTrimmedString(value).toLowerCase()
 }
 
-function looksLikeFileChangeRequest(value) {
-  const normalized = normalizeTrimmedString(value)
-
-  if (!normalized) {
-    return false
-  }
-
-  const hasExplicitPaths = extractExplicitFilePaths(normalized).length > 0
-  const hasMutationHint = FILE_MUTATION_HINT_PATTERNS.some((pattern) => pattern.test(normalized))
-  const hasCompanionFileRequirement = getRequiredCompanionExtensions(normalized).length > 0
-
-  return (
-    (hasExplicitPaths && hasMutationHint)
-    || hasCompanionFileRequirement
-    || FILE_CHANGE_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))
-    || UI_FILE_CHANGE_REQUEST_PATTERNS.some((pattern) => pattern.test(normalized))
-  )
-}
-
-function looksLikeCompletedFileChangeClaim(value) {
-  const normalized = normalizeTrimmedString(value)
-
-  if (!normalized) {
-    return false
-  }
-
-  return FILE_CHANGE_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(normalized))
-}
-
 function extractExplicitFilePaths(value) {
   const matches = String(value || '').matchAll(/([A-Za-z0-9_./-]+\.(html|css|js|ts|tsx|jsx|vue|json|md|txt))/ig)
   const paths = []
@@ -218,22 +143,6 @@ function extractExplicitFilePaths(value) {
   }
 
   return paths
-}
-
-function getRequiredCompanionExtensions(value) {
-  const normalized = normalizeTrimmedString(value).toLowerCase()
-  const required = []
-  const splitMarkers = ['分离', '抽离', '拆分', '拆出', '提取', '独立']
-
-  if (splitMarkers.some((marker) => normalized.includes(marker)) && ['css', '样式', 'style'].some((marker) => normalized.includes(marker))) {
-    required.push('.css')
-  }
-
-  if (splitMarkers.some((marker) => normalized.includes(marker)) && ['js', 'javascript', '脚本', 'script'].some((marker) => normalized.includes(marker))) {
-    required.push('.js')
-  }
-
-  return required
 }
 
 function hasRequiredCompanionChanges(requiredExtensions = [], changedFiles = []) {

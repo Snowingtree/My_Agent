@@ -293,6 +293,17 @@ function looksLikeCodingSkillRequest(message) {
   return CODING_SKILL_HINT_PATTERNS.some((pattern) => pattern.test(normalizedMessage))
 }
 
+function looksLikeLarkChatInfoRequest(message) {
+  const normalizedMessage = normalizeTrimmedString(message)
+
+  if (!normalizedMessage) {
+    return false
+  }
+
+  return /^(获取|查看|查询|列出|刷新).{0,8}(飞书)?群聊(信息|列表)?$/i.test(normalizedMessage)
+    || /^(飞书)?群聊(信息|列表)$/i.test(normalizedMessage)
+}
+
 function normalizeSkillIdArray(value) {
   if (!Array.isArray(value)) {
     return []
@@ -545,6 +556,159 @@ async function handleGetCapabilities(response) {
   })
 }
 
+function parseJsonMaybe(value) {
+  const normalized = String(value || '').trim()
+
+  if (!normalized || (!normalized.startsWith('{') && !normalized.startsWith('['))) {
+    return null
+  }
+
+  try {
+    return JSON.parse(normalized)
+  } catch {
+    return null
+  }
+}
+
+function pickFirstString(item, keys) {
+  for (const key of keys) {
+    const value = item?.[key]
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+  }
+
+  return ''
+}
+
+function collectLarkChats(value, chats = [], seen = new Set(), depth = 0) {
+  if (depth > 8 || value == null) {
+    return chats
+  }
+
+  if (typeof value === 'string') {
+    const parsed = parseJsonMaybe(value)
+    if (parsed) {
+      collectLarkChats(parsed, chats, seen, depth + 1)
+    }
+    return chats
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectLarkChats(item, chats, seen, depth + 1)
+    }
+    return chats
+  }
+
+  if (typeof value !== 'object') {
+    return chats
+  }
+
+  const chatId = pickFirstString(value, ['chat_id', 'chatId', 'open_chat_id', 'openChatId'])
+  const name = pickFirstString(value, ['name', 'chat_name', 'chatName', 'title', 'topic'])
+
+  if (chatId && !seen.has(chatId)) {
+    seen.add(chatId)
+    chats.push({
+      chatId,
+      name: name || chatId,
+      description: pickFirstString(value, ['description', 'owner_id', 'ownerId']) || ''
+    })
+  }
+
+  for (const nestedValue of Object.values(value)) {
+    collectLarkChats(nestedValue, chats, seen, depth + 1)
+  }
+
+  return chats
+}
+
+function normalizeLarkChatListResult(toolExecution) {
+  return collectLarkChats([
+    toolExecution?.result?.structuredContent,
+    toolExecution?.result?.raw,
+    toolExecution?.result?.content,
+    toolExecution?.result?.text,
+    toolExecution?.message
+  ])
+}
+
+async function listLarkChatsViaMcp({ sessionId = '' } = {}) {
+  const larkChatListTools = toolRunner.getToolCatalog()
+    .filter((tool) => {
+      const name = String(tool?.name || '').toLowerCase()
+      return name.startsWith('mcp.lark.')
+        && name.includes('chat')
+        && (name.includes('list') || name.includes('get') || name.includes('search'))
+    })
+    .map((tool) => tool.name)
+
+  if (!larkChatListTools.length) {
+    const error = new Error('当前 Lark MCP 没有加载群聊列表工具。请确认 IM 群组权限和 AGENT_LARK_TOOLS 配置。')
+    error.statusCode = 501
+    throw error
+  }
+
+  const argCandidates = [
+    {},
+    { page_size: 100 },
+    { pageSize: 100 },
+    { limit: 100 }
+  ]
+  let lastError = ''
+
+  for (const toolName of larkChatListTools) {
+    for (const args of argCandidates) {
+      try {
+        const toolExecution = await toolRunner.executeToolCall(
+          { name: toolName, args },
+          { sessionId }
+        )
+        const items = normalizeLarkChatListResult(toolExecution)
+
+        return {
+          items,
+          tool: toolName
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error || '')
+      }
+    }
+  }
+
+  throw new Error(lastError || '读取飞书群聊列表失败。')
+}
+
+async function handleListLarkChats(response, requestUrl) {
+  const sessionId = normalizeTrimmedString(requestUrl?.searchParams?.get('sessionId'))
+
+  try {
+    sendJson(response, 200, await listLarkChatsViaMcp({ sessionId }))
+  } catch (error) {
+    sendJson(response, error?.statusCode || 500, {
+      message: error instanceof Error ? error.message : '读取飞书群聊列表失败。'
+    })
+  }
+}
+
+function createLarkChatListAssistantContent({ items = [], tool = '' } = {}) {
+  const payload = {
+    type: 'lark_chat_list',
+    tool,
+    items: Array.isArray(items) ? items : []
+  }
+
+  return [
+    '已获取机器人可见的飞书群聊。点击下面的群聊后，后续对话会默认使用该群，直到你再次发送“获取群聊信息”并选择新的群聊。',
+    '',
+    ':::agent-lark-chat-list',
+    JSON.stringify(payload),
+    ':::'
+  ].join('\n')
+}
+
 async function handleListAgentTools(response) {
   sendJson(response, 200, {
     items: listToolPreviewItems(toolRunner.getToolCatalog())
@@ -769,6 +933,67 @@ async function handleChat(request, response) {
     return
   }
 
+  if (looksLikeLarkChatInfoRequest(message)) {
+    try {
+      const chatList = await listLarkChatsViaMcp({ sessionId })
+      await sessionRepository.appendAssistantMessage(sessionId, {
+        content: createLarkChatListAssistantContent(chatList),
+        model: selectedModel
+      })
+      const completedSession = await sessionRepository.updateSession(sessionId, (draftSession) => {
+        const timestamp = new Date().toISOString()
+        draftSession.task = {
+          ...draftSession.task,
+          status: 'completed',
+          summary: chatList.items.length
+            ? `已获取 ${chatList.items.length} 个飞书群聊。`
+            : '未找到机器人可见的飞书群聊。',
+          steps: [
+            {
+              stepId: createId('step'),
+              title: '获取飞书群聊',
+              status: 'completed',
+              summary: chatList.items.length
+                ? `已通过 ${chatList.tool || 'Lark MCP'} 获取群聊列表。`
+                : 'Lark MCP 返回了空群聊列表。',
+              startedAt: timestamp,
+              completedAt: timestamp,
+              updatedAt: timestamp
+            }
+          ],
+          completedAt: timestamp,
+          updatedAt: timestamp
+        }
+        return draftSession
+      })
+
+      sendJson(response, 200, {
+        session: await attachWorkspaceState(completedSession)
+      })
+    } catch (error) {
+      await sessionRepository.appendAssistantMessage(sessionId, {
+        content: `处理失败：${error instanceof Error ? error.message : '读取飞书群聊列表失败。'}`,
+        model: selectedModel
+      })
+      const failedSession = await sessionRepository.updateSession(sessionId, (draftSession) => {
+        const timestamp = new Date().toISOString()
+        draftSession.task = {
+          ...draftSession.task,
+          status: 'failed',
+          summary: error instanceof Error ? error.message : '读取飞书群聊列表失败。',
+          completedAt: timestamp,
+          updatedAt: timestamp
+        }
+        return draftSession
+      })
+
+      sendJson(response, 200, {
+        session: await attachWorkspaceState(failedSession)
+      })
+    }
+    return
+  }
+
   void agentRunner.startTask({
     sessionId,
     requestedAiId: aiConfig.aiId,
@@ -861,6 +1086,11 @@ async function handleRequest(request, response) {
 
   if (pathname === '/api/agent/capabilities' && request.method === 'GET') {
     await handleGetCapabilities(response)
+    return
+  }
+
+  if (pathname === '/api/integrations/lark/chats' && request.method === 'GET') {
+    await handleListLarkChats(response, requestUrl)
     return
   }
 
