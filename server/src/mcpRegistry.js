@@ -127,6 +127,49 @@ function normalizeServerDefinition(item, index, configPath, mcpConfig) {
   }
 }
 
+function collectServerDefinitions(rawValue, configPath) {
+  if (Array.isArray(rawValue)) {
+    return rawValue.map((item) => ({
+      item,
+      configPath
+    }))
+  }
+
+  if (!rawValue || typeof rawValue !== 'object') {
+    return []
+  }
+
+  const inlineItems = Array.isArray(rawValue.items)
+    ? rawValue.items.map((item) => ({
+      item,
+      configPath
+    }))
+    : []
+  const referencedItems = Array.isArray(rawValue.files)
+    ? rawValue.files.flatMap((filePath) => {
+      const resolvedPath = resolveConfigRelativePath(configPath, filePath)
+      const childValue = resolvedPath ? readJsonFile(resolvedPath) : null
+      return collectServerDefinitions(childValue, resolvedPath)
+    })
+    : []
+
+  if (rawValue.serverId || rawValue.command) {
+    return [
+      {
+        item: rawValue,
+        configPath
+      },
+      ...inlineItems,
+      ...referencedItems
+    ]
+  }
+
+  return [
+    ...inlineItems,
+    ...referencedItems
+  ]
+}
+
 function normalizeMcpTool(definition, rawTool) {
   const remoteName = normalizeTrimmedString(rawTool?.name)
 
@@ -241,13 +284,11 @@ export function createMcpRegistry({
 
   function loadDefinitions() {
     const rawValue = readJsonFile(mcpConfig.configPath)
-    const items = Array.isArray(rawValue)
-      ? rawValue
-      : Array.isArray(rawValue?.items)
-        ? rawValue.items
-        : []
+    const definitions = collectServerDefinitions(rawValue, mcpConfig.configPath)
 
-    return items.map((item, index) => normalizeServerDefinition(item, index, mcpConfig.configPath, mcpConfig))
+    return definitions.map(({ item, configPath }, index) => (
+      normalizeServerDefinition(item, index, configPath, mcpConfig)
+    ))
   }
 
   async function initialize() {

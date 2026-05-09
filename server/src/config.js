@@ -1,6 +1,8 @@
 import { isAbsolute, resolve } from 'node:path'
 import { SERVER_ROOT } from './env.js'
 
+const PROJECT_ROOT = resolve(SERVER_ROOT, '..')
+
 function readNumberEnv(name, fallbackValue) {
   const rawValue = String(process.env[name] || '').trim()
   const parsedValue = Number.parseInt(rawValue, 10)
@@ -32,6 +34,16 @@ function resolveServerPath(pathValue, fallbackRelativePath) {
   }
 
   return isAbsolute(candidate) ? candidate : resolve(SERVER_ROOT, candidate)
+}
+
+function resolveProjectPath(pathValue, fallbackRelativePath) {
+  const candidate = String(pathValue || '').trim()
+
+  if (!candidate) {
+    return resolve(PROJECT_ROOT, fallbackRelativePath)
+  }
+
+  return isAbsolute(candidate) ? candidate : resolve(PROJECT_ROOT, candidate)
 }
 
 function normalizeBooleanEnv(value, fallbackValue = false) {
@@ -174,7 +186,7 @@ export function createConfig() {
     },
     mcp: {
       enabled: normalizeBooleanEnv(process.env.AGENT_MCP_ENABLED, true),
-      configPath: resolveServerPath(process.env.AGENT_MCP_CONFIG_PATH, 'config/mcp-servers.json'),
+      configPath: resolveProjectPath(process.env.AGENT_MCP_CONFIG_PATH, 'mcp/mcp-servers.json'),
       requestTimeoutMs: readNumberEnv('AGENT_MCP_TIMEOUT_MS', 30000),
       protocolVersion: String(process.env.AGENT_MCP_PROTOCOL_VERSION || '2025-11-25').trim() || '2025-11-25'
     },

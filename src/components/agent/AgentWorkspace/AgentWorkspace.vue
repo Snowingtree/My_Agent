@@ -261,26 +261,32 @@
               </template>
               <template v-else-if="isLarkChatListMessage(item)">
                 <div class="agent-lark-chat-list">
-                  <div class="agent-lark-chat-list__intro">
-                    <strong>飞书群聊列表</strong>
-                    <p>{{ parseLarkChatListMessage(item.content).intro }}</p>
-                  </div>
-                  <div
+                  <table
                     v-if="parseLarkChatListMessage(item.content).items.length"
-                    class="agent-lark-chat-list__items"
+                    class="agent-lark-chat-table"
                   >
-                    <button
-                      v-for="chat in parseLarkChatListMessage(item.content).items"
-                      :key="chat.chatId"
-                      type="button"
-                      class="agent-lark-chat-list__item"
-                      :class="{ 'is-selected': chat.chatId === selectedLarkChatId }"
-                      @click="selectLarkChatFromMessage(chat)"
-                    >
-                      <span class="agent-lark-chat-list__name">{{ chat.name }}</span>
-                      <code class="agent-lark-chat-list__id">{{ chat.chatId }}</code>
-                    </button>
-                  </div>
+                    <thead>
+                      <tr>
+                        <th>群聊名称</th>
+                        <th>群聊 ID</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="chat in parseLarkChatListMessage(item.content).items"
+                        :key="chat.chatId"
+                        class="agent-lark-chat-table__row"
+                        :class="{ 'is-selected': chat.chatId === selectedLarkChatId }"
+                        tabindex="0"
+                        @click="selectLarkChatFromMessage(chat)"
+                        @keydown.enter.prevent="selectLarkChatFromMessage(chat)"
+                        @keydown.space.prevent="selectLarkChatFromMessage(chat)"
+                      >
+                        <td class="agent-lark-chat-table__name">{{ chat.name }}</td>
+                        <td class="agent-lark-chat-table__id">{{ chat.chatId }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                   <p v-else class="agent-lark-chat-list__empty">
                     没有读取到机器人可见的群聊。请确认机器人已加入目标群，并且飞书应用已开通群聊相关权限。
                   </p>
@@ -558,42 +564,6 @@
           >
             <strong class="agent-info-card__value">当前技能</strong>
           </button>
-
-          <article class="agent-info-card">
-            <span class="agent-info-card__label">飞书群聊</span>
-            <select
-              class="agent-info-card__select"
-              :value="selectedLarkChatId"
-              :disabled="isLoadingLarkChats"
-              @change="$emit('update:lark-chat-id', $event.target.value)"
-            >
-              <option value="">不指定群聊</option>
-              <option
-                v-if="selectedLarkChatId && !larkChats.some((item) => item.chatId === selectedLarkChatId)"
-                :value="selectedLarkChatId"
-              >
-                {{ selectedLarkChatLabel }}
-              </option>
-              <option
-                v-for="item in larkChats"
-                :key="item.chatId"
-                :value="item.chatId"
-              >
-                {{ item.name }}
-              </option>
-            </select>
-            <small class="agent-info-card__meta">
-              {{ larkChatStatusText }}
-            </small>
-            <button
-              type="button"
-              class="agent-info-card__mini-action"
-              :disabled="isLoadingLarkChats"
-              @click="$emit('refresh-lark-chats')"
-            >
-              {{ isLoadingLarkChats ? '刷新中...' : '刷新群聊' }}
-            </button>
-          </article>
 
           <article class="agent-info-card agent-info-card--files">
             <span class="agent-info-card__label">会话文件</span>
@@ -3509,79 +3479,80 @@ onBeforeUnmount(() => {
 
 .agent-lark-chat-list {
   width: min(100%, 780px);
-  display: grid;
-  gap: 14px;
-}
-
-.agent-lark-chat-list__intro {
-  display: grid;
-  gap: 6px;
-}
-
-.agent-lark-chat-list__intro strong {
-  color: var(--agent-text);
-  font-size: 0.98rem;
-  font-weight: 800;
-}
-
-.agent-lark-chat-list__intro p,
-.agent-lark-chat-list__empty {
-  margin: 0;
-  color: var(--agent-subtle);
-  font-size: 0.9rem;
-  line-height: 1.7;
-}
-
-.agent-lark-chat-list__items {
-  display: grid;
-  gap: 10px;
-}
-
-.agent-lark-chat-list__item {
-  width: 100%;
-  display: grid;
-  gap: 5px;
-  padding: 12px 14px;
+  overflow: hidden;
   border: 1px solid rgba(23, 23, 23, 0.1);
   border-radius: 16px;
   background: #ffffff;
-  color: var(--agent-text);
-  cursor: pointer;
+}
+
+.agent-lark-chat-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  background: #ffffff;
+}
+
+.agent-lark-chat-table th,
+.agent-lark-chat-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(23, 23, 23, 0.08);
   text-align: left;
-  transition:
-    border-color 160ms ease,
-    background 160ms ease,
-    box-shadow 160ms ease,
-    transform 160ms ease;
+  vertical-align: middle;
 }
 
-.agent-lark-chat-list__item:hover {
-  border-color: rgba(23, 23, 23, 0.22);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.08);
-  transform: translateY(-1px);
+.agent-lark-chat-table th {
+  background: #ffffff;
+  color: #777777;
+  font-size: 0.78rem;
+  font-weight: 800;
 }
 
-.agent-lark-chat-list__item.is-selected {
-  border-color: #171717;
-  background: #171717;
-  color: #ffffff;
+.agent-lark-chat-table th:first-child,
+.agent-lark-chat-table td:first-child {
+  width: 38%;
 }
 
-.agent-lark-chat-list__name {
+.agent-lark-chat-table__row {
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.agent-lark-chat-table__row:hover,
+.agent-lark-chat-table__row:focus-visible,
+.agent-lark-chat-table__row.is-selected {
+  background: #eeeeee;
+  outline: none;
+}
+
+.agent-lark-chat-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.agent-lark-chat-table__name,
+.agent-lark-chat-table__id {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-lark-chat-table__name {
+  color: var(--agent-text);
   font-size: 0.94rem;
   font-weight: 800;
 }
 
-.agent-lark-chat-list__id {
-  overflow: hidden;
-  color: inherit;
-  font-size: 0.78rem;
-  opacity: 0.72;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.agent-lark-chat-table__id {
+  color: #555555;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  font-size: 0.8rem;
+}
+
+.agent-lark-chat-list__empty {
+  margin: 0;
+  padding: 14px;
+  color: var(--agent-subtle);
+  font-size: 0.9rem;
+  line-height: 1.7;
 }
 
 .agent-message.is-partial .agent-message__bubble p::after {

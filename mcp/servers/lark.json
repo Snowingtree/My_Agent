@@ -1,0 +1,25 @@
+{
+  "serverId": "lark",
+  "name": "Feishu/Lark Official MCP",
+  "enabled": true,
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@larksuiteoapi/lark-mcp",
+    "mcp",
+    "-a",
+    "${AGENT_LARK_APP_ID}",
+    "-s",
+    "${AGENT_LARK_APP_SECRET}",
+    "--token-mode",
+    "tenant_access_token",
+    "-t",
+    "${AGENT_LARK_TOOLS}"
+  ],
+  "cwd": "..",
+  "env": {},
+  "toolNamePrefix": "mcp.lark",
+  "includeTools": [],
+  "excludeTools": []
+}

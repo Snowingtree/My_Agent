@@ -701,8 +701,6 @@ function createLarkChatListAssistantContent({ items = [], tool = '' } = {}) {
   }
 
   return [
-    '已获取机器人可见的飞书群聊。点击下面的群聊后，后续对话会默认使用该群，直到你再次发送“获取群聊信息”并选择新的群聊。',
-    '',
     ':::agent-lark-chat-list',
     JSON.stringify(payload),
     ':::'

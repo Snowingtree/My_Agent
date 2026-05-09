@@ -84,8 +84,24 @@ You can also set a default skill with:
 
 The Agent can preload MCP servers from:
 
-- `server/config/mcp-servers.json`
+- `mcp/mcp-servers.json`
 - or a custom path via `AGENT_MCP_CONFIG_PATH`
+
+`mcp/mcp-servers.json` is the entry file. It can keep inline `items`, or reference
+per-service files:
+
+```json
+{
+  "files": [
+    "servers/lark.json",
+    "servers/xiaohongshu.json"
+  ],
+  "items": []
+}
+```
+
+Each referenced file can contain one MCP server object, an array of server objects,
+or another `{ "items": [...] }` object.
 
 Current scaffold support:
 
