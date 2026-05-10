@@ -1,10 +1,14 @@
 import { createServer } from 'node:http'
+import { extname } from 'node:path'
+import mammoth from 'mammoth'
 import { createConfig } from './config.js'
+import { createEmbeddingClient } from './embeddingClient.js'
 import { loadEnvFiles } from './env.js'
 import { createAuthToken, readBearerToken, safeCompare, verifyAuthToken } from './auth.js'
 import { getAiConfigById, insertAiConfig, loadAiConfigs, resolveModel, toPublicAiConfig } from './aiConfigs.js'
 import { createAgentRunner } from './agentRunner.js'
 import { createMcpRegistry } from './mcpRegistry.js'
+import { createRagStore } from './ragStore.js'
 import { createSessionWorkspacesRepository } from './sessionWorkspaces.js'
 import { createSkillLibrary } from './skillLibrary.js'
 import { SessionRepository } from './sessionStore.js'
@@ -92,10 +96,28 @@ const sourceWorkspace = createWorkspace(config.workspace)
 const mcpRegistry = createMcpRegistry({
   mcpConfig: config.mcp
 })
+const embeddingClient = createEmbeddingClient({
+  baseURL: config.rag.embeddingBaseURL,
+  apiKey: config.rag.embeddingApiKey,
+  model: config.rag.embeddingModel,
+  provider: config.rag.embeddingProvider,
+  dimension: config.rag.embeddingDimension,
+  timeoutMs: config.rag.embeddingTimeoutMs
+})
+const ragStore = createRagStore(config.rag, {
+  embeddingProvider: embeddingClient
+})
 try {
   await mcpRegistry.initialize()
 } catch (error) {
   console.warn('[agent-api] failed to initialize MCP registry:', error instanceof Error ? error.message : error)
+}
+if (config.rag.enabled) {
+  try {
+    await ragStore.initialize()
+  } catch (error) {
+    console.warn('[agent-api] failed to initialize RAG store:', error instanceof Error ? error.message : error)
+  }
 }
 sessionWorkspaces = createSessionWorkspacesRepository({
   baseDir: config.storage.sessionWorkspacesDir,
@@ -130,7 +152,8 @@ const agentRunner = createAgentRunner({
   sessionWorkspaces,
   runtimeConfig: config.runtime,
   workspaceConfig: config.workspace,
-  toolRunner
+  toolRunner,
+  ragStore
 })
 
 function setBaseHeaders(response) {
@@ -201,6 +224,151 @@ async function readJsonBody(request) {
   return JSON.parse(rawBody)
 }
 
+async function readRequestBuffer(request, maxSizeBytes = 32 * 1024 * 1024) {
+  const chunks = []
+  let size = 0
+
+  for await (const chunk of request) {
+    size += chunk.length
+
+    if (size > maxSizeBytes) {
+      throw new Error('Request body is too large.')
+    }
+
+    chunks.push(chunk)
+  }
+
+  return Buffer.concat(chunks)
+}
+
+function parseMultipartContentDisposition(value) {
+  const result = {}
+
+  for (const part of String(value || '').split(';')) {
+    const [rawKey, ...rawValueParts] = part.trim().split('=')
+    const key = normalizeTrimmedString(rawKey).toLowerCase()
+    const rawValue = rawValueParts.join('=').trim()
+
+    if (!key || !rawValue) {
+      continue
+    }
+
+    result[key] = rawValue.replace(/^"|"$/g, '')
+  }
+
+  return result
+}
+
+function decodeMultipartHeaderValue(value) {
+  const normalizedValue = String(value || '').trim()
+
+  if (!normalizedValue) {
+    return ''
+  }
+
+  if (/^utf-8''/i.test(normalizedValue)) {
+    try {
+      return decodeURIComponent(normalizedValue.slice(7))
+    } catch {
+      return normalizedValue.slice(7)
+    }
+  }
+
+  try {
+    return Buffer.from(normalizedValue, 'latin1').toString('utf8')
+  } catch {
+    return normalizedValue
+  }
+}
+
+function parseMultipartBody(buffer, contentType) {
+  const boundaryMatch = String(contentType || '').match(/boundary=([^;]+)/i)
+  const boundary = boundaryMatch?.[1]?.replace(/^"|"$/g, '')
+
+  if (!boundary) {
+    throw new Error('Multipart boundary is missing.')
+  }
+
+  const boundaryText = `--${boundary}`
+  const body = buffer.toString('binary')
+  const parts = body.split(boundaryText)
+  const fields = {}
+  const files = []
+
+  for (const rawPart of parts) {
+    if (!rawPart || rawPart === '--\r\n' || rawPart === '--') {
+      continue
+    }
+
+    const normalizedPart = rawPart.replace(/^\r\n/, '').replace(/\r\n$/, '')
+    const headerEndIndex = normalizedPart.indexOf('\r\n\r\n')
+
+    if (headerEndIndex < 0) {
+      continue
+    }
+
+    const rawHeaders = normalizedPart.slice(0, headerEndIndex)
+    const rawContent = normalizedPart.slice(headerEndIndex + 4).replace(/\r\n--$/, '')
+    const headers = {}
+
+    for (const headerLine of rawHeaders.split('\r\n')) {
+      const separatorIndex = headerLine.indexOf(':')
+
+      if (separatorIndex < 0) {
+        continue
+      }
+
+      headers[headerLine.slice(0, separatorIndex).trim().toLowerCase()] = headerLine
+        .slice(separatorIndex + 1)
+        .trim()
+    }
+
+    const disposition = parseMultipartContentDisposition(headers['content-disposition'])
+    const name = normalizeTrimmedString(disposition.name)
+
+    if (!name) {
+      continue
+    }
+
+    const contentBuffer = Buffer.from(rawContent, 'binary')
+
+    if (disposition.filename) {
+      files.push({
+        fieldName: name,
+        filename: decodeMultipartHeaderValue(disposition['filename*'] || disposition.filename),
+        contentType: headers['content-type'] || '',
+        buffer: contentBuffer
+      })
+      continue
+    }
+
+    fields[name] = contentBuffer.toString('utf8').trim()
+  }
+
+  return { fields, files }
+}
+
+async function extractRagUploadText(file) {
+  const filename = normalizeTrimmedString(file?.filename)
+  const extension = extname(filename).toLowerCase()
+  const buffer = Buffer.isBuffer(file?.buffer) ? file.buffer : Buffer.alloc(0)
+
+  if (!buffer.length) {
+    throw new Error('Uploaded file is empty.')
+  }
+
+  if (extension === '.docx') {
+    const result = await mammoth.extractRawText({ buffer })
+    return String(result?.value || '').trim()
+  }
+
+  if (extension === '.txt' || extension === '.md' || extension === '.markdown') {
+    return buffer.toString('utf8').trim()
+  }
+
+  throw new Error('Unsupported RAG file type. Supported types: .txt, .md, .docx.')
+}
+
 function matchSessionDetailPath(pathname) {
   const match = pathname.match(/^\/api\/agent\/sessions\/([^/]+)$/)
   return match?.[1] ? decodeURIComponent(match[1]) : ''
@@ -218,6 +386,11 @@ function matchSessionCancelPath(pathname) {
 
 function matchSessionStreamPath(pathname) {
   const match = pathname.match(/^\/api\/agent\/sessions\/([^/]+)\/stream$/)
+  return match?.[1] ? decodeURIComponent(match[1]) : ''
+}
+
+function matchRagDocumentPath(pathname) {
+  const match = pathname.match(/^\/api\/agent\/rag\/documents\/([^/]+)$/)
   return match?.[1] ? decodeURIComponent(match[1]) : ''
 }
 
@@ -552,8 +725,156 @@ async function handleGetCapabilities(response) {
   sendJson(response, 200, {
     skills: skillRegistry.listSkills(),
     tools: toolRunner.getToolCatalog(),
-    mcpServers: mcpRegistry.getServerSummaries()
+    mcpServers: mcpRegistry.getServerSummaries(),
+    rag: await ragStore.getStatus()
   })
+}
+
+async function handleGetRagStatus(response) {
+  sendJson(response, 200, await ragStore.getStatus())
+}
+
+async function handleListRagCollections(response) {
+  sendJson(response, 200, {
+    items: await ragStore.listCollections()
+  })
+}
+
+async function handleCreateRagCollection(request, response) {
+  const payload = await readJsonBody(request)
+  const item = await ragStore.createCollection({
+    name: normalizeTrimmedString(payload?.name),
+    description: normalizeTrimmedString(payload?.description),
+    metadata: payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {}
+  })
+
+  sendJson(response, 201, { item })
+}
+
+async function handleInitializeRag(response) {
+  try {
+    sendJson(response, 200, await ragStore.initialize())
+  } catch (error) {
+    sendJson(response, 500, {
+      enabled: config.rag.enabled,
+      ready: false,
+      message: error instanceof Error ? error.message : 'Failed to initialize RAG store.'
+    })
+  }
+}
+
+async function handleListRagDocuments(response, requestUrl) {
+  const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '', 10)
+  const collectionId = normalizeTrimmedString(requestUrl.searchParams.get('collectionId'))
+  sendJson(response, 200, {
+    items: await ragStore.listDocuments({ collectionId, limit })
+  })
+}
+
+async function handleCreateRagDocument(request, response) {
+  const payload = await readJsonBody(request)
+  const title = normalizeTrimmedString(payload?.title)
+  const content = String(payload?.content || '').trim()
+
+  if (!content) {
+    sendJson(response, 400, {
+      message: 'RAG document content is required.'
+    })
+    return
+  }
+
+  const item = await ragStore.ingestTextDocument({
+    documentId: normalizeTrimmedString(payload?.documentId),
+    collectionId: normalizeTrimmedString(payload?.collectionId),
+    title: title || 'Untitled document',
+    content,
+    sourceType: normalizeTrimmedString(payload?.sourceType) || 'manual',
+    sourcePath: normalizeTrimmedString(payload?.sourcePath),
+    metadata: payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {}
+  })
+
+  sendJson(response, 201, { item })
+}
+
+async function handleUploadRagDocument(request, response) {
+  const contentType = String(request.headers['content-type'] || '')
+
+  if (!contentType.toLowerCase().includes('multipart/form-data')) {
+    sendJson(response, 400, {
+      message: 'Expected multipart/form-data upload.'
+    })
+    return
+  }
+
+  const { fields, files } = parseMultipartBody(await readRequestBuffer(request), contentType)
+  const uploadFiles = files.filter((file) => file.fieldName === 'file' || file.fieldName === 'files')
+  const collectionId = normalizeTrimmedString(fields.collectionId)
+
+  if (!uploadFiles.length) {
+    sendJson(response, 400, {
+      message: 'RAG upload file is required.'
+    })
+    return
+  }
+
+  const items = []
+
+  for (const file of uploadFiles) {
+    const content = await extractRagUploadText(file)
+
+    if (!content) {
+      throw new Error(`No readable text found in ${file.filename}.`)
+    }
+
+    const title = normalizeTrimmedString(fields.title) || normalizeTrimmedString(file.filename) || 'Uploaded document'
+    const item = await ragStore.ingestTextDocument({
+      collectionId,
+      title,
+      content,
+      sourceType: 'upload',
+      sourcePath: normalizeTrimmedString(file.filename),
+      metadata: {
+        filename: normalizeTrimmedString(file.filename),
+        contentType: normalizeTrimmedString(file.contentType),
+        sizeBytes: file.buffer.length
+      }
+    })
+
+    items.push(item)
+  }
+
+  sendJson(response, 201, { items })
+}
+
+async function handleSearchRag(response, requestUrl) {
+  const query = normalizeTrimmedString(requestUrl.searchParams.get('q'))
+  const collectionId = normalizeTrimmedString(requestUrl.searchParams.get('collectionId'))
+  const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '', 10)
+
+  if (!query) {
+    sendJson(response, 400, {
+      message: 'RAG search query is required.'
+    })
+    return
+  }
+
+  sendJson(response, 200, {
+    items: await ragStore.search({ query, collectionId, limit })
+  })
+}
+
+async function handleRebuildRagEmbeddings(request, response) {
+  const payload = await readJsonBody(request)
+  const result = await ragStore.rebuildEmbeddings({
+    collectionId: normalizeTrimmedString(payload?.collectionId),
+    limit: Number.parseInt(payload?.limit || '', 10)
+  })
+
+  sendJson(response, 200, result)
+}
+
+async function handleDeleteRagDocument(response, documentId) {
+  sendJson(response, 200, await ragStore.deleteDocument(documentId))
 }
 
 function parseJsonMaybe(value) {
@@ -858,7 +1179,20 @@ async function handleChat(request, response) {
       ? payload.skillIds
       : [payload?.skillId]
   )
+  const requestedRagCollectionId = normalizeTrimmedString(payload?.ragCollectionId)
   const requestedAttachments = normalizeConversationAttachments(payload?.attachments)
+  if (requestedRagCollectionId) {
+    requestedAttachments.push({
+      name: 'selected-rag-knowledge-base.txt',
+      type: 'text/plain',
+      sizeBytes: Buffer.byteLength(requestedRagCollectionId, 'utf8'),
+      content: [
+        'Selected RAG knowledge base context for this Agent request.',
+        `collectionId: ${requestedRagCollectionId}`,
+        'When RAG retrieval is enabled, use this collection as the retrieval scope.'
+      ].join('\n')
+    })
+  }
   const activeSkills = resolveSkillsForMessage(requestedSkillIds, message)
   const primarySkill = activeSkills[0] || null
 
@@ -998,6 +1332,7 @@ async function handleChat(request, response) {
     requestedModel: selectedModel,
     requestedSkillId: primarySkill?.skillId || '',
     requestedSkillIds: activeSkills.map((item) => item.skillId),
+    requestedRagCollectionId,
     requestedAttachments
   })
 
@@ -1028,6 +1363,7 @@ async function handleRequest(request, response) {
       autoVerifyCommands: config.workspace.autoVerifyCommands,
       skills: skillRegistry.listSkills(),
       mcpServers: mcpRegistry.getServerSummaries(),
+      rag: await ragStore.getStatus(),
       toolCount: toolRunner.getToolCatalog().length,
       aiConfigs: (await loadAiConfigs(config.ai)).map((item) => ({
         aiId: item.aiId,
@@ -1087,6 +1423,51 @@ async function handleRequest(request, response) {
     return
   }
 
+  if (pathname === '/api/agent/rag/status' && request.method === 'GET') {
+    await handleGetRagStatus(response)
+    return
+  }
+
+  if (pathname === '/api/agent/rag/init' && request.method === 'POST') {
+    await handleInitializeRag(response)
+    return
+  }
+
+  if (pathname === '/api/agent/rag/collections' && request.method === 'GET') {
+    await handleListRagCollections(response)
+    return
+  }
+
+  if (pathname === '/api/agent/rag/collections' && request.method === 'POST') {
+    await handleCreateRagCollection(request, response)
+    return
+  }
+
+  if (pathname === '/api/agent/rag/documents' && request.method === 'GET') {
+    await handleListRagDocuments(response, requestUrl)
+    return
+  }
+
+  if (pathname === '/api/agent/rag/documents' && request.method === 'POST') {
+    await handleCreateRagDocument(request, response)
+    return
+  }
+
+  if (pathname === '/api/agent/rag/upload' && request.method === 'POST') {
+    await handleUploadRagDocument(request, response)
+    return
+  }
+
+  if (pathname === '/api/agent/rag/search' && request.method === 'GET') {
+    await handleSearchRag(response, requestUrl)
+    return
+  }
+
+  if (pathname === '/api/agent/rag/rebuild-embeddings' && request.method === 'POST') {
+    await handleRebuildRagEmbeddings(request, response)
+    return
+  }
+
   if (pathname === '/api/integrations/lark/chats' && request.method === 'GET') {
     await handleListLarkChats(response, requestUrl)
     return
@@ -1142,6 +1523,13 @@ async function handleRequest(request, response) {
 
   if (detailSessionId && request.method === 'DELETE') {
     await handleDeleteSession(response, detailSessionId)
+    return
+  }
+
+  const ragDocumentId = matchRagDocumentPath(pathname)
+
+  if (ragDocumentId && request.method === 'DELETE') {
+    await handleDeleteRagDocument(response, ragDocumentId)
     return
   }
 

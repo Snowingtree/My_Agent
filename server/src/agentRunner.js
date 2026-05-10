@@ -577,6 +577,7 @@ function buildAgentLoopMessages({
   remainingIterations,
   workspaceContextText = '',
   attachmentContextText = '',
+  ragContextText = '',
   currentDateContextText = ''
 }) {
   const promptSections = [
@@ -592,6 +593,13 @@ function buildAgentLoopMessages({
     'Never output private reasoning, hidden chain-of-thought, or step-by-step internal deliberation.',
     'Use the same language as the user.',
     'For ordinary conversation, answer naturally and directly instead of refusing unnecessarily.',
+    ...(ragContextText
+      ? [
+          'A knowledge base is selected for this request.',
+          'Use the provided RAG knowledge context first when answering knowledge-based questions.',
+          'Do not search Lark/Feishu chat history just because a chat is selected, unless the user explicitly asks to search chat history or send a message.'
+        ]
+      : []),
     'You may decide one of three actions on each turn:',
     '- "tool": call exactly one available tool when you need workspace evidence.',
     '- "final": provide the final user-facing answer when you have enough information.',
@@ -658,6 +666,12 @@ function buildAgentLoopMessages({
           content: `Ephemeral uploaded file context:\n${attachmentContextText}`
         }]
       : []),
+    ...(ragContextText
+      ? [{
+          role: 'user',
+          content: `RAG knowledge context:\n${ragContextText}`
+        }]
+      : []),
     ...conversationHistory,
     ...toolMessages,
     {
@@ -680,6 +694,7 @@ function buildForcedFinalMessages({
   systemPrompt,
   workspaceContextText = '',
   attachmentContextText = '',
+  ragContextText = '',
   currentDateContextText = ''
 }) {
   const promptSections = [
@@ -691,6 +706,13 @@ function buildForcedFinalMessages({
     'Use structured ReAct finalization: include only a brief safe thought_summary if useful, never private reasoning.',
     'Use the same language as the user.',
     'For ordinary conversation, answer naturally and directly instead of refusing unnecessarily.',
+    ...(ragContextText
+      ? [
+          'A knowledge base is selected for this request.',
+          'Use the provided RAG knowledge context first when answering knowledge-based questions.',
+          'Do not search Lark/Feishu chat history just because a chat is selected, unless the user explicitly asks to search chat history or send a message.'
+        ]
+      : []),
     'You must now finish without calling more tools.',
     'Base the answer on the gathered workspace evidence.',
     'If the request never needed workspace tools, answer naturally and directly.',
@@ -744,6 +766,12 @@ function buildForcedFinalMessages({
       ? [{
           role: 'user',
           content: `Ephemeral uploaded file context:\n${attachmentContextText}`
+        }]
+      : []),
+    ...(ragContextText
+      ? [{
+          role: 'user',
+          content: `RAG knowledge context:\n${ragContextText}`
         }]
       : []),
     ...conversationHistory,
@@ -1122,6 +1150,42 @@ function buildVerificationSummary(commandSpec) {
   return `正在验证刚才的文件修改：${commandLine}`
 }
 
+function buildRagContextText({ collectionId = '', items = [] } = {}) {
+  const normalizedCollectionId = normalizeTrimmedString(collectionId)
+  const normalizedItems = Array.isArray(items) ? items : []
+
+  if (!normalizedCollectionId) {
+    return ''
+  }
+
+  if (!normalizedItems.length) {
+    return [
+      `Selected knowledge base collection: ${normalizedCollectionId}`,
+      'The selected knowledge base was searched, but no relevant snippets were found.',
+      'Do not silently switch to unrelated external tools such as chat history unless the user explicitly asks for that source.',
+      'Tell the user that the selected knowledge base did not contain matching information.'
+    ].join('\n')
+  }
+
+  return [
+    `Selected knowledge base collection: ${normalizedCollectionId}`,
+    'Use the following retrieved knowledge snippets when they are relevant to the user request.',
+    'Prioritize these knowledge snippets over unrelated external tools or chat history.',
+    'Do not call chat/message-history tools for this question unless the user explicitly asks to search chat history.',
+    'If the snippets do not contain enough information, say so instead of fabricating.',
+    '',
+    ...normalizedItems.slice(0, 8).map((item, index) => [
+      `Snippet ${index + 1}:`,
+      `Title: ${normalizeTrimmedString(item?.title) || 'Untitled'}`,
+      `Document ID: ${normalizeTrimmedString(item?.documentId)}`,
+      `Source: ${normalizeTrimmedString(item?.sourcePath || item?.sourceType) || 'knowledge_base'}`,
+      `Score: ${Number.isFinite(Number(item?.score)) ? Number(item.score).toFixed(4) : 'n/a'}`,
+      'Content:',
+      truncateText(String(item?.content || '').trim(), 1800)
+    ].join('\n'))
+  ].join('\n\n')
+}
+
 function createCancellationError(message = '已停止当前处理。') {
   const error = new Error(message)
   error.code = TASK_CANCELLED_CODE
@@ -1183,7 +1247,8 @@ export function createAgentRunner({
   sessionWorkspaces,
   runtimeConfig,
   workspaceConfig,
-  toolRunner
+  toolRunner,
+  ragStore
 } = {}) {
   const activeRuns = new Map()
 
@@ -1294,6 +1359,7 @@ export function createAgentRunner({
     requestedSkillId,
     requestedSkillIds = [],
     requestedAttachments = [],
+    requestedRagCollectionId = '',
     abortSignal
   }) {
     const taskStartedAtMs = Date.now()
@@ -1380,6 +1446,25 @@ export function createAgentRunner({
     const requiredCompanionExtensions = getRequiredCompanionExtensionsSafe(latestGoal)
     const currentDateContextText = buildCurrentDateContext(runtimeConfig?.timezone)
     const attachmentContextText = buildAttachmentContextText(requestedAttachments)
+    let ragContextText = ''
+    const normalizedRagCollectionId = normalizeTrimmedString(requestedRagCollectionId)
+
+    if (normalizedRagCollectionId && ragStore && typeof ragStore.search === 'function') {
+      try {
+        publishTaskProgress(sessionId, '正在检索当前知识库...', selectedModel)
+        const ragItems = await ragStore.search({
+          query: latestGoal,
+          collectionId: normalizedRagCollectionId
+        })
+        ragContextText = buildRagContextText({
+          collectionId: normalizedRagCollectionId,
+          items: ragItems
+        })
+        publishTaskProgress(sessionId, `知识库检索完成，命中 ${ragItems.length} 条内容。`, selectedModel)
+      } catch (error) {
+        console.warn('[agent-runner] failed to retrieve RAG context:', error instanceof Error ? error.message : error)
+      }
+    }
     const toolMessages = []
     const verificationCommands = await resolveVerificationCommands({
       workspaceConfig,
@@ -1744,6 +1829,7 @@ export function createAgentRunner({
           remainingIterations: runtimeConfig.maxToolIterations - iteration,
           workspaceContextText,
           attachmentContextText,
+          ragContextText,
           currentDateContextText
         })
         })
@@ -1954,6 +2040,7 @@ export function createAgentRunner({
               systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
               workspaceContextText,
               attachmentContextText,
+              ragContextText,
               currentDateContextText
             })
           })
@@ -1993,6 +2080,7 @@ export function createAgentRunner({
               systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
               workspaceContextText: refreshedWorkspaceContextText,
               attachmentContextText,
+              ragContextText,
               currentDateContextText
             })
           })

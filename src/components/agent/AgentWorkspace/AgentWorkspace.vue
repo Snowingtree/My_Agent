@@ -565,6 +565,33 @@
             <strong class="agent-info-card__value">当前技能</strong>
           </button>
 
+          <article class="agent-info-card">
+            <span class="agent-info-card__label">当前知识库</span>
+            <select
+              class="agent-info-card__select"
+              :value="selectedRagCollectionId"
+              @change="handleRagCollectionChange"
+            >
+              <option value="">不使用知识库</option>
+              <option
+                v-for="item in ragCollections"
+                :key="item.collectionId"
+                :value="item.collectionId"
+              >
+                {{ item.name }}
+              </option>
+              <option
+                v-if="selectedRagCollectionId && !ragCollections.some((item) => item.collectionId === selectedRagCollectionId)"
+                :value="selectedRagCollectionId"
+              >
+                {{ selectedRagCollectionLabel }}
+              </option>
+            </select>
+            <small class="agent-info-card__meta">
+              {{ ragCollectionError || selectedRagCollectionLabel }}
+            </small>
+          </article>
+
           <article class="agent-info-card agent-info-card--files">
             <span class="agent-info-card__label">会话文件</span>
             <strong class="agent-info-card__value">{{ activeWorkspaceFiles.length ? `${activeWorkspaceFiles.length} 个文件` : '暂无文件' }}</strong>
@@ -711,6 +738,10 @@ const props = defineProps({
   selectedModelLabel: { type: String, default: '' },
   selectedLarkChatId: { type: String, default: '' },
   selectedLarkChatLabel: { type: String, default: '不指定群聊' },
+  selectedRagCollectionId: { type: String, default: '' },
+  selectedRagCollectionLabel: { type: String, default: '不使用知识库' },
+  ragCollections: { type: Array, default: () => [] },
+  ragCollectionError: { type: String, default: '' },
   selectedSkillIds: { type: Array, default: () => [] },
   selectedSkillLabel: { type: String, default: '自动选择' },
   skills: { type: Array, default: () => [] },
@@ -746,6 +777,7 @@ const emit = defineEmits([
   'update:draft',
   'update:lark-chat-id',
   'update:model',
+  'update:rag-collection-id',
   'update:skill-ids'
 ])
 
@@ -1918,6 +1950,11 @@ function handleWorkspaceFileClick(filePath) {
   }
 
   emit('open-workspace-file', normalizedPath)
+}
+
+function handleRagCollectionChange(event) {
+  emit('update:rag-collection-id', event.target.value)
+  focusComposer()
 }
 
 watch(

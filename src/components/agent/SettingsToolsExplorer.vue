@@ -63,6 +63,10 @@ const isLoadingDetail = ref(false)
 const listError = ref('')
 const detailError = ref('')
 
+function isVisibleSettingsTool(tool) {
+  return String(tool?.source || '').trim().toLowerCase() !== 'mcp'
+}
+
 const highlightedToolContent = computed(() => {
   const content = String(selectedToolDetail.value?.content || '')
   const language = String(selectedToolDetail.value?.language || '').trim().toLowerCase()
@@ -84,7 +88,9 @@ async function loadToolList() {
 
   try {
     const response = await http.get('/api/agent/tools')
-    tools.value = Array.isArray(response?.items) ? response.items : []
+    tools.value = Array.isArray(response?.items)
+      ? response.items.filter(isVisibleSettingsTool)
+      : []
 
     if (!tools.value.length) {
       selectedToolName.value = ''

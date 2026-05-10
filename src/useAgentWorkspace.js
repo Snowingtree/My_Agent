@@ -6,6 +6,7 @@ import {
   AGENT_AI_MODEL_KEY,
   AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY,
   AGENT_LARK_CHAT_ID_KEY,
+  AGENT_RAG_COLLECTION_ID_KEY,
   AGENT_SKILL_ID_KEY,
   AUTH_TOKEN_KEY
 } from './storage.js'
@@ -352,6 +353,10 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const selectedModel = ref(readStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY))
   const selectedSkillIds = ref(readStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY))
   const selectedLarkChatId = ref(readStorageValue(resolvedStorage, AGENT_LARK_CHAT_ID_KEY))
+  const selectedRagCollectionId = ref(readStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY))
+  const ragCollections = ref([])
+  const isLoadingRagCollections = ref(false)
+  const ragCollectionError = ref('')
   const larkChats = ref([])
   const larkChatError = ref('')
   const isLoadingLarkChats = ref(false)
@@ -446,6 +451,22 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     }
   })
   const selectedLarkChatLabel = computed(() => selectedLarkChat.value?.name || '不指定群聊')
+  const selectedRagCollection = computed(() => {
+    const collectionId = String(selectedRagCollectionId.value || '').trim()
+
+    if (!collectionId) {
+      return null
+    }
+
+    return ragCollections.value.find((item) => item.collectionId === collectionId) || {
+      collectionId,
+      name: '已选择知识库',
+      description: '',
+      documentCount: 0,
+      chunkCount: 0
+    }
+  })
+  const selectedRagCollectionLabel = computed(() => selectedRagCollection.value?.name || '不使用知识库')
   const hasDraftCodingIntent = computed(() => detectCodingIntent(draft.value))
   const workspaceMode = computed(() => {
     if (activeSkillIds.value.includes('coding_agent')) {
@@ -499,6 +520,10 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   function persistSelectedLarkChat() {
     writeStorageValue(resolvedStorage, AGENT_LARK_CHAT_ID_KEY, selectedLarkChatId.value)
+  }
+
+  function persistSelectedRagCollection() {
+    writeStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY, selectedRagCollectionId.value)
   }
 
   function getAttachmentMarkerSnapshot() {
@@ -1163,6 +1188,34 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     }
   }
 
+  async function loadRagCollections() {
+    isLoadingRagCollections.value = true
+    ragCollectionError.value = ''
+
+    try {
+      const data = await http.get('/api/agent/rag/collections')
+      ragCollections.value = Array.isArray(data.items)
+        ? data.items
+          .map((item) => ({
+            collectionId: String(item?.collectionId || '').trim(),
+            name: String(item?.name || item?.collectionId || '').trim(),
+            description: String(item?.description || '').trim(),
+            documentCount: Number(item?.documentCount || 0),
+            chunkCount: Number(item?.chunkCount || 0)
+          }))
+          .filter((item) => item.collectionId)
+        : []
+
+      // Do not clear the selected collection when the list is temporarily stale or empty.
+      // The chat request can still use the persisted collection id.
+    } catch (error) {
+      ragCollections.value = []
+      ragCollectionError.value = normalizeErrorMessage(error, '读取知识库列表失败。')
+    } finally {
+      isLoadingRagCollections.value = false
+    }
+  }
+
   async function loadSessions() {
     isLoadingSessions.value = true
     sessionError.value = ''
@@ -1379,6 +1432,11 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     persistSelectedLarkChat()
   }
 
+  function setSelectedRagCollectionId(nextCollectionId) {
+    selectedRagCollectionId.value = String(nextCollectionId || '').trim()
+    persistSelectedRagCollection()
+  }
+
   function selectLarkChat(chat) {
     const normalizedChat = normalizeLarkChatOption(chat)
 
@@ -1539,6 +1597,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         model: selectedModel.value,
         skillId: selectedSkillIds.value[0] || '',
         skillIds: selectedSkillIds.value,
+        ragCollectionId: selectedRagCollectionId.value,
         attachments: [
           ...conversationAttachments.map((item) => ({
             name: item.name,
@@ -1645,6 +1704,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     await Promise.all([
       loadAiConfigs(),
       loadSkills(),
+      loadRagCollections(),
       loadSessions()
     ])
 
@@ -1764,8 +1824,11 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     larkChatError,
     larkChats,
     modelOptions,
+    ragCollectionError,
+    ragCollections,
     refreshActiveSession,
     refreshLarkChats: loadLarkChats,
+    refreshRagCollections: loadRagCollections,
     refreshWorkspace,
     cancelActiveTask,
     selectSession,
@@ -1778,11 +1841,14 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     selectedSkillLabel,
     selectedLarkChatId,
     selectedLarkChatLabel,
+    selectedRagCollectionId,
+    selectedRagCollectionLabel,
     sendMessage,
     sessionError,
     sessions,
     setSelectedAiId,
     setSelectedLarkChatId,
+    setSelectedRagCollectionId,
     setSelectedModel,
     setSelectedSkillIds
   }

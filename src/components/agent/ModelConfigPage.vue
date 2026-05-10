@@ -92,6 +92,10 @@
         <SettingsSkillsExplorer />
       </section>
 
+      <section v-else-if="props.activeSection === 'settings-rag'" class="model-config-section">
+        <SettingsRagExplorer />
+      </section>
+
       <section v-else-if="props.activeSection === 'settings-tools'" class="model-config-section">
         <SettingsToolsExplorer />
       </section>
@@ -159,6 +163,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import http from '../../http.js'
+import SettingsRagExplorer from './SettingsRagExplorer.vue'
 import SettingsSkillsExplorer from './SettingsSkillsExplorer.vue'
 import SettingsToolsExplorer from './SettingsToolsExplorer.vue'
 
@@ -232,6 +237,10 @@ const SECTION_META = {
   'settings-agent-skills': {
     title: 'Skills',
     description: '查看项目 skills 目录中的技能包说明文件，例如 description.md 和 SKILL.md。'
+  },
+  'settings-rag': {
+    title: '知识库',
+    description: '上传文档并写入 RAG 数据库，让 Agent 后续可以检索你的长期资料。'
   },
   'settings-tools': {
     title: '工具',

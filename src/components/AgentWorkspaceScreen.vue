@@ -156,6 +156,14 @@
                 <button
                   type="button"
                   class="agent-settings-nav__item"
+                  :class="{ 'is-active': activeSettingsSection === 'settings-rag' }"
+                  @click="selectSettingsSection('settings-rag')"
+                >
+                  知识库
+                </button>
+                <button
+                  type="button"
+                  class="agent-settings-nav__item"
                   :class="{ 'is-active': activeSettingsSection === 'settings-tools' }"
                   @click="selectSettingsSection('settings-tools')"
                 >
@@ -204,8 +212,12 @@
           :selected-model-label="selectedModelLabel"
           :selected-lark-chat-id="selectedLarkChatId"
           :selected-lark-chat-label="selectedLarkChatLabel"
+          :selected-rag-collection-id="selectedRagCollectionId"
+          :selected-rag-collection-label="selectedRagCollectionLabel"
           :selected-skill-ids="selectedSkillIds"
           :selected-skill-label="selectedSkillLabel"
+          :rag-collections="ragCollections"
+          :rag-collection-error="ragCollectionError"
           :skills="skills"
           :selected-workspace-file-content="selectedWorkspaceFileContent"
           :selected-workspace-file-path="selectedWorkspaceFilePath"
@@ -231,6 +243,7 @@
           @update:draft="draft = $event"
           @update:lark-chat-id="setSelectedLarkChatId"
           @update:model="setSelectedModel"
+          @update:rag-collection-id="setSelectedRagCollectionId"
           @update:skill-ids="setSelectedSkillIds"
         />
       </section>
@@ -331,6 +344,8 @@ const {
   larkChats,
   modelOptions,
   openWorkspaceFile,
+  ragCollectionError,
+  ragCollections,
   refreshLarkChats,
   refreshActiveSession,
   removeEphemeralAttachment,
@@ -342,6 +357,8 @@ const {
   selectedModelLabel,
   selectedLarkChatId,
   selectedLarkChatLabel,
+  selectedRagCollectionId,
+  selectedRagCollectionLabel,
   selectedSkillIds,
   selectedSkillLabel,
   selectedWorkspaceFileContent,
@@ -353,6 +370,7 @@ const {
   sessions,
   setSelectedAiId,
   setSelectedLarkChatId,
+  setSelectedRagCollectionId,
   setSelectedSkillIds,
   setSelectedModel,
   workspaceFileError,
