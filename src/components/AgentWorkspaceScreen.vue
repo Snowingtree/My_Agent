@@ -196,6 +196,7 @@
           :is-creating-session="isCreatingSession"
           :is-loading-ai-configs="isLoadingAiConfigs"
           :is-loading-lark-chats="isLoadingLarkChats"
+          :is-loading-mcp-servers="isLoadingMcpServers"
           :is-loading-skills="isLoadingSkills"
           :is-loading-session="isLoadingSession"
           :is-loading-sessions="isLoadingSessions"
@@ -205,12 +206,16 @@
           :load-error="loadError"
           :lark-chat-error="larkChatError"
           :lark-chats="larkChats"
+          :mcp-server-error="mcpServerError"
+          :mcp-servers="mcpServers"
           :messages="activeMessages"
           :model-options="modelOptions"
           :selected-agent-label="selectedAgentLabel"
           :selected-ai-id="selectedAiId"
           :selected-model="selectedModel"
           :selected-model-label="selectedModelLabel"
+          :selected-mcp-server-ids="selectedMcpServerIds"
+          :selected-mcp-server-label="selectedMcpServerLabel"
           :selected-lark-chat-id="selectedLarkChatId"
           :selected-lark-chat-label="selectedLarkChatLabel"
           :selected-rag-collection-id="selectedRagCollectionId"
@@ -237,6 +242,7 @@
           @open-workspace-file="openWorkspaceFile"
           @remove-ephemeral-attachment="removeEphemeralAttachment"
           @refresh-lark-chats="refreshLarkChats"
+          @refresh-mcp-servers="refreshMcpServers"
           @refresh-session="refreshActiveSession"
           @select-lark-chat="selectLarkChat"
           @send="sendMessage"
@@ -244,6 +250,7 @@
           @update:ai-id="setSelectedAiId"
           @update:draft="draft = $event"
           @update:lark-chat-id="setSelectedLarkChatId"
+          @update:mcp-server-ids="setSelectedMcpServerIds"
           @update:model="setSelectedModel"
           @update:rag-collection-id="setSelectedRagCollectionId"
           @update:embedding-ai-id="setSelectedEmbeddingAiId"
@@ -337,6 +344,7 @@ const {
   isCreatingSession,
   isLoadingAiConfigs,
   isLoadingLarkChats,
+  isLoadingMcpServers,
   isLoadingSkills,
   isLoadingSession,
   isLoadingSessions,
@@ -346,11 +354,14 @@ const {
   loadError,
   larkChatError,
   larkChats,
+  mcpServerError,
+  mcpServers,
   modelOptions,
   openWorkspaceFile,
   ragCollectionError,
   ragCollections,
   refreshLarkChats,
+  refreshMcpServers,
   refreshActiveSession,
   removeEphemeralAttachment,
   selectSession,
@@ -359,6 +370,8 @@ const {
   selectedAiId,
   selectedModel,
   selectedModelLabel,
+  selectedMcpServerIds,
+  selectedMcpServerLabel,
   selectedLarkChatId,
   selectedLarkChatLabel,
   selectedRagCollectionId,
@@ -375,6 +388,7 @@ const {
   sessions,
   setSelectedAiId,
   setSelectedLarkChatId,
+  setSelectedMcpServerIds,
   setSelectedRagCollectionId,
   setSelectedEmbeddingAiId,
   setSelectedSkillIds,

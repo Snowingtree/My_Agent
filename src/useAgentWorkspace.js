@@ -7,6 +7,7 @@ import {
   AGENT_EMBEDDING_AI_ID_KEY,
   AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY,
   AGENT_LARK_CHAT_ID_KEY,
+  AGENT_MCP_SERVER_IDS_KEY,
   AGENT_RAG_COLLECTION_ID_KEY,
   AGENT_SKILL_ID_KEY,
   AUTH_TOKEN_KEY
@@ -292,6 +293,24 @@ function normalizeLarkChatOption(item) {
   }
 }
 
+function normalizeMcpServerOption(item) {
+  const serverId = String(item?.serverId || '').trim()
+
+  if (!serverId) {
+    return null
+  }
+
+  return {
+    serverId,
+    name: String(item?.name || serverId).trim() || serverId,
+    enabled: Boolean(item?.enabled),
+    status: String(item?.status || '').trim(),
+    error: String(item?.error || '').trim(),
+    toolNamePrefix: String(item?.toolNamePrefix || '').trim(),
+    toolCount: Number(item?.toolCount || 0)
+  }
+}
+
 function createFallbackSessionTitle(value) {
   const normalized = String(value || '').trim().replace(/\s+/g, ' ')
 
@@ -354,6 +373,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const selectedAiId = ref(readStorageValue(resolvedStorage, AGENT_AI_ID_KEY))
   const selectedModel = ref(readStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY))
   const selectedSkillIds = ref(readStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY))
+  const selectedMcpServerIds = ref(readStorageStringArray(resolvedStorage, AGENT_MCP_SERVER_IDS_KEY))
   const selectedLarkChatId = ref(readStorageValue(resolvedStorage, AGENT_LARK_CHAT_ID_KEY))
   const selectedRagCollectionId = ref(readStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY))
   const selectedEmbeddingAiId = ref(readStorageValue(resolvedStorage, AGENT_EMBEDDING_AI_ID_KEY))
@@ -361,8 +381,11 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const isLoadingRagCollections = ref(false)
   const ragCollectionError = ref('')
   const larkChats = ref([])
+  const mcpServers = ref([])
+  const mcpServerError = ref('')
   const larkChatError = ref('')
   const isLoadingLarkChats = ref(false)
+  const isLoadingMcpServers = ref(false)
   const isRefreshingActiveSession = ref(false)
   const isCancellingTask = ref(false)
   const isSessionStreamConnected = ref(false)
@@ -453,7 +476,21 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       description: ''
     }
   })
-  const selectedLarkChatLabel = computed(() => selectedLarkChat.value?.name || '不指定群聊')
+  const selectedLarkChatLabel = computed(() => selectedLarkChat.value?.name || '未设置默认群聊')
+  const selectedMcpServers = computed(() => (
+    mcpServers.value.filter((item) => selectedMcpServerIds.value.includes(item.serverId))
+  ))
+  const selectedMcpServerLabel = computed(() => {
+    if (!selectedMcpServerIds.value.length) {
+      return '使用全部可用 MCP'
+    }
+
+    if (selectedMcpServers.value.length === 1) {
+      return selectedMcpServers.value[0].name
+    }
+
+    return `已选择 ${selectedMcpServerIds.value.length} 个 MCP`
+  })
   const selectedRagCollection = computed(() => {
     const collectionId = String(selectedRagCollectionId.value || '').trim()
 
@@ -519,6 +556,10 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   function persistSelectedSkill() {
     writeStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY, selectedSkillIds.value)
+  }
+
+  function persistSelectedMcpServers() {
+    writeStorageStringArray(resolvedStorage, AGENT_MCP_SERVER_IDS_KEY, selectedMcpServerIds.value)
   }
 
   function persistSelectedLarkChat() {
@@ -1188,6 +1229,30 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     }
   }
 
+  async function loadMcpServers() {
+    isLoadingMcpServers.value = true
+    mcpServerError.value = ''
+
+    try {
+      const data = await http.get('/api/agent/capabilities')
+      mcpServers.value = Array.isArray(data?.mcpServers)
+        ? data.mcpServers.map((item) => normalizeMcpServerOption(item)).filter(Boolean)
+        : []
+
+      if (selectedMcpServerIds.value.length) {
+        selectedMcpServerIds.value = selectedMcpServerIds.value.filter((serverId) => (
+          mcpServers.value.some((item) => item.serverId === serverId)
+        ))
+        persistSelectedMcpServers()
+      }
+    } catch (error) {
+      mcpServers.value = []
+      mcpServerError.value = normalizeErrorMessage(error, '读取 MCP 服务失败。')
+    } finally {
+      isLoadingMcpServers.value = false
+    }
+  }
+
   async function loadLarkChats() {
     isLoadingLarkChats.value = true
     larkChatError.value = ''
@@ -1449,6 +1514,17 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     persistSelectedSkill()
   }
 
+  function setSelectedMcpServerIds(nextServerIds) {
+    selectedMcpServerIds.value = Array.isArray(nextServerIds)
+      ? [...new Set(
+        nextServerIds
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      )]
+      : []
+    persistSelectedMcpServers()
+  }
+
   function setSelectedLarkChatId(nextChatId) {
     selectedLarkChatId.value = String(nextChatId || '').trim()
     persistSelectedLarkChat()
@@ -1624,6 +1700,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         model: selectedModel.value,
         skillId: selectedSkillIds.value[0] || '',
         skillIds: selectedSkillIds.value,
+        mcpServerIds: selectedMcpServerIds.value,
         ragCollectionId: selectedRagCollectionId.value,
         embeddingAiId: selectedEmbeddingAiId.value,
         attachments: [
@@ -1732,6 +1809,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     await Promise.all([
       loadAiConfigs(),
       loadSkills(),
+      loadMcpServers(),
       loadRagCollections(),
       loadSessions()
     ])
@@ -1845,6 +1923,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     isLoadingAiConfigs,
     isLoadingSkills,
     isLoadingLarkChats,
+    isLoadingMcpServers,
     isLoadingSession,
     isLoadingSessions,
     isRefreshingActiveSession,
@@ -1852,11 +1931,14 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     loadError,
     larkChatError,
     larkChats,
+    mcpServerError,
+    mcpServers,
     modelOptions,
     ragCollectionError,
     ragCollections,
     refreshActiveSession,
     refreshLarkChats: loadLarkChats,
+    refreshMcpServers: loadMcpServers,
     refreshRagCollections: loadRagCollections,
     refreshWorkspace,
     cancelActiveTask,
@@ -1868,6 +1950,8 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     selectedModelLabel,
     selectedSkillIds,
     selectedSkillLabel,
+    selectedMcpServerIds,
+    selectedMcpServerLabel,
     selectedLarkChatId,
     selectedLarkChatLabel,
     selectedRagCollectionId,
@@ -1878,6 +1962,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     sessions,
     setSelectedAiId,
     setSelectedLarkChatId,
+    setSelectedMcpServerIds,
     setSelectedRagCollectionId,
     setSelectedEmbeddingAiId,
     setSelectedModel,

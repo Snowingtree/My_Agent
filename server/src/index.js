@@ -1120,6 +1120,22 @@ function createLarkChatListAssistantContent({ items = [], tool = '' } = {}) {
   ].join('\n')
 }
 
+function resolveMcpToolPrefixes(serverIds = []) {
+  const normalizedServerIds = normalizeSkillIdArray(serverIds)
+
+  if (!normalizedServerIds.length) {
+    return []
+  }
+
+  const selectedServerIds = new Set(normalizedServerIds)
+  const prefixes = mcpRegistry.getServerSummaries()
+    .filter((item) => selectedServerIds.has(item.serverId) && item.status === 'ready')
+    .map((item) => normalizeTrimmedString(item.toolNamePrefix))
+    .filter(Boolean)
+
+  return prefixes.length ? prefixes : ['__no_selected_mcp_server__']
+}
+
 async function handleListAgentTools(response) {
   sendJson(response, 200, {
     items: listToolPreviewItems(toolRunner.getToolCatalog())
@@ -1271,6 +1287,8 @@ async function handleChat(request, response) {
       ? payload.skillIds
       : [payload?.skillId]
   )
+  const requestedMcpServerIds = normalizeSkillIdArray(payload?.mcpServerIds)
+  const requestedMcpToolPrefixes = resolveMcpToolPrefixes(requestedMcpServerIds)
   const requestedRagCollectionId = normalizeTrimmedString(payload?.ragCollectionId)
   const requestedEmbeddingAiId = normalizeTrimmedString(payload?.embeddingAiId)
   const requestedAttachments = normalizeConversationAttachments(payload?.attachments)
@@ -1426,6 +1444,8 @@ async function handleChat(request, response) {
     requestedModel: selectedModel,
     requestedSkillId: primarySkill?.skillId || '',
     requestedSkillIds: activeSkills.map((item) => item.skillId),
+    requestedMcpServerIds,
+    requestedMcpToolPrefixes,
     requestedRagCollectionId,
     requestedEmbeddingAiId,
     requestedAttachments

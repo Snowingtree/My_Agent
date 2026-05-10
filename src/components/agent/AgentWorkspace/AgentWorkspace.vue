@@ -400,7 +400,6 @@
               <div>
                 <p class="agent-panel__eyebrow">会话附加信息</p>
                 <h3>配置本轮会话上下文</h3>
-                <small>这里集中配置 Skill、MCP、Embedding 和 RAG。未选择时保持自动或默认配置。</small>
               </div>
               <button
                 type="button"
@@ -464,29 +463,38 @@
                   <div class="agent-session-extra__section-head">
                     <div>
                       <p>MCP</p>
-                      <small>{{ selectedLarkChatLabel }}</small>
+                      <small>{{ selectedMcpServerLabel }}</small>
                     </div>
-                    <button type="button" :disabled="isLoadingLarkChats" @click="$emit('refresh-lark-chats')">
-                      {{ isLoadingLarkChats ? '读取中' : '刷新' }}
+                    <button type="button" :disabled="isLoadingMcpServers" @click="$emit('refresh-mcp-servers')">
+                      {{ isLoadingMcpServers ? '读取中' : '刷新' }}
                     </button>
                   </div>
 
-                  <select
-                    class="agent-session-extra__select"
-                    :value="selectedLarkChatId"
-                    :disabled="isLoadingLarkChats"
-                    @change="$emit('update:lark-chat-id', $event.target.value)"
-                  >
-                    <option value="">不指定群聊</option>
-                    <option
-                      v-for="item in larkChats"
-                      :key="item.chatId"
-                      :value="item.chatId"
+                  <div class="agent-skill-picker__list">
+                    <button
+                      type="button"
+                      class="agent-skill-option"
+                      :class="{ 'is-active': !selectedMcpServerIds.length }"
+                      @click="selectAllMcpServers"
                     >
-                      {{ item.name }} - {{ item.chatId }}
-                    </option>
-                  </select>
-                  <small class="agent-session-extra__hint">{{ larkChatError || (larkChats.length ? `已读取 ${larkChats.length} 个飞书群聊` : '当前未读取到 MCP 群聊。') }}</small>
+                      <strong>全部可用 MCP</strong>
+                      <small>不限制本轮可用 MCP 服务</small>
+                    </button>
+
+                    <button
+                      v-for="item in mcpServers"
+                      :key="item.serverId"
+                      type="button"
+                      class="agent-skill-option"
+                      :class="{ 'is-active': selectedMcpServerIds.includes(item.serverId), 'is-disabled': item.status !== 'ready' }"
+                      @click="toggleMcpServerSelection(item.serverId)"
+                    >
+                      <strong>{{ item.name }}</strong>
+                      <small>{{ item.status === 'ready' ? `${item.toolCount || 0} 个工具` : (item.error || item.status || '不可用') }}</small>
+                    </button>
+                  </div>
+
+                  <small class="agent-session-extra__hint">{{ mcpServerError || (mcpServers.length ? '选择后，本轮只暴露选中的 MCP 服务；不选择则使用全部可用 MCP。' : '当前没有可用的 MCP 服务。') }}</small>
                 </div>
 
                 <div v-else-if="activeSessionExtraTab === 'embedding'" class="agent-session-extra__section">
@@ -680,7 +688,6 @@
           >
             <span class="agent-info-card__label">会话附加信息</span>
             <strong class="agent-info-card__value">{{ sessionExtraSummary }}</strong>
-            <small class="agent-info-card__meta">点击配置 Skill、MCP、Embedding 和 RAG</small>
           </button>
 
           <article class="agent-info-card agent-info-card--files">
@@ -812,6 +819,7 @@ const props = defineProps({
   isCancellingTask: { type: Boolean, default: false },
   isLoadingAiConfigs: { type: Boolean, default: false },
   isLoadingLarkChats: { type: Boolean, default: false },
+  isLoadingMcpServers: { type: Boolean, default: false },
   isLoadingSkills: { type: Boolean, default: false },
   isLoadingSession: { type: Boolean, default: false },
   isLoadingSessions: { type: Boolean, default: false },
@@ -821,6 +829,8 @@ const props = defineProps({
   loadError: { type: String, default: '' },
   larkChatError: { type: String, default: '' },
   larkChats: { type: Array, default: () => [] },
+  mcpServerError: { type: String, default: '' },
+  mcpServers: { type: Array, default: () => [] },
   messages: { type: Array, default: () => [] },
   modelOptions: { type: Array, default: () => [] },
   hideSidebar: { type: Boolean, default: false },
@@ -828,8 +838,10 @@ const props = defineProps({
   selectedAiId: { type: String, default: '' },
   selectedModel: { type: String, default: '' },
   selectedModelLabel: { type: String, default: '' },
+  selectedMcpServerIds: { type: Array, default: () => [] },
+  selectedMcpServerLabel: { type: String, default: '使用全部可用 MCP' },
   selectedLarkChatId: { type: String, default: '' },
-  selectedLarkChatLabel: { type: String, default: '不指定群聊' },
+  selectedLarkChatLabel: { type: String, default: '未设置默认群聊' },
   selectedRagCollectionId: { type: String, default: '' },
   selectedRagCollectionLabel: { type: String, default: '不使用知识库' },
   selectedEmbeddingAiId: { type: String, default: '' },
@@ -860,6 +872,7 @@ const emit = defineEmits([
   'open-model-config',
   'open-workspace-file',
   'refresh-lark-chats',
+  'refresh-mcp-servers',
   'refresh-session',
   'remove-ephemeral-attachment',
   'select-session',
@@ -869,6 +882,7 @@ const emit = defineEmits([
   'update:ai-id',
   'update:draft',
   'update:lark-chat-id',
+  'update:mcp-server-ids',
   'update:model',
   'update:rag-collection-id',
   'update:embedding-ai-id',
@@ -1063,6 +1077,10 @@ function selectAutoSkill() {
   emit('update:skill-ids', [])
 }
 
+function selectAllMcpServers() {
+  emit('update:mcp-server-ids', [])
+}
+
 function toggleSkillSelection(skillId) {
   const normalizedSkillId = String(skillId || '').trim()
 
@@ -1082,6 +1100,33 @@ function toggleSkillSelection(skillId) {
   }
 
   emit('update:skill-ids', nextSkillIds)
+}
+
+function toggleMcpServerSelection(serverId) {
+  const normalizedServerId = String(serverId || '').trim()
+
+  if (!normalizedServerId) {
+    return
+  }
+
+  const server = props.mcpServers.find((item) => item.serverId === normalizedServerId)
+
+  if (server && server.status !== 'ready') {
+    return
+  }
+
+  const nextServerIds = Array.isArray(props.selectedMcpServerIds)
+    ? [...props.selectedMcpServerIds]
+    : []
+  const existingIndex = nextServerIds.indexOf(normalizedServerId)
+
+  if (existingIndex >= 0) {
+    nextServerIds.splice(existingIndex, 1)
+  } else {
+    nextServerIds.push(normalizedServerId)
+  }
+
+  emit('update:mcp-server-ids', nextServerIds)
 }
 
 const resolvedWorkspaceMode = computed(() => {
@@ -1117,8 +1162,8 @@ const sessionExtraSummary = computed(() => {
     parts.push(`Skill ${props.selectedSkillIds.length}`)
   }
 
-  if (String(props.selectedLarkChatId || '').trim()) {
-    parts.push('MCP')
+  if (Array.isArray(props.selectedMcpServerIds) && props.selectedMcpServerIds.length) {
+    parts.push(`MCP ${props.selectedMcpServerIds.length}`)
   }
 
   if (String(props.selectedEmbeddingAiId || '').trim()) {
@@ -1143,9 +1188,7 @@ const sessionExtraTabs = computed(() => [
   {
     id: 'mcp',
     label: 'MCP',
-    summary: String(props.selectedLarkChatId || '').trim()
-      ? props.selectedLarkChatLabel
-      : '未指定'
+    summary: props.selectedMcpServerLabel
   },
   {
     id: 'embedding',
@@ -2671,9 +2714,10 @@ onBeforeUnmount(() => {
 .agent-skill-option {
   width: 100%;
   min-height: 58px;
-  display: flex;
+  display: grid;
   justify-content: center;
   align-items: center;
+  gap: 4px;
   padding: 12px 14px;
   border: 1px solid var(--agent-border);
   border-radius: 14px;
@@ -2702,11 +2746,23 @@ onBeforeUnmount(() => {
   box-shadow: 0 10px 22px rgba(15, 23, 42, 0.18);
 }
 
+.agent-skill-option.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .agent-skill-option strong {
   margin: 0;
   color: currentColor;
   font-size: 0.92rem;
   line-height: 1.25;
+}
+
+.agent-skill-option small {
+  color: currentColor;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  opacity: 0.66;
 }
 
 .skill-picker-fade-enter-active,

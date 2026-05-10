@@ -83,6 +83,28 @@ export function createToolRunner({
     return [...createLocalTools(activeWorkspace), ...externalTools]
   }
 
+  function normalizeStringArray(value) {
+    return Array.isArray(value)
+      ? [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))]
+      : []
+  }
+
+  function filterToolsByMcpPrefixes(tools, mcpToolPrefixes = []) {
+    const normalizedPrefixes = normalizeStringArray(mcpToolPrefixes)
+
+    if (!normalizedPrefixes.length) {
+      return tools
+    }
+
+    return tools.filter((tool) => {
+      if (String(tool.source || '').trim() !== 'mcp') {
+        return true
+      }
+
+      return normalizedPrefixes.some((prefix) => tool.name.startsWith(`${prefix}.`))
+    })
+  }
+
   function filterToolsBySkill(tools, skill) {
     if (!skill) {
       return tools
@@ -120,8 +142,15 @@ export function createToolRunner({
     })
   }
 
-  function getToolCatalog({ skill = null } = {}) {
-    return filterToolsBySkill(getAllTools(workspace), skill).map((tool) => ({
+  function getFilteredTools(activeWorkspace = workspace, { skill = null, mcpToolPrefixes = [] } = {}) {
+    return filterToolsBySkill(
+      filterToolsByMcpPrefixes(getAllTools(activeWorkspace), mcpToolPrefixes),
+      skill
+    )
+  }
+
+  function getToolCatalog({ skill = null, mcpToolPrefixes = [] } = {}) {
+    return getFilteredTools(workspace, { skill, mcpToolPrefixes }).map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
@@ -129,8 +158,8 @@ export function createToolRunner({
     }))
   }
 
-  function getPromptText({ skill = null } = {}) {
-    return getToolCatalog({ skill })
+  function getPromptText({ skill = null, mcpToolPrefixes = [] } = {}) {
+    return getToolCatalog({ skill, mcpToolPrefixes })
       .map((tool) => [
         `- ${tool.name}: ${tool.description}`,
         `  Source: ${tool.source}`,
@@ -139,11 +168,11 @@ export function createToolRunner({
       .join('\n')
   }
 
-  async function executeToolCall({ name, args } = {}, { skill = null, signal = null, sessionId = '', onProgress = null } = {}) {
+  async function executeToolCall({ name, args } = {}, { skill = null, mcpToolPrefixes = [], signal = null, sessionId = '', onProgress = null } = {}) {
     const normalizedName = String(name || '').trim()
     const activeWorkspace = getWorkspaceForSession(sessionId)
     const allToolsByName = new Map(getAllTools(activeWorkspace).map((tool) => [tool.name, tool]))
-    const toolCatalog = filterToolsBySkill(getAllTools(activeWorkspace), skill)
+    const toolCatalog = getFilteredTools(activeWorkspace, { skill, mcpToolPrefixes })
     const toolsByName = new Map(toolCatalog.map((tool) => [tool.name, tool]))
     const tool = toolsByName.get(normalizedName)
 

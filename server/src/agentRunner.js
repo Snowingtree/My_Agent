@@ -1358,6 +1358,8 @@ export function createAgentRunner({
     requestedModel,
     requestedSkillId,
     requestedSkillIds = [],
+    requestedMcpServerIds = [],
+    requestedMcpToolPrefixes = [],
     requestedAttachments = [],
     requestedRagCollectionId = '',
     requestedEmbeddingAiId = '',
@@ -1417,6 +1419,9 @@ export function createAgentRunner({
     )
     const activeSkill = mergeActiveSkills(activeSkills)
     const activeSkillPrompt = buildActiveSkillPrompt(activeSkills)
+    const activeMcpToolPrefixes = Array.isArray(requestedMcpToolPrefixes)
+      ? requestedMcpToolPrefixes.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
 
     if (!aiConfig || !aiConfig.apiKey) {
       const failureSummary = '\u5f53\u524d\u6ca1\u6709\u53ef\u7528\u7684 AI \u914d\u7f6e\uff0c\u8bf7\u5148\u68c0\u67e5 AI \u914d\u7f6e\u548c API Key\u3002'
@@ -1564,6 +1569,7 @@ export function createAgentRunner({
       try {
         toolExecution = await toolRunner.executeToolCall(normalizedRequest, {
           skill: activeSkill,
+          mcpToolPrefixes: activeMcpToolPrefixes,
           signal: abortSignal,
           sessionId,
           onProgress: (progress) => {
@@ -1827,7 +1833,7 @@ export function createAgentRunner({
             conversationHistory,
             requireFileChanges: fileChangesRequired,
             toolMessages,
-          toolPromptText: toolRunner.getPromptText({ skill: activeSkill }),
+          toolPromptText: toolRunner.getPromptText({ skill: activeSkill, mcpToolPrefixes: activeMcpToolPrefixes }),
           systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
           remainingIterations: runtimeConfig.maxToolIterations - iteration,
           workspaceContextText,
