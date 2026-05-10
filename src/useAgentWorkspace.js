@@ -4,6 +4,7 @@ import {
   AGENT_ACTIVE_SESSION_KEY,
   AGENT_AI_ID_KEY,
   AGENT_AI_MODEL_KEY,
+  AGENT_EMBEDDING_AI_ID_KEY,
   AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY,
   AGENT_LARK_CHAT_ID_KEY,
   AGENT_RAG_COLLECTION_ID_KEY,
@@ -346,6 +347,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const isSending = ref(false)
   const isCreatingSession = ref(false)
   const aiConfigs = ref([])
+  const embeddingConfigs = ref([])
   const skills = ref([])
   const isLoadingAiConfigs = ref(false)
   const isLoadingSkills = ref(false)
@@ -354,6 +356,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const selectedSkillIds = ref(readStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY))
   const selectedLarkChatId = ref(readStorageValue(resolvedStorage, AGENT_LARK_CHAT_ID_KEY))
   const selectedRagCollectionId = ref(readStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY))
+  const selectedEmbeddingAiId = ref(readStorageValue(resolvedStorage, AGENT_EMBEDDING_AI_ID_KEY))
   const ragCollections = ref([])
   const isLoadingRagCollections = ref(false)
   const ragCollectionError = ref('')
@@ -524,6 +527,10 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   function persistSelectedRagCollection() {
     writeStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY, selectedRagCollectionId.value)
+  }
+
+  function persistSelectedEmbeddingAi() {
+    writeStorageValue(resolvedStorage, AGENT_EMBEDDING_AI_ID_KEY, selectedEmbeddingAiId.value)
   }
 
   function getAttachmentMarkerSnapshot() {
@@ -1120,15 +1127,30 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     loadError.value = ''
 
     try {
-      const data = await http.get('/api/ai/configs', {
-        timeout: AI_CONFIG_REQUEST_TIMEOUT
-      })
-      aiConfigs.value = Array.isArray(data.items)
-        ? data.items.map((item) => normalizeAiConfigOption(item)).filter(Boolean)
+      const [aiData, embeddingData] = await Promise.all([
+        http.get('/api/ai/configs', {
+          params: { type: 'ai' },
+          timeout: AI_CONFIG_REQUEST_TIMEOUT
+        }),
+        http.get('/api/ai/configs', {
+          params: { type: 'embedding' },
+          timeout: AI_CONFIG_REQUEST_TIMEOUT
+        })
+      ])
+      aiConfigs.value = Array.isArray(aiData.items)
+        ? aiData.items.map((item) => normalizeAiConfigOption(item)).filter(Boolean)
         : []
+      embeddingConfigs.value = Array.isArray(embeddingData.items)
+        ? embeddingData.items.map((item) => normalizeAiConfigOption(item)).filter(Boolean)
+        : []
+      if (selectedEmbeddingAiId.value && !embeddingConfigs.value.some((item) => item.aiId === selectedEmbeddingAiId.value)) {
+        selectedEmbeddingAiId.value = ''
+        persistSelectedEmbeddingAi()
+      }
       ensureSelectedModel()
     } catch (error) {
       aiConfigs.value = []
+      embeddingConfigs.value = []
       loadError.value = normalizeErrorMessage(error, '读取 Agent 配置失败。')
     } finally {
       isLoadingAiConfigs.value = false
@@ -1437,6 +1459,11 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     persistSelectedRagCollection()
   }
 
+  function setSelectedEmbeddingAiId(nextEmbeddingAiId) {
+    selectedEmbeddingAiId.value = String(nextEmbeddingAiId || '').trim()
+    persistSelectedEmbeddingAi()
+  }
+
   function selectLarkChat(chat) {
     const normalizedChat = normalizeLarkChatOption(chat)
 
@@ -1598,6 +1625,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         skillId: selectedSkillIds.value[0] || '',
         skillIds: selectedSkillIds.value,
         ragCollectionId: selectedRagCollectionId.value,
+        embeddingAiId: selectedEmbeddingAiId.value,
         attachments: [
           ...conversationAttachments.map((item) => ({
             name: item.name,
@@ -1788,6 +1816,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     activeSession,
     activeSessionId,
     aiConfigs,
+    embeddingConfigs,
     addEphemeralAttachments,
     skills,
     activeWorkspaceFiles,
@@ -1843,12 +1872,14 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     selectedLarkChatLabel,
     selectedRagCollectionId,
     selectedRagCollectionLabel,
+    selectedEmbeddingAiId,
     sendMessage,
     sessionError,
     sessions,
     setSelectedAiId,
     setSelectedLarkChatId,
     setSelectedRagCollectionId,
+    setSelectedEmbeddingAiId,
     setSelectedModel,
     setSelectedSkillIds
   }

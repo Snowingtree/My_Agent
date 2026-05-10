@@ -14,6 +14,13 @@
           >
             添加接口
           </button>
+          <span
+            v-else-if="props.activeSection === 'settings-rag'"
+            class="model-config-rag-status"
+            :class="{ 'is-ready': ragStatus.ready, 'is-error': ragStatus.enabled && !ragStatus.ready }"
+          >
+            {{ ragStatus.ready ? '已连接数据库' : '数据库未连接' }}
+          </span>
         </p>
       </div>
 
@@ -33,7 +40,12 @@
         <div v-else class="config-grid">
           <article v-for="item in aiConfigs" :key="item.aiId" class="config-card">
             <div class="config-card__head">
-              <h3>{{ item.name || item.aiId }}</h3>
+              <div class="config-card__title">
+                <h3>{{ item.name || item.aiId }}</h3>
+                <span class="config-type-chip" :class="getAiConfigType(item).className">
+                  {{ getAiConfigType(item).label }}
+                </span>
+              </div>
               <span class="config-chip">{{ item.aiId }}</span>
             </div>
             <dl class="config-meta">
@@ -111,6 +123,13 @@
             </div>
             <form class="modal-body" @submit.prevent="submitAddAi">
               <label class="modal-field">
+                <span>配置类型</span>
+                <select v-model="addAiForm.type">
+                  <option value="ai">AI 配置</option>
+                  <option value="embedding">embedding</option>
+                </select>
+              </label>
+              <label class="modal-field">
                 <span>名称</span>
                 <input
                   v-model="addAiForm.name"
@@ -120,11 +139,11 @@
                 />
               </label>
               <label class="modal-field">
-                <span>模型版本（用 `|` 分隔）</span>
+                <span>模型版本（用英文逗号 `,` 分隔）</span>
                 <input
                   v-model="addAiForm.aiVersions"
                   type="text"
-                  placeholder="例如：MiMo-7B-RL|MiMo-7B-SFT"
+                  placeholder="例如：MiMo-7B-RL,MiMo-7B-SFT"
                 />
               </label>
               <label class="modal-field">
@@ -175,6 +194,7 @@ defineEmits(['back', 'config-updated'])
 
 const aiConfigs = ref([])
 const mcpServers = ref([])
+const ragStatus = ref({})
 
 const isLoadingAi = ref(false)
 const isLoadingCapabilities = ref(false)
@@ -187,6 +207,7 @@ const showAddAiModal = ref(false)
 const isSubmittingAi = ref(false)
 const addAiError = ref('')
 const addAiForm = ref({
+  type: 'ai',
   name: '',
   aiVersions: '',
   aiBaseUrl: '',
@@ -194,7 +215,7 @@ const addAiForm = ref({
 })
 
 function openAddAiModal() {
-  addAiForm.value = { name: '', aiVersions: '', aiBaseUrl: '', apiKey: '' }
+  addAiForm.value = { type: 'ai', name: '', aiVersions: '', aiBaseUrl: '', apiKey: '' }
   addAiError.value = ''
   showAddAiModal.value = true
 }
@@ -210,6 +231,7 @@ async function submitAddAi() {
 
   try {
     await http.post('/api/ai/configs', {
+      type: addAiForm.value.type,
       name: addAiForm.value.name,
       aiVersions: addAiForm.value.aiVersions,
       aiBaseUrl: addAiForm.value.aiBaseUrl,
@@ -288,6 +310,51 @@ function formatStatus(status) {
   return '连接中'
 }
 
+function getAiConfigType(item) {
+  const explicitType = [
+    item?.type,
+    item?.configType,
+    item?.aiType,
+    item?.kind,
+    item?.usage
+  ]
+    .map((value) => String(value || '').toLowerCase())
+    .find(Boolean)
+
+  if (explicitType && (explicitType.includes('embedding') || explicitType.includes('embed') || explicitType.includes('vector'))) {
+    return {
+      label: 'embedding',
+      className: 'is-embedding'
+    }
+  }
+
+  const sourceText = [
+    item?.name,
+    item?.aiId,
+    item?.aiVersions,
+    item?.aiBaseUrl
+  ]
+    .map((value) => String(value || '').toLowerCase())
+    .join(' ')
+
+  if (
+    sourceText.includes('embedding')
+    || sourceText.includes('embed')
+    || sourceText.includes('向量')
+    || sourceText.includes('vector')
+  ) {
+    return {
+      label: 'embedding',
+      className: 'is-embedding'
+    }
+  }
+
+  return {
+    label: 'AI配置',
+    className: 'is-ai'
+  }
+}
+
 async function loadAiConfigs() {
   isLoadingAi.value = true
   aiError.value = ''
@@ -318,6 +385,18 @@ async function loadCapabilities() {
   }
 }
 
+async function loadRagStatus() {
+  try {
+    ragStatus.value = await http.get('/api/agent/rag/status')
+  } catch (error) {
+    ragStatus.value = {
+      enabled: true,
+      ready: false,
+      error: error instanceof Error ? error.message : '读取知识库状态失败。'
+    }
+  }
+}
+
 async function ensureSectionLoaded(section, force = false) {
   if (section === 'settings-ai') {
     if (force || (!aiConfigs.value.length && !isLoadingAi.value)) {
@@ -329,6 +408,13 @@ async function ensureSectionLoaded(section, force = false) {
   if (section === 'settings-mcp') {
     if (force || (!mcpServers.value.length && !isLoadingCapabilities.value)) {
       await loadCapabilities()
+    }
+    return
+  }
+
+  if (section === 'settings-rag') {
+    if (force || !Object.keys(ragStatus.value || {}).length) {
+      await loadRagStatus()
     }
   }
 }
@@ -366,19 +452,21 @@ watch(
 }
 
 .model-config-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto;
   gap: 24px;
+  row-gap: 8px;
   margin-bottom: 24px;
 }
 
 .model-config-header__copy {
-  display: grid;
-  gap: 8px;
+  display: contents;
 }
 
 .model-config-header__eyebrow {
+  grid-column: 1;
+  grid-row: 1;
   margin: 0;
   color: #7a869f;
   font-size: 0.76rem;
@@ -387,6 +475,8 @@ watch(
 }
 
 .model-config-header__copy h1 {
+  grid-column: 1;
+  grid-row: 2;
   margin: 0;
   color: #171717;
   font-size: 2rem;
@@ -398,21 +488,50 @@ watch(
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  grid-column: 1 / -1;
+  grid-row: 3;
+  width: 100%;
   margin: 0;
   color: #5d667a;
   font-size: 0.98rem;
   line-height: 1.7;
 }
 
-.model-config-header__desc span {
+.model-config-header__desc > span:first-child {
   flex: 1;
   min-width: 0;
 }
 
+.model-config-rag-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 15px;
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.model-config-rag-status.is-ready {
+  background: #dcfce7;
+  color: #087443;
+}
+
+.model-config-rag-status.is-error {
+  background: #fff1f2;
+  color: #be123c;
+}
+
 .model-config-header__actions {
+  grid-column: 2;
+  grid-row: 1 / 3;
   display: flex;
   align-items: center;
   gap: 12px;
+  justify-self: end;
 }
 
 .model-config-content {
@@ -456,6 +575,38 @@ watch(
   color: #171717;
   font-size: 1.04rem;
   font-weight: 700;
+}
+
+.config-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.config-card__title h3 {
+  min-width: 0;
+}
+
+.config-type-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.config-type-chip.is-ai {
+  background: #eaf3ff;
+  color: #2563eb;
+}
+
+.config-type-chip.is-embedding {
+  background: #e8f8ef;
+  color: #16834a;
 }
 
 .config-chip {
@@ -693,7 +844,8 @@ watch(
   font-weight: 600;
 }
 
-.modal-field input {
+.modal-field input,
+.modal-field select {
   height: 42px;
   padding: 0 14px;
   border: 1px solid #dfe5f1;
@@ -706,7 +858,8 @@ watch(
   transition: border-color 0.16s ease;
 }
 
-.modal-field input:focus {
+.modal-field input:focus,
+.modal-field select:focus {
   border-color: rgb(125, 125, 125);
 }
 

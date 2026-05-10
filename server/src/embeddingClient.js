@@ -71,6 +71,8 @@ export function createEmbeddingClient(embeddingConfig = {}) {
   const baseURL = normalizeBaseUrl(embeddingConfig.baseURL)
   const apiKey = normalizeTrimmedString(embeddingConfig.apiKey)
   const model = normalizeTrimmedString(embeddingConfig.model)
+  const aiId = normalizeTrimmedString(embeddingConfig.aiId)
+  const name = normalizeTrimmedString(embeddingConfig.name)
   const provider = normalizeTrimmedString(embeddingConfig.provider).toLowerCase() || 'auto'
   const timeoutMs = Number.isFinite(Number(embeddingConfig.timeoutMs))
     ? Math.max(1000, Number(embeddingConfig.timeoutMs))
@@ -178,6 +180,8 @@ export function createEmbeddingClient(embeddingConfig = {}) {
   function getStatus() {
     return {
       enabled,
+      aiId,
+      name,
       provider: useDashScopeMultimodal ? 'dashscope-multimodal' : 'openai-compatible',
       baseURL: useDashScopeMultimodal ? resolveDashScopeMultimodalEndpoint(baseURL) : (baseURL ? resolveEmbeddingEndpoint(baseURL) : ''),
       model,

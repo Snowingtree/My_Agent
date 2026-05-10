@@ -1360,6 +1360,7 @@ export function createAgentRunner({
     requestedSkillIds = [],
     requestedAttachments = [],
     requestedRagCollectionId = '',
+    requestedEmbeddingAiId = '',
     abortSignal
   }) {
     const taskStartedAtMs = Date.now()
@@ -1448,13 +1449,15 @@ export function createAgentRunner({
     const attachmentContextText = buildAttachmentContextText(requestedAttachments)
     let ragContextText = ''
     const normalizedRagCollectionId = normalizeTrimmedString(requestedRagCollectionId)
+    const normalizedEmbeddingAiId = normalizeTrimmedString(requestedEmbeddingAiId)
 
     if (normalizedRagCollectionId && ragStore && typeof ragStore.search === 'function') {
       try {
         publishTaskProgress(sessionId, '正在检索当前知识库...', selectedModel)
         const ragItems = await ragStore.search({
           query: latestGoal,
-          collectionId: normalizedRagCollectionId
+          collectionId: normalizedRagCollectionId,
+          embeddingAiId: normalizedEmbeddingAiId
         })
         ragContextText = buildRagContextText({
           collectionId: normalizedRagCollectionId,

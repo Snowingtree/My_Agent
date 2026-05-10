@@ -1,8 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { decryptStoredOpenAiApiKey } from './openAiKeyCrypto.js'
 import { parseList, normalizeTrimmedString } from './utils.js'
 
 const VALID_AI_CONFIG_SOURCE_MODES = new Set(['env', 'file', 'mysql'])
+const VALID_AI_CONFIG_TYPES = new Set(['ai', 'embedding'])
 const DEFAULT_FILE_AI_ID = 'primary'
 let mysqlPoolPromise = null
 
@@ -12,6 +14,20 @@ function normalizeEnvValue(value) {
 
 function normalizeBaseUrl(value) {
   return normalizeTrimmedString(value).replace(/\/$/, '')
+}
+
+function normalizeAiConfigType(value) {
+  const normalized = normalizeTrimmedString(value).toLowerCase()
+
+  if (VALID_AI_CONFIG_TYPES.has(normalized)) {
+    return normalized
+  }
+
+  return normalized === 'embed' || normalized === 'vector' ? 'embedding' : 'ai'
+}
+
+function normalizeAiVersions(value) {
+  return parseList(String(value || '').replace(/，/g, ',')).join(',')
 }
 
 function parseMysqlPort(value, envKey) {
@@ -171,6 +187,7 @@ function normalizeAiConfig(item, index) {
   const baseURL = normalizeBaseUrl(item?.baseURL || item?.aiBaseUrl)
   const models = parseList(item?.models || item?.aiVersions)
   const defaultModel = normalizeTrimmedString(item?.defaultModel) || models[0] || ''
+  const type = normalizeAiConfigType(item?.type || item?.configType || item?.aiType)
 
   if (!baseURL || !defaultModel) {
     return null
@@ -184,6 +201,7 @@ function normalizeAiConfig(item, index) {
     apiKeyEnv: normalizeTrimmedString(item?.apiKeyEnv),
     models: models.length ? models : [defaultModel],
     defaultModel,
+    type,
     systemPrompt: normalizeTrimmedString(item?.systemPrompt),
     source: normalizeTrimmedString(item?.source) || 'file'
   }
@@ -290,6 +308,7 @@ async function ensureMysqlTable(connection, tableName) {
       ai_id VARCHAR(120) NOT NULL,
       ai_versions VARCHAR(1000) NOT NULL DEFAULT '',
       ai_base_url VARCHAR(2048) NOT NULL DEFAULT '',
+      \`type\` VARCHAR(32) NOT NULL DEFAULT 'ai',
       api_key TEXT NOT NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -372,6 +391,7 @@ async function readMysqlConfigs() {
           ai_id AS aiId,
           ai_versions AS aiVersions,
           ai_base_url AS aiBaseUrl,
+          \`type\` AS type,
           api_key AS apiKey
         FROM ${tableName}
         ORDER BY updated_at DESC, id DESC`
@@ -393,6 +413,7 @@ async function readMysqlConfigs() {
             ai_id AS aiId,
             ai_versions AS aiVersions,
             ai_base_url AS aiBaseUrl,
+            'ai' AS type,
             token AS apiKey
           FROM ${tableName}
           ORDER BY updated_at DESC, id DESC`
@@ -413,6 +434,7 @@ async function readMysqlConfigs() {
             name AS aiId,
             '' AS aiVersions,
             '' AS aiBaseUrl,
+            'ai' AS type,
             api_key AS apiKey
           FROM ${tableName}
           WHERE is_active = 1
@@ -427,6 +449,7 @@ async function readMysqlConfigs() {
         name: normalizeTrimmedString(row.name) || normalizeTrimmedString(row.aiId),
         aiVersions: normalizeTrimmedString(row.aiVersions),
         aiBaseUrl: normalizeTrimmedString(row.aiBaseUrl),
+        type: normalizeAiConfigType(row.type),
         apiKey: normalizeStoredApiKey(row.apiKey),
         source: 'mysql'
       }, index))
@@ -454,7 +477,7 @@ export async function loadAiConfigs(aiRuntimeConfig) {
 }
 
 export async function getAiConfigById(aiRuntimeConfig, aiId) {
-  const configs = await loadAiConfigs(aiRuntimeConfig)
+  const configs = (await loadAiConfigs(aiRuntimeConfig)).filter((item) => item.type === 'ai')
   const normalizedAiId = normalizeTrimmedString(aiId)
 
   if (!configs.length) {
@@ -484,24 +507,21 @@ export function toPublicAiConfig(aiConfig) {
     name: aiConfig.name,
     aiBaseUrl: aiConfig.baseURL,
     aiVersions: aiConfig.models.join(','),
+    type: aiConfig.type || 'ai',
     hasApiKey: Boolean(aiConfig.apiKey)
   }
 }
 
-function generateAiId(name) {
-  const normalized = String(name || '').trim().toLowerCase()
-    .replace(/[^a-z0-9一-鿿]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40)
-
-  return normalized || `config-${Date.now()}`
+function generateAiId() {
+  return `ai_${randomUUID().replace(/-/g, '').slice(0, 20)}`
 }
 
-export async function insertAiConfig({ name, aiVersions, aiBaseUrl, apiKey } = {}) {
+export async function insertAiConfig({ name, aiVersions, aiBaseUrl, apiKey, type } = {}) {
   const normalizedName = normalizeTrimmedString(name)
   const normalizedBaseUrl = normalizeBaseUrl(aiBaseUrl)
-  const normalizedVersions = normalizeTrimmedString(aiVersions)
+  const normalizedVersions = normalizeAiVersions(aiVersions)
   const normalizedApiKey = normalizeStoredApiKey(apiKey) || normalizeTrimmedString(apiKey)
+  const normalizedType = normalizeAiConfigType(type)
 
   if (!normalizedName) {
     throw new Error('AI 名称不能为空。')
@@ -515,7 +535,7 @@ export async function insertAiConfig({ name, aiVersions, aiBaseUrl, apiKey } = {
     throw new Error('API Key 不能为空。')
   }
 
-  const aiId = generateAiId(normalizedName)
+  const aiId = generateAiId()
 
   await withMysqlConnection(async (connection, tableName) => {
     const [existing] = await connection.query(
@@ -525,16 +545,16 @@ export async function insertAiConfig({ name, aiVersions, aiBaseUrl, apiKey } = {
 
     if (Array.isArray(existing) && existing.length > 0) {
       await connection.query(
-        `UPDATE ${tableName} SET ai_name = ?, ai_versions = ?, ai_base_url = ?, api_key = ? WHERE ai_id = ?`,
-        [normalizedName, normalizedVersions, normalizedBaseUrl, normalizedApiKey, aiId]
+        `UPDATE ${tableName} SET ai_name = ?, ai_versions = ?, ai_base_url = ?, \`type\` = ?, api_key = ? WHERE ai_id = ?`,
+        [normalizedName, normalizedVersions, normalizedBaseUrl, normalizedType, normalizedApiKey, aiId]
       )
     } else {
       await connection.query(
-        `INSERT INTO ${tableName} (ai_name, ai_id, ai_versions, ai_base_url, api_key) VALUES (?, ?, ?, ?, ?)`,
-        [normalizedName, aiId, normalizedVersions, normalizedBaseUrl, normalizedApiKey]
+        `INSERT INTO ${tableName} (ai_name, ai_id, ai_versions, ai_base_url, \`type\`, api_key) VALUES (?, ?, ?, ?, ?, ?)`,
+        [normalizedName, aiId, normalizedVersions, normalizedBaseUrl, normalizedType, normalizedApiKey]
       )
     }
   })
 
-  return { aiId, name: normalizedName }
+  return { aiId, name: normalizedName, type: normalizedType }
 }

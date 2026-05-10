@@ -96,16 +96,97 @@ const sourceWorkspace = createWorkspace(config.workspace)
 const mcpRegistry = createMcpRegistry({
   mcpConfig: config.mcp
 })
-const embeddingClient = createEmbeddingClient({
-  baseURL: config.rag.embeddingBaseURL,
-  apiKey: config.rag.embeddingApiKey,
-  model: config.rag.embeddingModel,
-  provider: config.rag.embeddingProvider,
-  dimension: config.rag.embeddingDimension,
-  timeoutMs: config.rag.embeddingTimeoutMs
-})
+const embeddingClientCache = new Map()
+const EMBEDDING_CLIENT_CACHE_TTL_MS = 30000
+
+function getCachedEmbeddingClient(cacheKey) {
+  const cachedItem = embeddingClientCache.get(cacheKey)
+
+  if (!cachedItem || cachedItem.expiresAt <= Date.now()) {
+    embeddingClientCache.delete(cacheKey)
+    return null
+  }
+
+  return cachedItem.client
+}
+
+function setCachedEmbeddingClient(cacheKey, client) {
+  if (!cacheKey || !client) {
+    return
+  }
+
+  embeddingClientCache.set(cacheKey, {
+    client,
+    expiresAt: Date.now() + EMBEDDING_CLIENT_CACHE_TTL_MS
+  })
+}
+
+async function resolveEmbeddingConfigFromDatabase(embeddingAiId = '') {
+  const normalizedEmbeddingAiId = normalizeTrimmedString(embeddingAiId)
+  const embeddingConfigs = (await loadAiConfigs(config.ai)).filter((item) => item.type === 'embedding')
+  const embeddingConfig = normalizedEmbeddingAiId
+    ? embeddingConfigs.find((item) => item.aiId === normalizedEmbeddingAiId)
+    : embeddingConfigs[0]
+
+  if (!embeddingConfig) {
+    return {
+      aiId: '',
+      name: '',
+      baseURL: '',
+      apiKey: '',
+      model: '',
+      provider: 'auto'
+    }
+  }
+
+  return {
+    aiId: embeddingConfig.aiId,
+    name: embeddingConfig.name,
+    baseURL: embeddingConfig.baseURL,
+    apiKey: embeddingConfig.apiKey,
+    model: embeddingConfig.defaultModel || embeddingConfig.models?.[0] || '',
+    provider: 'auto'
+  }
+}
+
+async function getEmbeddingClient(embeddingAiId = '') {
+  const requestedCacheKey = normalizeTrimmedString(embeddingAiId) || '__default__'
+  const requestedCachedClient = getCachedEmbeddingClient(requestedCacheKey)
+
+  if (requestedCachedClient) {
+    return requestedCachedClient
+  }
+
+  const embeddingDatabaseConfig = await resolveEmbeddingConfigFromDatabase(embeddingAiId)
+  const cacheKey = embeddingDatabaseConfig.aiId || `default:${normalizeTrimmedString(embeddingAiId)}`
+  const cachedClient = getCachedEmbeddingClient(cacheKey)
+
+  if (cachedClient) {
+    setCachedEmbeddingClient(requestedCacheKey, cachedClient)
+    return cachedClient
+  }
+
+  const embeddingClient = createEmbeddingClient({
+    aiId: embeddingDatabaseConfig.aiId,
+    name: embeddingDatabaseConfig.name,
+    baseURL: embeddingDatabaseConfig.baseURL,
+    apiKey: embeddingDatabaseConfig.apiKey,
+    model: embeddingDatabaseConfig.model,
+    provider: embeddingDatabaseConfig.provider,
+    dimension: config.rag.embeddingDimension,
+    timeoutMs: config.rag.embeddingTimeoutMs
+  })
+
+  if (embeddingDatabaseConfig.aiId) {
+    setCachedEmbeddingClient(cacheKey, embeddingClient)
+    setCachedEmbeddingClient(requestedCacheKey, embeddingClient)
+  }
+
+  return embeddingClient
+}
+
 const ragStore = createRagStore(config.rag, {
-  embeddingProvider: embeddingClient
+  resolveEmbeddingProvider: getEmbeddingClient
 })
 try {
   await mcpRegistry.initialize()
@@ -644,8 +725,13 @@ async function handleLogin(request, response) {
   })
 }
 
-async function handleListAiConfigs(response) {
-  const items = (await loadAiConfigs(config.ai)).map((item) => toPublicAiConfig(item))
+async function handleListAiConfigs(requestUrl, response) {
+  const requestedType = normalizeTrimmedString(requestUrl.searchParams.get('type')).toLowerCase()
+  const configs = await loadAiConfigs(config.ai)
+  const filteredConfigs = requestedType
+    ? configs.filter((item) => String(item.type || 'ai').toLowerCase() === requestedType)
+    : configs
+  const items = filteredConfigs.map((item) => toPublicAiConfig(item))
 
   sendJson(response, 200, { items })
 }
@@ -657,7 +743,8 @@ async function handleCreateAiConfig(request, response) {
       name: body?.name,
       aiVersions: body?.aiVersions,
       aiBaseUrl: body?.aiBaseUrl,
-      apiKey: body?.apiKey
+      apiKey: body?.apiKey,
+      type: body?.type
     })
 
     sendJson(response, 201, { item: result })
@@ -790,7 +877,8 @@ async function handleCreateRagDocument(request, response) {
     content,
     sourceType: normalizeTrimmedString(payload?.sourceType) || 'manual',
     sourcePath: normalizeTrimmedString(payload?.sourcePath),
-    metadata: payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {}
+    metadata: payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {},
+    embeddingAiId: normalizeTrimmedString(payload?.embeddingAiId)
   })
 
   sendJson(response, 201, { item })
@@ -809,6 +897,7 @@ async function handleUploadRagDocument(request, response) {
   const { fields, files } = parseMultipartBody(await readRequestBuffer(request), contentType)
   const uploadFiles = files.filter((file) => file.fieldName === 'file' || file.fieldName === 'files')
   const collectionId = normalizeTrimmedString(fields.collectionId)
+  const embeddingAiId = normalizeTrimmedString(fields.embeddingAiId)
 
   if (!uploadFiles.length) {
     sendJson(response, 400, {
@@ -837,7 +926,8 @@ async function handleUploadRagDocument(request, response) {
         filename: normalizeTrimmedString(file.filename),
         contentType: normalizeTrimmedString(file.contentType),
         sizeBytes: file.buffer.length
-      }
+      },
+      embeddingAiId
     })
 
     items.push(item)
@@ -849,6 +939,7 @@ async function handleUploadRagDocument(request, response) {
 async function handleSearchRag(response, requestUrl) {
   const query = normalizeTrimmedString(requestUrl.searchParams.get('q'))
   const collectionId = normalizeTrimmedString(requestUrl.searchParams.get('collectionId'))
+  const embeddingAiId = normalizeTrimmedString(requestUrl.searchParams.get('embeddingAiId'))
   const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '', 10)
 
   if (!query) {
@@ -859,7 +950,7 @@ async function handleSearchRag(response, requestUrl) {
   }
 
   sendJson(response, 200, {
-    items: await ragStore.search({ query, collectionId, limit })
+    items: await ragStore.search({ query, collectionId, limit, embeddingAiId })
   })
 }
 
@@ -867,7 +958,8 @@ async function handleRebuildRagEmbeddings(request, response) {
   const payload = await readJsonBody(request)
   const result = await ragStore.rebuildEmbeddings({
     collectionId: normalizeTrimmedString(payload?.collectionId),
-    limit: Number.parseInt(payload?.limit || '', 10)
+    limit: Number.parseInt(payload?.limit || '', 10),
+    embeddingAiId: normalizeTrimmedString(payload?.embeddingAiId)
   })
 
   sendJson(response, 200, result)
@@ -1180,6 +1272,7 @@ async function handleChat(request, response) {
       : [payload?.skillId]
   )
   const requestedRagCollectionId = normalizeTrimmedString(payload?.ragCollectionId)
+  const requestedEmbeddingAiId = normalizeTrimmedString(payload?.embeddingAiId)
   const requestedAttachments = normalizeConversationAttachments(payload?.attachments)
   if (requestedRagCollectionId) {
     requestedAttachments.push({
@@ -1189,8 +1282,9 @@ async function handleChat(request, response) {
       content: [
         'Selected RAG knowledge base context for this Agent request.',
         `collectionId: ${requestedRagCollectionId}`,
+        requestedEmbeddingAiId ? `embeddingAiId: ${requestedEmbeddingAiId}` : '',
         'When RAG retrieval is enabled, use this collection as the retrieval scope.'
-      ].join('\n')
+      ].filter(Boolean).join('\n')
     })
   }
   const activeSkills = resolveSkillsForMessage(requestedSkillIds, message)
@@ -1333,6 +1427,7 @@ async function handleChat(request, response) {
     requestedSkillId: primarySkill?.skillId || '',
     requestedSkillIds: activeSkills.map((item) => item.skillId),
     requestedRagCollectionId,
+    requestedEmbeddingAiId,
     requestedAttachments
   })
 
@@ -1368,6 +1463,7 @@ async function handleRequest(request, response) {
       aiConfigs: (await loadAiConfigs(config.ai)).map((item) => ({
         aiId: item.aiId,
         name: item.name,
+        type: item.type || 'ai',
         hasApiKey: Boolean(item.apiKey),
         source: item.source || ''
       }))
@@ -1389,7 +1485,7 @@ async function handleRequest(request, response) {
   }
 
   if (pathname === '/api/ai/configs' && request.method === 'GET') {
-    await handleListAiConfigs(response)
+    await handleListAiConfigs(requestUrl, response)
     return
   }
 

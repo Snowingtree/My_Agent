@@ -1,22 +1,10 @@
 <template>
   <section class="settings-rag">
-    <header class="settings-rag__hero">
-      <div>
-        <p class="settings-rag__eyebrow">RAG Knowledge Base</p>
-        <h3>知识库</h3>
-        <p>可以创建多个知识库。上传文档时会写入当前选中的知识库。</p>
-      </div>
-      <div class="settings-rag__status" :class="{ 'is-ready': ragStatus.ready, 'is-error': ragStatus.enabled && !ragStatus.ready }">
-        <strong>{{ ragStatus.ready ? '已连接' : '未就绪' }}</strong>
-        <span>{{ ragStatus.ready ? `pgvector ${ragStatus.vectorVersion || ''}` : (ragStatus.error || ragStatus.reason || '等待初始化') }}</span>
-      </div>
-    </header>
-
-    <section class="settings-rag__collections">
-      <article class="settings-rag__panel">
+    <section class="settings-rag__top">
+      <article class="settings-rag__panel settings-rag__panel--list">
         <div class="settings-rag__panel-head">
-          <h4>知识库列表</h4>
-          <span>{{ collections.length }} 个知识库</span>
+          <h4>知识库列表（{{ collections.length }}）</h4>
+          <button type="button" class="settings-rag__add-btn" aria-label="新增知识库" @click="openCreateModal">+</button>
         </div>
 
         <div v-if="collections.length" class="settings-rag__collection-list">
@@ -35,95 +23,116 @@
         <p v-else class="settings-rag__empty">还没有知识库。</p>
       </article>
 
-      <article class="settings-rag__panel">
+      <article class="settings-rag__panel settings-rag__panel--documents">
         <div class="settings-rag__panel-head">
-          <h4>新增知识库</h4>
-          <span>用于区分不同资料范围</span>
+          <h4>{{ selectedCollectionName }}（{{ documents.length }}）</h4>
+          <button type="button" class="settings-rag__add-btn" aria-label="上传文档" :disabled="!selectedCollectionId" @click="openUploadModal">+</button>
         </div>
 
-        <form class="settings-rag__create" @submit.prevent="createCollection">
-          <input v-model="newCollectionName" type="text" placeholder="例如：Agent 项目、论文资料、产品文档" />
-          <textarea v-model="newCollectionDescription" rows="3" placeholder="描述，可选"></textarea>
-          <button type="submit" :disabled="!newCollectionName.trim() || isCreatingCollection">
-            {{ isCreatingCollection ? '创建中...' : '创建知识库' }}
-          </button>
-        </form>
+        <p v-if="listError" class="settings-rag__message is-error">{{ listError }}</p>
+        <p v-else-if="isLoading" class="settings-rag__empty">正在读取知识库...</p>
+        <p v-else-if="!documents.length" class="settings-rag__empty">当前知识库还没有文档。</p>
+
+        <div v-else class="settings-rag__table">
+          <div class="settings-rag__row settings-rag__row--head">
+            <span>标题</span>
+            <span>来源</span>
+            <span>切片</span>
+            <span>更新时间</span>
+            <span>操作</span>
+          </div>
+          <div v-for="item in documents" :key="item.documentId" class="settings-rag__row">
+            <span>{{ item.title }}</span>
+            <span>{{ item.sourcePath || item.sourceType }}</span>
+            <span>{{ item.chunkCount }}</span>
+            <span>{{ formatDate(item.updatedAt) }}</span>
+            <button type="button" @click="deleteDocument(item.documentId)">删除</button>
+          </div>
+        </div>
       </article>
     </section>
 
-    <section class="settings-rag__grid">
-      <article class="settings-rag__panel">
-        <div class="settings-rag__panel-head">
-          <h4>上传文档</h4>
-          <span>当前：{{ selectedCollectionName }}</span>
+    <Teleport to="body">
+      <Transition name="settings-rag-modal">
+        <div v-if="showCreateModal" class="settings-rag-modal" @click.self="closeCreateModal">
+          <form class="settings-rag-modal__dialog" @submit.prevent="createCollection">
+            <header>
+              <div>
+                <p>New Knowledge Base</p>
+                <h3>新增知识库</h3>
+              </div>
+              <button type="button" aria-label="关闭" @click="closeCreateModal">×</button>
+            </header>
+
+            <label>
+              <span>名称</span>
+              <input v-model="newCollectionName" type="text" placeholder="例如：面试题、论文资料、产品文档" />
+            </label>
+
+            <label>
+              <span>描述</span>
+              <textarea v-model="newCollectionDescription" rows="4" placeholder="描述，可选"></textarea>
+            </label>
+
+            <footer>
+              <button type="button" class="settings-rag-modal__secondary" @click="closeCreateModal">取消</button>
+              <button type="submit" class="settings-rag-modal__primary" :disabled="!newCollectionName.trim() || isCreatingCollection">
+                {{ isCreatingCollection ? '创建中...' : '创建知识库' }}
+              </button>
+            </footer>
+          </form>
         </div>
+      </Transition>
+    </Teleport>
 
-        <label class="settings-rag__upload">
-          <input type="file" accept=".txt,.md,.markdown,.docx" multiple @change="handleFileChange" />
-          <strong>选择文件</strong>
-          <span>{{ selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件` : '支持 TXT / Markdown / DOCX' }}</span>
-        </label>
+    <Teleport to="body">
+      <Transition name="settings-rag-modal">
+        <div v-if="showUploadModal" class="settings-rag-modal" @click.self="closeUploadModal">
+          <form class="settings-rag-modal__dialog" @submit.prevent="uploadFiles">
+            <header>
+              <div>
+                <p>Upload Documents</p>
+                <h3>上传文档</h3>
+              </div>
+              <button type="button" aria-label="关闭" @click="closeUploadModal">×</button>
+            </header>
 
-        <div v-if="selectedFiles.length" class="settings-rag__selected">
-          <span v-for="file in selectedFiles" :key="`${file.name}-${file.size}`">{{ file.name }}</span>
+            <p class="settings-rag-modal__hint">当前知识库：{{ selectedCollectionName }}</p>
+
+            <label>
+              <span>Embedding 配置</span>
+              <select v-model="selectedEmbeddingAiId" :disabled="isLoadingEmbeddingConfigs || !embeddingConfigs.length">
+                <option value="">使用默认 embedding 配置</option>
+                <option v-for="item in embeddingConfigs" :key="item.aiId" :value="item.aiId">
+                  {{ item.name }}
+                </option>
+              </select>
+            </label>
+
+            <p v-if="embeddingConfigError" class="settings-rag__message is-error">{{ embeddingConfigError }}</p>
+
+            <label class="settings-rag__upload settings-rag__upload--modal">
+              <input type="file" accept=".txt,.md,.markdown,.docx" multiple @change="handleFileChange" />
+              <strong>选择文档</strong>
+              <span>{{ selectedFiles.length ? `已选择 ${selectedFiles.length} 个文件` : '支持 TXT / Markdown / DOCX' }}</span>
+            </label>
+
+            <div v-if="selectedFiles.length" class="settings-rag__selected">
+              <span v-for="file in selectedFiles" :key="`${file.name}-${file.size}`">{{ file.name }}</span>
+            </div>
+
+            <p v-if="uploadError" class="settings-rag__message is-error">{{ uploadError }}</p>
+
+            <footer>
+              <button type="button" class="settings-rag-modal__secondary" @click="closeUploadModal">取消</button>
+              <button type="submit" class="settings-rag-modal__primary" :disabled="!selectedFiles.length || isUploading || !selectedCollectionId">
+                {{ isUploading ? '入库中...' : '上传并入库' }}
+              </button>
+            </footer>
+          </form>
         </div>
-
-        <button type="button" class="settings-rag__primary" :disabled="!selectedFiles.length || isUploading || !selectedCollectionId" @click="uploadFiles">
-          {{ isUploading ? '入库中...' : '上传并入库' }}
-        </button>
-
-        <p v-if="uploadMessage" class="settings-rag__message">{{ uploadMessage }}</p>
-        <p v-if="uploadError" class="settings-rag__message is-error">{{ uploadError }}</p>
-      </article>
-
-      <article class="settings-rag__panel">
-        <div class="settings-rag__panel-head">
-          <h4>检索测试</h4>
-          <span>只检索当前知识库</span>
-        </div>
-
-        <form class="settings-rag__search" @submit.prevent="searchKnowledge">
-          <input v-model="searchQuery" type="text" placeholder="输入关键词，例如：部署、接口、规范" />
-          <button type="submit" :disabled="!searchQuery.trim() || isSearching">搜索</button>
-        </form>
-
-        <div v-if="searchResults.length" class="settings-rag__results">
-          <article v-for="item in searchResults" :key="item.chunkId">
-            <strong>{{ item.title }}</strong>
-            <p>{{ item.content }}</p>
-          </article>
-        </div>
-        <p v-else class="settings-rag__empty">{{ isSearching ? '正在检索...' : '暂无检索结果。' }}</p>
-      </article>
-    </section>
-
-    <section class="settings-rag__panel settings-rag__documents">
-      <div class="settings-rag__panel-head">
-        <h4>当前知识库文档</h4>
-        <span>{{ documents.length }} 个文档</span>
-      </div>
-
-      <p v-if="listError" class="settings-rag__message is-error">{{ listError }}</p>
-      <p v-else-if="isLoading" class="settings-rag__empty">正在读取知识库...</p>
-      <p v-else-if="!documents.length" class="settings-rag__empty">当前知识库还没有文档。</p>
-
-      <div v-else class="settings-rag__table">
-        <div class="settings-rag__row settings-rag__row--head">
-          <span>标题</span>
-          <span>来源</span>
-          <span>切片</span>
-          <span>更新时间</span>
-          <span>操作</span>
-        </div>
-        <div v-for="item in documents" :key="item.documentId" class="settings-rag__row">
-          <span>{{ item.title }}</span>
-          <span>{{ item.sourcePath || item.sourceType }}</span>
-          <span>{{ item.chunkCount }}</span>
-          <span>{{ formatDate(item.updatedAt) }}</span>
-          <button type="button" @click="deleteDocument(item.documentId)">删除</button>
-        </div>
-      </div>
-    </section>
+      </Transition>
+    </Teleport>
   </section>
 </template>
 
@@ -131,26 +140,55 @@
 import { computed, onMounted, ref } from 'vue'
 import http from '../../http.js'
 
-const ragStatus = ref({})
 const collections = ref([])
 const documents = ref([])
 const selectedCollectionId = ref('')
 const selectedFiles = ref([])
-const searchQuery = ref('')
-const searchResults = ref([])
 const newCollectionName = ref('')
 const newCollectionDescription = ref('')
 const isLoading = ref(false)
 const isUploading = ref(false)
-const isSearching = ref(false)
 const isCreatingCollection = ref(false)
 const listError = ref('')
 const uploadError = ref('')
 const uploadMessage = ref('')
+const showCreateModal = ref(false)
+const showUploadModal = ref(false)
+const embeddingConfigs = ref([])
+const selectedEmbeddingAiId = ref('')
+const isLoadingEmbeddingConfigs = ref(false)
+const embeddingConfigError = ref('')
 
 const selectedCollectionName = computed(() => {
-  return collections.value.find((item) => item.collectionId === selectedCollectionId.value)?.name || '未选择'
+  return collections.value.find((item) => item.collectionId === selectedCollectionId.value)?.name || '未选择知识库'
 })
+
+function openCreateModal() {
+  newCollectionName.value = ''
+  newCollectionDescription.value = ''
+  showCreateModal.value = true
+}
+
+function closeCreateModal() {
+  if (isCreatingCollection.value) return
+  showCreateModal.value = false
+}
+
+function openUploadModal() {
+  selectedFiles.value = []
+  uploadError.value = ''
+  uploadMessage.value = ''
+  embeddingConfigError.value = ''
+  showUploadModal.value = true
+  void loadEmbeddingConfigs()
+}
+
+function closeUploadModal() {
+  if (isUploading.value) return
+  showUploadModal.value = false
+  selectedFiles.value = []
+  uploadError.value = ''
+}
 
 function handleFileChange(event) {
   selectedFiles.value = Array.from(event.target.files || [])
@@ -173,7 +211,35 @@ function formatDate(value) {
 }
 
 async function loadStatus() {
-  ragStatus.value = await http.get('/api/agent/rag/status')
+  await http.get('/api/agent/rag/status')
+}
+
+async function loadEmbeddingConfigs() {
+  isLoadingEmbeddingConfigs.value = true
+  embeddingConfigError.value = ''
+
+  try {
+    const response = await http.get('/api/ai/configs', {
+      params: { type: 'embedding' }
+    })
+    embeddingConfigs.value = Array.isArray(response?.items)
+      ? response.items
+        .map((item) => ({
+          aiId: String(item?.aiId || '').trim(),
+          name: String(item?.name || item?.aiId || '').trim() || String(item?.aiId || '').trim()
+        }))
+        .filter((item) => item.aiId)
+      : []
+
+    if (selectedEmbeddingAiId.value && !embeddingConfigs.value.some((item) => item.aiId === selectedEmbeddingAiId.value)) {
+      selectedEmbeddingAiId.value = ''
+    }
+  } catch (error) {
+    embeddingConfigs.value = []
+    embeddingConfigError.value = error instanceof Error ? error.message : '读取 Embedding 配置失败。'
+  } finally {
+    isLoadingEmbeddingConfigs.value = false
+  }
 }
 
 async function loadCollections() {
@@ -205,8 +271,11 @@ async function loadDocuments() {
 }
 
 async function selectCollection(collectionId) {
+  if (selectedCollectionId.value === collectionId) return
   selectedCollectionId.value = collectionId
-  searchResults.value = []
+  uploadError.value = ''
+  uploadMessage.value = ''
+  selectedFiles.value = []
   await loadDocuments()
 }
 
@@ -220,9 +289,10 @@ async function createCollection() {
       name,
       description: newCollectionDescription.value.trim()
     })
+    selectedCollectionId.value = response?.item?.collectionId || selectedCollectionId.value
+    showCreateModal.value = false
     newCollectionName.value = ''
     newCollectionDescription.value = ''
-    selectedCollectionId.value = response?.item?.collectionId || selectedCollectionId.value
     await loadDocuments()
   } finally {
     isCreatingCollection.value = false
@@ -241,34 +311,21 @@ async function uploadFiles() {
     for (const file of selectedFiles.value) {
       const formData = new FormData()
       formData.append('collectionId', selectedCollectionId.value)
+      if (selectedEmbeddingAiId.value) {
+        formData.append('embeddingAiId', selectedEmbeddingAiId.value)
+      }
       formData.append('file', file)
       await http.post('/api/agent/rag/upload', formData)
       uploadedCount += 1
     }
     selectedFiles.value = []
     uploadMessage.value = `已入库 ${uploadedCount} 个文件。`
+    showUploadModal.value = false
     await loadDocuments()
   } catch (error) {
     uploadError.value = error instanceof Error ? error.message : '上传入库失败。'
   } finally {
     isUploading.value = false
-  }
-}
-
-async function searchKnowledge() {
-  const query = searchQuery.value.trim()
-  if (!query) return
-
-  isSearching.value = true
-  searchResults.value = []
-
-  try {
-    const response = await http.get('/api/agent/rag/search', {
-      params: { q: query, collectionId: selectedCollectionId.value }
-    })
-    searchResults.value = Array.isArray(response?.items) ? response.items : []
-  } finally {
-    isSearching.value = false
   }
 }
 
@@ -287,80 +344,47 @@ onMounted(() => {
 .settings-rag {
   display: grid;
   gap: 18px;
+  height: 100%;
+  min-height: 0;
 }
 
-.settings-rag__hero,
+.settings-rag__top {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
 .settings-rag__panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   border: 1px solid #e7ebf3;
   border-radius: 22px;
   background: #ffffff;
   padding: 20px;
 }
 
-.settings-rag__hero {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-  align-items: flex-start;
+.settings-rag__panel--list {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
-.settings-rag__eyebrow {
-  margin: 0 0 8px;
-  color: #7a869f;
-  font-size: 0.76rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+.settings-rag__panel--documents {
+  border-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 
-.settings-rag h3,
 .settings-rag h4,
 .settings-rag p {
   margin: 0;
 }
 
-.settings-rag h3 {
-  font-size: 1.35rem;
-}
-
-.settings-rag__hero p:not(.settings-rag__eyebrow) {
-  margin-top: 8px;
-  color: #667085;
-}
-
-.settings-rag__status {
-  display: grid;
-  gap: 4px;
-  min-width: 160px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: #fff7ed;
-  color: #9a3412;
-}
-
-.settings-rag__status.is-ready {
-  background: #ecfdf3;
-  color: #087443;
-}
-
-.settings-rag__status.is-error {
-  background: #fff1f2;
-  color: #be123c;
-}
-
-.settings-rag__status span,
-.settings-rag__panel-head span,
-.settings-rag__empty {
-  color: #7a869f;
-}
-
-.settings-rag__collections,
-.settings-rag__grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 18px;
-}
-
 .settings-rag__panel-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -368,9 +392,42 @@ onMounted(() => {
   margin-bottom: 16px;
 }
 
+.settings-rag__panel-head h4 {
+  color: #171717;
+  font-size: 1rem;
+}
+
+.settings-rag__panel-head span,
+.settings-rag__empty {
+  color: #7a869f;
+}
+
+.settings-rag__add-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 999px;
+  background: #171717;
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.settings-rag__add-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .settings-rag__collection-list {
   display: grid;
+  align-content: start;
   gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .settings-rag__collection {
@@ -383,6 +440,12 @@ onMounted(() => {
   padding: 12px;
   text-align: left;
   cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.settings-rag__collection:hover {
+  background: #f1f5f9;
+  transform: translateX(2px);
 }
 
 .settings-rag__collection.is-active {
@@ -398,22 +461,6 @@ onMounted(() => {
   color: rgba(255, 255, 255, 0.72);
 }
 
-.settings-rag__create,
-.settings-rag__search {
-  display: grid;
-  gap: 10px;
-}
-
-.settings-rag__create input,
-.settings-rag__create textarea,
-.settings-rag__search input {
-  min-width: 0;
-  border: 1px solid #d9dee9;
-  border-radius: 14px;
-  padding: 11px 13px;
-  font: inherit;
-}
-
 .settings-rag__upload {
   display: grid;
   gap: 8px;
@@ -423,6 +470,10 @@ onMounted(() => {
   border-radius: 18px;
   background: #f8fafc;
   cursor: pointer;
+}
+
+.settings-rag__upload--modal {
+  margin-top: 4px;
 }
 
 .settings-rag__upload input {
@@ -445,8 +496,6 @@ onMounted(() => {
 }
 
 .settings-rag__primary,
-.settings-rag__create button,
-.settings-rag__search button,
 .settings-rag__row button {
   border: 0;
   border-radius: 999px;
@@ -463,14 +512,7 @@ onMounted(() => {
   font-weight: 700;
 }
 
-.settings-rag__create button,
-.settings-rag__search button {
-  padding: 11px 18px;
-}
-
-.settings-rag__primary:disabled,
-.settings-rag__create button:disabled,
-.settings-rag__search button:disabled {
+.settings-rag__primary:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
@@ -485,37 +527,12 @@ onMounted(() => {
   color: #be123c;
 }
 
-.settings-rag__search {
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.settings-rag__results {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-  max-height: 280px;
-  overflow: auto;
-}
-
-.settings-rag__results article {
-  display: grid;
-  gap: 6px;
-  padding: 12px;
-  border-radius: 14px;
-  background: #f8fafc;
-}
-
-.settings-rag__results p {
-  color: #465165;
-  line-height: 1.65;
-  white-space: pre-wrap;
-}
-
 .settings-rag__table {
   display: grid;
+  min-height: 0;
   border: 1px solid #edf0f5;
   border-radius: 16px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .settings-rag__row {
@@ -532,6 +549,9 @@ onMounted(() => {
 }
 
 .settings-rag__row--head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   background: #f8fafc;
   color: #6b7280;
   font-weight: 700;
@@ -543,11 +563,150 @@ onMounted(() => {
   color: #374151;
 }
 
+.settings-rag-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(8px);
+}
+
+.settings-rag-modal__dialog {
+  display: grid;
+  gap: 16px;
+  width: min(460px, 100%);
+  padding: 22px;
+  border-radius: 24px;
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.22);
+}
+
+.settings-rag-modal__dialog header,
+.settings-rag-modal__dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.settings-rag-modal__hint {
+  margin: 0;
+  color: #5d667a;
+  line-height: 1.6;
+}
+
+.settings-rag-modal__dialog header p {
+  margin: 0 0 6px;
+  color: #7a869f;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-rag-modal__dialog h3 {
+  margin: 0;
+}
+
+.settings-rag-modal__dialog header button {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  background: #f3f4f6;
+  cursor: pointer;
+  font-size: 1.2rem;
+}
+
+.settings-rag-modal__dialog label {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-rag-modal__dialog label span {
+  color: #5d667a;
+  font-weight: 700;
+}
+
+.settings-rag-modal__dialog input,
+.settings-rag-modal__dialog select,
+.settings-rag-modal__dialog textarea {
+  min-width: 0;
+  border: 1px solid #d9dee9;
+  border-radius: 14px;
+  padding: 11px 13px;
+  font: inherit;
+  background: #ffffff;
+}
+
+.settings-rag-modal__secondary,
+.settings-rag-modal__primary {
+  border: 0;
+  border-radius: 999px;
+  padding: 11px 18px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.settings-rag-modal__secondary {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.settings-rag-modal__primary {
+  background: #171717;
+  color: #ffffff;
+}
+
+.settings-rag-modal__primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.settings-rag-modal-enter-active,
+.settings-rag-modal-leave-active {
+  transition: opacity 0.36s ease, backdrop-filter 0.36s ease;
+}
+
+.settings-rag-modal-enter-active .settings-rag-modal__dialog,
+.settings-rag-modal-leave-active .settings-rag-modal__dialog {
+  transition: opacity 0.36s ease, transform 0.36s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.settings-rag-modal-enter-from,
+.settings-rag-modal-leave-to {
+  opacity: 0;
+  backdrop-filter: blur(0);
+}
+
+.settings-rag-modal-enter-from .settings-rag-modal__dialog,
+.settings-rag-modal-leave-to .settings-rag-modal__dialog {
+  opacity: 0;
+  transform: translateY(14px) scale(0.97);
+}
+
+.settings-rag-modal-enter-to .settings-rag-modal__dialog,
+.settings-rag-modal-leave-from .settings-rag-modal__dialog {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
 @media (max-width: 1080px) {
-  .settings-rag__collections,
-  .settings-rag__grid,
+  .settings-rag,
+  .settings-rag__top,
   .settings-rag__row {
     grid-template-columns: 1fr;
+  }
+
+  .settings-rag__panel--list,
+  .settings-rag__panel--documents {
+    border: 1px solid #e7ebf3;
+    border-radius: 22px;
   }
 }
 </style>

@@ -392,46 +392,162 @@
           class="agent-skill-picker"
           role="dialog"
           aria-modal="true"
-          aria-label="选择技能"
+          aria-label="配置会话附加信息"
           @click.self="closeSkillPicker"
         >
           <section class="agent-skill-picker__panel">
             <div class="agent-skill-picker__head">
               <div>
-                <p class="agent-panel__eyebrow">技能选择</p>
-                <h3>选择本轮要启用的技能</h3>
-                <small>可多选。默认不选时保持自动判断，点击已选技能可取消。</small>
+                <p class="agent-panel__eyebrow">会话附加信息</p>
+                <h3>配置本轮会话上下文</h3>
+                <small>这里集中配置 Skill、MCP、Embedding 和 RAG。未选择时保持自动或默认配置。</small>
               </div>
               <button
                 type="button"
                 class="agent-skill-picker__close"
-                aria-label="关闭技能选择"
+                aria-label="关闭会话附加信息"
                 @click="closeSkillPicker"
               >
                 ×
               </button>
             </div>
 
-            <div class="agent-skill-picker__list">
-              <button
-                type="button"
-                class="agent-skill-option"
-                :class="{ 'is-active': !selectedSkillIds.length }"
-                @click="selectAutoSkill"
-              >
-                <strong>自动选择</strong>
-              </button>
+            <div class="agent-session-extra">
+              <nav class="agent-session-extra__nav" aria-label="会话附加信息类型">
+                <button
+                  v-for="item in sessionExtraTabs"
+                  :key="item.id"
+                  type="button"
+                  class="agent-session-extra__nav-item"
+                  :class="{ 'is-active': activeSessionExtraTab === item.id }"
+                  @click="activeSessionExtraTab = item.id"
+                >
+                  <strong>{{ item.label }}</strong>
+                  <span>{{ item.summary }}</span>
+                </button>
+              </nav>
 
-              <button
-                v-for="item in skills"
-                :key="item.skillId"
-                type="button"
-                class="agent-skill-option"
-                :class="{ 'is-active': selectedSkillIds.includes(item.skillId) }"
-                @click="toggleSkillSelection(item.skillId)"
-              >
-                <strong>{{ item.name }}</strong>
-              </button>
+              <section class="agent-session-extra__content">
+                <div v-if="activeSessionExtraTab === 'skill'" class="agent-session-extra__section">
+                  <div class="agent-session-extra__section-head">
+                    <div>
+                      <p>Skill</p>
+                      <small>{{ selectedSkillLabel }}</small>
+                    </div>
+                    <span>{{ selectedSkillIds.length ? `${selectedSkillIds.length} 个` : '自动' }}</span>
+                  </div>
+
+                  <div class="agent-skill-picker__list">
+                    <button
+                      type="button"
+                      class="agent-skill-option"
+                      :class="{ 'is-active': !selectedSkillIds.length }"
+                      @click="selectAutoSkill"
+                    >
+                      <strong>自动选择</strong>
+                    </button>
+
+                    <button
+                      v-for="item in skills"
+                      :key="item.skillId"
+                      type="button"
+                      class="agent-skill-option"
+                      :class="{ 'is-active': selectedSkillIds.includes(item.skillId) }"
+                      @click="toggleSkillSelection(item.skillId)"
+                    >
+                      <strong>{{ item.name }}</strong>
+                    </button>
+                  </div>
+                </div>
+
+                <div v-else-if="activeSessionExtraTab === 'mcp'" class="agent-session-extra__section">
+                  <div class="agent-session-extra__section-head">
+                    <div>
+                      <p>MCP</p>
+                      <small>{{ selectedLarkChatLabel }}</small>
+                    </div>
+                    <button type="button" :disabled="isLoadingLarkChats" @click="$emit('refresh-lark-chats')">
+                      {{ isLoadingLarkChats ? '读取中' : '刷新' }}
+                    </button>
+                  </div>
+
+                  <select
+                    class="agent-session-extra__select"
+                    :value="selectedLarkChatId"
+                    :disabled="isLoadingLarkChats"
+                    @change="$emit('update:lark-chat-id', $event.target.value)"
+                  >
+                    <option value="">不指定群聊</option>
+                    <option
+                      v-for="item in larkChats"
+                      :key="item.chatId"
+                      :value="item.chatId"
+                    >
+                      {{ item.name }} - {{ item.chatId }}
+                    </option>
+                  </select>
+                  <small class="agent-session-extra__hint">{{ larkChatError || (larkChats.length ? `已读取 ${larkChats.length} 个飞书群聊` : '当前未读取到 MCP 群聊。') }}</small>
+                </div>
+
+                <div v-else-if="activeSessionExtraTab === 'embedding'" class="agent-session-extra__section">
+                  <div class="agent-session-extra__section-head">
+                    <div>
+                      <p>Embedding</p>
+                      <small>{{ selectedEmbeddingConfigLabel }}</small>
+                    </div>
+                    <span>{{ embeddingConfigs.length }} 个</span>
+                  </div>
+
+                  <select
+                    class="agent-session-extra__select"
+                    :value="selectedEmbeddingAiId"
+                    :disabled="isLoadingAiConfigs || !embeddingConfigs.length"
+                    @change="$emit('update:embedding-ai-id', $event.target.value)"
+                  >
+                    <option value="">使用数据库中的默认 embedding</option>
+                    <option
+                      v-for="item in embeddingConfigs"
+                      :key="item.aiId"
+                      :value="item.aiId"
+                    >
+                      {{ item.label }}
+                    </option>
+                  </select>
+                  <small class="agent-session-extra__hint">RAG 向量化会从数据库中读取 type=embedding 的配置，不再读取 .env 中的 embedding key。</small>
+                </div>
+
+                <div v-else class="agent-session-extra__section">
+                  <div class="agent-session-extra__section-head">
+                    <div>
+                      <p>RAG</p>
+                      <small>{{ selectedRagCollectionLabel }}</small>
+                    </div>
+                    <span>{{ ragCollections.length }} 个</span>
+                  </div>
+
+                  <select
+                    class="agent-session-extra__select"
+                    :value="selectedRagCollectionId"
+                    @change="handleRagCollectionChange"
+                  >
+                    <option value="">不使用知识库</option>
+                    <option
+                      v-for="item in ragCollections"
+                      :key="item.collectionId"
+                      :value="item.collectionId"
+                    >
+                      {{ item.name }}
+                    </option>
+                    <option
+                      v-if="selectedRagCollectionId && !ragCollections.some((item) => item.collectionId === selectedRagCollectionId)"
+                      :value="selectedRagCollectionId"
+                    >
+                      {{ selectedRagCollectionLabel }}
+                    </option>
+                  </select>
+                  <small class="agent-session-extra__hint">{{ ragCollectionError || '选中后，本轮对话会优先检索该知识库。' }}</small>
+                </div>
+              </section>
             </div>
           </section>
         </div>
@@ -562,35 +678,10 @@
             :disabled="isLoadingSkills"
             @click="openSkillPicker"
           >
-            <strong class="agent-info-card__value">当前技能</strong>
+            <span class="agent-info-card__label">会话附加信息</span>
+            <strong class="agent-info-card__value">{{ sessionExtraSummary }}</strong>
+            <small class="agent-info-card__meta">点击配置 Skill、MCP、Embedding 和 RAG</small>
           </button>
-
-          <article class="agent-info-card">
-            <span class="agent-info-card__label">当前知识库</span>
-            <select
-              class="agent-info-card__select"
-              :value="selectedRagCollectionId"
-              @change="handleRagCollectionChange"
-            >
-              <option value="">不使用知识库</option>
-              <option
-                v-for="item in ragCollections"
-                :key="item.collectionId"
-                :value="item.collectionId"
-              >
-                {{ item.name }}
-              </option>
-              <option
-                v-if="selectedRagCollectionId && !ragCollections.some((item) => item.collectionId === selectedRagCollectionId)"
-                :value="selectedRagCollectionId"
-              >
-                {{ selectedRagCollectionLabel }}
-              </option>
-            </select>
-            <small class="agent-info-card__meta">
-              {{ ragCollectionError || selectedRagCollectionLabel }}
-            </small>
-          </article>
 
           <article class="agent-info-card agent-info-card--files">
             <span class="agent-info-card__label">会话文件</span>
@@ -710,6 +801,7 @@ const props = defineProps({
   activeWorkspaceFiles: { type: Array, default: () => [] },
   activeWorkspaceFolder: { type: String, default: '' },
   aiConfigs: { type: Array, default: () => [] },
+  embeddingConfigs: { type: Array, default: () => [] },
   canSend: { type: Boolean, default: false },
   chatError: { type: String, default: '' },
   draft: { type: String, default: '' },
@@ -740,6 +832,7 @@ const props = defineProps({
   selectedLarkChatLabel: { type: String, default: '不指定群聊' },
   selectedRagCollectionId: { type: String, default: '' },
   selectedRagCollectionLabel: { type: String, default: '不使用知识库' },
+  selectedEmbeddingAiId: { type: String, default: '' },
   ragCollections: { type: Array, default: () => [] },
   ragCollectionError: { type: String, default: '' },
   selectedSkillIds: { type: Array, default: () => [] },
@@ -778,6 +871,7 @@ const emit = defineEmits([
   'update:lark-chat-id',
   'update:model',
   'update:rag-collection-id',
+  'update:embedding-ai-id',
   'update:skill-ids'
 ])
 
@@ -793,6 +887,7 @@ const previewWidth = ref(520)
 const isInspectorCollapsed = ref(false)
 const isSkillPickerOpen = ref(false)
 const isResizingPreview = ref(false)
+const activeSessionExtraTab = ref('skill')
 const suppressAutoOpen = ref(false)
 const hasInitializedWorkspaceFilesForSession = ref(false)
 const renderedWorkspaceFileContent = ref('')
@@ -1000,6 +1095,71 @@ const resolvedWorkspaceMode = computed(() => {
     hint: hint || '当前以普通对话方式处理请求。'
   }
 })
+
+const selectedEmbeddingConfig = computed(() => {
+  const configId = String(props.selectedEmbeddingAiId || '').trim()
+
+  if (!configId) {
+    return null
+  }
+
+  return props.embeddingConfigs.find((item) => item.aiId === configId) || null
+})
+
+const selectedEmbeddingConfigLabel = computed(() => (
+  selectedEmbeddingConfig.value?.label || '使用服务器默认 embedding'
+))
+
+const sessionExtraSummary = computed(() => {
+  const parts = []
+
+  if (Array.isArray(props.selectedSkillIds) && props.selectedSkillIds.length) {
+    parts.push(`Skill ${props.selectedSkillIds.length}`)
+  }
+
+  if (String(props.selectedLarkChatId || '').trim()) {
+    parts.push('MCP')
+  }
+
+  if (String(props.selectedEmbeddingAiId || '').trim()) {
+    parts.push('Embedding')
+  }
+
+  if (String(props.selectedRagCollectionId || '').trim()) {
+    parts.push('RAG')
+  }
+
+  return parts.length ? parts.join(' · ') : '自动选择'
+})
+
+const sessionExtraTabs = computed(() => [
+  {
+    id: 'skill',
+    label: 'Skill',
+    summary: Array.isArray(props.selectedSkillIds) && props.selectedSkillIds.length
+      ? `${props.selectedSkillIds.length} 个技能`
+      : '自动选择'
+  },
+  {
+    id: 'mcp',
+    label: 'MCP',
+    summary: String(props.selectedLarkChatId || '').trim()
+      ? props.selectedLarkChatLabel
+      : '未指定'
+  },
+  {
+    id: 'embedding',
+    label: 'Embedding',
+    summary: selectedEmbeddingConfigLabel.value
+  },
+  {
+    id: 'rag',
+    label: 'RAG',
+    summary: String(props.selectedRagCollectionId || '').trim()
+      ? props.selectedRagCollectionLabel
+      : '不使用'
+  }
+])
 
 const resolvedWorkspaceFolder = computed(() => {
   const folder = String(props.activeWorkspaceFolder || '').trim()
@@ -2080,6 +2240,19 @@ watch(
 )
 
 watch(
+  () => props.embeddingConfigs,
+  (items) => {
+    if (
+      props.selectedEmbeddingAiId
+      && !items.some((item) => item.aiId === props.selectedEmbeddingAiId)
+    ) {
+      emit('update:embedding-ai-id', '')
+    }
+  },
+  { deep: true }
+)
+
+watch(
   [normalizedWorkspaceFileContent, selectedWorkspaceLanguage, hasWorkspaceFilePreview],
   async () => {
     await nextTick()
@@ -2229,11 +2402,13 @@ onBeforeUnmount(() => {
 .agent-info-card--skill-launcher {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  flex-direction: column;
+  gap: 8px;
   width: 100%;
   border: 1px solid var(--agent-border);
-  min-height: 74px;
-  text-align: center;
+  min-height: 116px;
+  text-align: left;
   cursor: pointer;
   transition:
     background-color 0.18s ease,
@@ -2257,7 +2432,7 @@ onBeforeUnmount(() => {
 .agent-info-card--skill-launcher .agent-info-card__value {
   margin: 0;
   line-height: 1.2;
-  text-align: center;
+  text-align: left;
 }
 
 .agent-skill-picker {
@@ -2273,7 +2448,7 @@ onBeforeUnmount(() => {
 }
 
 .agent-skill-picker__panel {
-  width: min(720px, calc(100% - 40px));
+  width: min(860px, calc(100% - 40px));
   max-height: min(720px, calc(100% - 48px));
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -2283,6 +2458,154 @@ onBeforeUnmount(() => {
   border-radius: 28px;
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 24px 64px rgba(15, 23, 42, 0.14);
+}
+
+.agent-session-extra {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--agent-border);
+  border-radius: 22px;
+  background: #ffffff;
+}
+
+.agent-session-extra__nav {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 12px;
+  overflow: auto;
+  border-right: 1px solid var(--agent-border);
+  background: #f8fafc;
+}
+
+.agent-session-extra__nav-item {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--agent-text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.agent-session-extra__nav-item:hover {
+  background: #ffffff;
+  border-color: #e5eaf4;
+}
+
+.agent-session-extra__nav-item.is-active {
+  background: #111111;
+  border-color: #111111;
+  color: #ffffff;
+}
+
+.agent-session-extra__nav-item strong,
+.agent-session-extra__nav-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-session-extra__nav-item strong {
+  font-size: 0.9rem;
+  font-weight: 850;
+}
+
+.agent-session-extra__nav-item span {
+  color: currentColor;
+  opacity: 0.72;
+  font-size: 0.76rem;
+}
+
+.agent-session-extra__content {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.agent-session-extra__section {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.agent-session-extra__section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-session-extra__section-head p,
+.agent-session-extra__section-head small {
+  margin: 0;
+}
+
+.agent-session-extra__section-head p {
+  color: var(--agent-text);
+  font-size: 0.94rem;
+  font-weight: 850;
+}
+
+.agent-session-extra__section-head small,
+.agent-session-extra__hint {
+  color: var(--agent-subtle);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.agent-session-extra__section-head > span,
+.agent-session-extra__section-head > button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid #e4e8ef;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #3f4654;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.agent-session-extra__section-head > button {
+  cursor: pointer;
+}
+
+.agent-session-extra__section-head > button:hover:not(:disabled) {
+  background: #eef3ff;
+  border-color: #d4defc;
+  color: #264db7;
+}
+
+.agent-session-extra__select {
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--agent-border-strong);
+  border-radius: 12px;
+  background: #fbfbfc;
+  color: var(--agent-text);
+  font: inherit;
+  outline: none;
+}
+
+.agent-session-extra__select:focus {
+  border-color: #9bb4ff;
+  box-shadow: 0 0 0 4px rgba(155, 180, 255, 0.18);
 }
 
 .agent-skill-picker__head {

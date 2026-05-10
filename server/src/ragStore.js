@@ -164,7 +164,8 @@ function splitTextIntoChunks(content, {
 }
 
 export function createRagStore(ragConfig = {}, {
-  embeddingProvider = null
+  embeddingProvider = null,
+  resolveEmbeddingProvider = null
 } = {}) {
   const enabled = Boolean(ragConfig.enabled)
   const databaseUrl = normalizeTrimmedString(ragConfig.databaseUrl)
@@ -177,8 +178,18 @@ export function createRagStore(ragConfig = {}, {
   let initializePromise = null
   let lastError = ''
 
-  function getEmbeddingStatus() {
-    if (!embeddingProvider || typeof embeddingProvider.getStatus !== 'function') {
+  async function getActiveEmbeddingProvider(embeddingAiId = '') {
+    if (typeof resolveEmbeddingProvider === 'function') {
+      return await resolveEmbeddingProvider(normalizeTrimmedString(embeddingAiId))
+    }
+
+    return embeddingProvider
+  }
+
+  async function getEmbeddingStatus(embeddingAiId = '') {
+    const activeEmbeddingProvider = await getActiveEmbeddingProvider(embeddingAiId)
+
+    if (!activeEmbeddingProvider || typeof activeEmbeddingProvider.getStatus !== 'function') {
       return {
         enabled: false,
         model: '',
@@ -186,21 +197,23 @@ export function createRagStore(ragConfig = {}, {
       }
     }
 
-    return embeddingProvider.getStatus()
+    return activeEmbeddingProvider.getStatus()
   }
 
-  async function embedChunkContent(content) {
-    if (!embeddingProvider || typeof embeddingProvider.embedText !== 'function') {
+  async function embedChunkContent(content, { embeddingAiId = '' } = {}) {
+    const activeEmbeddingProvider = await getActiveEmbeddingProvider(embeddingAiId)
+
+    if (!activeEmbeddingProvider || typeof activeEmbeddingProvider.embedText !== 'function') {
       return null
     }
 
-    const status = getEmbeddingStatus()
+    const status = await getEmbeddingStatus(embeddingAiId)
 
     if (!status.enabled) {
       return null
     }
 
-    return formatVectorLiteral(await embeddingProvider.embedText(content))
+    return formatVectorLiteral(await activeEmbeddingProvider.embedText(content))
   }
 
   function ensurePool() {
@@ -287,7 +300,7 @@ export function createRagStore(ragConfig = {}, {
 
         initialized = true
         lastError = ''
-        return getStatus()
+        return await getStatus()
       } catch (error) {
         await client.query('ROLLBACK').catch(() => {})
         lastError = error instanceof Error ? error.message : String(error || '')
@@ -349,7 +362,7 @@ export function createRagStore(ragConfig = {}, {
         documentCount,
         chunkCount,
         embeddedChunkCount,
-        embedding: getEmbeddingStatus(),
+        embedding: await getEmbeddingStatus(),
         error: lastError
       }
     } catch (error) {
@@ -362,7 +375,7 @@ export function createRagStore(ragConfig = {}, {
         maxSearchResults,
         chunkMaxChars,
         chunkOverlapChars,
-        embedding: getEmbeddingStatus(),
+        embedding: await getEmbeddingStatus(),
         error: lastError
       }
     }
@@ -504,7 +517,7 @@ export function createRagStore(ragConfig = {}, {
     }))
   }
 
-  async function replaceDocumentChunks(documentId, chunks) {
+  async function replaceDocumentChunks(documentId, chunks, { embeddingAiId = '' } = {}) {
     await initialize()
 
     const normalizedDocumentId = normalizeTrimmedString(documentId)
@@ -523,7 +536,7 @@ export function createRagStore(ragConfig = {}, {
       await client.query('DELETE FROM rag_chunks WHERE document_id = $1', [normalizedDocumentId])
 
       for (const [index, content] of normalizedChunks.entries()) {
-        const embedding = await embedChunkContent(content)
+        const embedding = await embedChunkContent(content, { embeddingAiId })
         await client.query(
           `
             INSERT INTO rag_chunks (chunk_id, document_id, chunk_index, content, embedding, metadata, updated_at)
@@ -537,7 +550,8 @@ export function createRagStore(ragConfig = {}, {
             embedding,
             JSON.stringify({
               charLength: content.length,
-              embedded: Boolean(embedding)
+              embedded: Boolean(embedding),
+              embeddingAiId: normalizeTrimmedString(embeddingAiId)
             })
           ]
         )
@@ -565,7 +579,8 @@ export function createRagStore(ragConfig = {}, {
     content = '',
     sourceType = 'manual',
     sourcePath = '',
-    metadata = {}
+    metadata = {},
+    embeddingAiId = ''
   } = {}) {
     const normalizedContent = String(content || '').trim()
 
@@ -581,14 +596,15 @@ export function createRagStore(ragConfig = {}, {
       sourcePath,
       metadata: {
         ...normalizeMetadata(metadata),
-        contentLength: normalizedContent.length
+        contentLength: normalizedContent.length,
+        embeddingAiId: normalizeTrimmedString(embeddingAiId)
       }
     })
     const chunks = splitTextIntoChunks(normalizedContent, {
       maxChars: chunkMaxChars,
       overlapChars: chunkOverlapChars
     })
-    const chunkResult = await replaceDocumentChunks(document.documentId, chunks)
+    const chunkResult = await replaceDocumentChunks(document.documentId, chunks, { embeddingAiId })
 
     return {
       ...document,
@@ -635,7 +651,7 @@ export function createRagStore(ragConfig = {}, {
     }))
   }
 
-  async function search({ query = '', collectionId = '', limit = maxSearchResults } = {}) {
+  async function search({ query = '', collectionId = '', limit = maxSearchResults, embeddingAiId = '' } = {}) {
     await initialize()
 
     const normalizedQuery = normalizeTrimmedString(query)
@@ -648,7 +664,7 @@ export function createRagStore(ragConfig = {}, {
     }
 
     try {
-      queryEmbedding = await embedChunkContent(normalizedQuery)
+      queryEmbedding = await embedChunkContent(normalizedQuery, { embeddingAiId })
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error || '')
     }
@@ -731,10 +747,10 @@ export function createRagStore(ragConfig = {}, {
     }))
   }
 
-  async function rebuildEmbeddings({ collectionId = '', limit = 500 } = {}) {
+  async function rebuildEmbeddings({ collectionId = '', limit = 500, embeddingAiId = '' } = {}) {
     await initialize()
 
-    const status = getEmbeddingStatus()
+    const status = await getEmbeddingStatus(embeddingAiId)
 
     if (!status.enabled) {
       throw new Error('RAG embedding model is not configured.')
@@ -761,7 +777,7 @@ export function createRagStore(ragConfig = {}, {
     let updatedCount = 0
 
     for (const row of result.rows) {
-      const embedding = await embedChunkContent(row.content)
+      const embedding = await embedChunkContent(row.content, { embeddingAiId })
 
       if (!embedding) {
         continue

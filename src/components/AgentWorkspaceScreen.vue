@@ -186,6 +186,7 @@
           :active-workspace-files="activeWorkspaceFiles"
           :active-workspace-folder="activeWorkspaceFolder"
           :ai-configs="aiConfigs"
+          :embedding-configs="embeddingConfigs"
           :can-send="canSend"
           :chat-error="chatError"
           :draft="draft"
@@ -214,6 +215,7 @@
           :selected-lark-chat-label="selectedLarkChatLabel"
           :selected-rag-collection-id="selectedRagCollectionId"
           :selected-rag-collection-label="selectedRagCollectionLabel"
+          :selected-embedding-ai-id="selectedEmbeddingAiId"
           :selected-skill-ids="selectedSkillIds"
           :selected-skill-label="selectedSkillLabel"
           :rag-collections="ragCollections"
@@ -244,6 +246,7 @@
           @update:lark-chat-id="setSelectedLarkChatId"
           @update:model="setSelectedModel"
           @update:rag-collection-id="setSelectedRagCollectionId"
+          @update:embedding-ai-id="setSelectedEmbeddingAiId"
           @update:skill-ids="setSelectedSkillIds"
         />
       </section>
@@ -317,6 +320,7 @@ const {
   activeWorkspaceFolder,
   addEphemeralAttachments,
   aiConfigs,
+  embeddingConfigs,
   skills,
   cancelActiveTask,
   canSend,
@@ -359,6 +363,7 @@ const {
   selectedLarkChatLabel,
   selectedRagCollectionId,
   selectedRagCollectionLabel,
+  selectedEmbeddingAiId,
   selectedSkillIds,
   selectedSkillLabel,
   selectedWorkspaceFileContent,
@@ -371,6 +376,7 @@ const {
   setSelectedAiId,
   setSelectedLarkChatId,
   setSelectedRagCollectionId,
+  setSelectedEmbeddingAiId,
   setSelectedSkillIds,
   setSelectedModel,
   workspaceFileError,
