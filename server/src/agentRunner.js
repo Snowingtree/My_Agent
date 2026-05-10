@@ -546,6 +546,27 @@ function serializeJson(value, maxChars = 12000) {
     : serialized
 }
 
+function normalizeThoughtSummary(value) {
+  return truncateText(normalizeTrimmedString(value), 220)
+}
+
+function getDecisionThoughtSummary(decisionJson) {
+  return normalizeThoughtSummary(decisionJson?.thought_summary || decisionJson?.thoughtSummary || '')
+}
+
+function getDecisionProgressSummary(decisionJson) {
+  return normalizeTrimmedString(decisionJson?.summary) || getDecisionThoughtSummary(decisionJson)
+}
+
+function createReactObservation(toolExecution) {
+  return {
+    status: toolExecution.status || 'success',
+    summary: toolExecution.summary || '',
+    durationMs: Number.isFinite(toolExecution.durationMs) ? toolExecution.durationMs : undefined,
+    result: toolExecution.result
+  }
+}
+
 function buildAgentLoopMessages({
   latestGoal,
   conversationHistory,
@@ -565,6 +586,10 @@ function buildAgentLoopMessages({
     'The user may ask for coding work, workspace investigation, product discussion, brainstorming, or ordinary conversation.',
     'Return strict JSON only.',
     'Do not expose hidden chain-of-thought.',
+    'Use structured ReAct, not plain-text ReAct.',
+    'Do not emit plain-text "Thought:", "Action:", or "Observation:" sections.',
+    'Each turn must include a brief "thought_summary" that explains the next action at a safe, user-visible level.',
+    'Never output private reasoning, hidden chain-of-thought, or step-by-step internal deliberation.',
     'Use the same language as the user.',
     'For ordinary conversation, answer naturally and directly instead of refusing unnecessarily.',
     'You may decide one of three actions on each turn:',
@@ -595,6 +620,7 @@ function buildAgentLoopMessages({
     toolPromptText,
     'JSON schema:',
     '{',
+    '  "thought_summary": "brief safe ReAct thought summary; no hidden reasoning",',
     '  "action": "tool" | "final" | "ask_user",',
     '  "summary": "short public progress update",',
     '  "reply": "required for final or ask_user, otherwise empty",',
@@ -662,6 +688,7 @@ function buildForcedFinalMessages({
     'The user may be asking for a normal conversational reply or a task result.',
     'Return strict JSON only.',
     'Do not expose hidden chain-of-thought.',
+    'Use structured ReAct finalization: include only a brief safe thought_summary if useful, never private reasoning.',
     'Use the same language as the user.',
     'For ordinary conversation, answer naturally and directly instead of refusing unnecessarily.',
     'You must now finish without calling more tools.',
@@ -686,6 +713,7 @@ function buildForcedFinalMessages({
       : []),
     'JSON schema:',
     '{',
+    '  "thought_summary": "optional brief safe completion rationale; no hidden reasoning",',
     '  "summary": "short public completion update",',
     '  "reply": "the final user-facing answer"',
     '}'
@@ -744,21 +772,28 @@ function normalizeToolRequest(rawTool) {
   return { name, args }
 }
 
-function createToolTranscriptMessages(toolExecution) {
+function createToolTranscriptMessages(toolExecution, {
+  thoughtSummary = ''
+} = {}) {
   return [
     {
       role: 'assistant',
-      content: `Tool call:\n${serializeJson({
-        name: toolExecution.tool,
-        args: toolExecution.args
-      })}`
+      content: serializeJson({
+        type: 'react_decision',
+        thought_summary: normalizeThoughtSummary(thoughtSummary),
+        action: {
+          type: 'tool',
+          tool: toolExecution.tool,
+          args: toolExecution.args
+        }
+      })
     },
     {
       role: 'user',
-      content: `Tool result:\n${serializeJson({
-        summary: toolExecution.summary,
-        result: toolExecution.result
-      })}`
+      content: serializeJson({
+        type: 'react_observation',
+        observation: createReactObservation(toolExecution)
+      })
     }
   ]
 }
@@ -1396,6 +1431,7 @@ export function createAgentRunner({
 
     async function executeToolRequest(toolRequest, {
       summary = '',
+      thoughtSummary = '',
       stepTitle = ''
     } = {}) {
       throwIfCancelled()
@@ -1511,7 +1547,7 @@ export function createAgentRunner({
       throwIfCancelled()
       throwIfTaskTimedOut()
       taskSteps[taskSteps.length - 1] = completeStep(toolStep, toolExecution.summary)
-      toolMessages.push(...createToolTranscriptMessages(toolExecution))
+      toolMessages.push(...createToolTranscriptMessages(toolExecution, { thoughtSummary }))
       publishTaskProgress(sessionId, toolExecution.summary, selectedModel)
 
       await sessionRepository.appendToolMessage(sessionId, {
@@ -1715,7 +1751,8 @@ export function createAgentRunner({
         throwIfTaskTimedOut()
 
         const action = normalizeAction(decision.json?.action)
-        const decisionSummary = normalizeTrimmedString(decision.json?.summary)
+        const thoughtSummary = getDecisionThoughtSummary(decision.json)
+        const decisionSummary = getDecisionProgressSummary(decision.json)
 
         if (action === 'tool') {
           taskSteps[0] = completeStep(
@@ -1724,7 +1761,8 @@ export function createAgentRunner({
           )
 
           const result = await executeToolRequest(decision.json?.tool, {
-            summary: decisionSummary || `正在执行工具 ${normalizeTrimmedString(decision.json?.tool?.name) || ''}。`
+            summary: decisionSummary || `正在执行工具 ${normalizeTrimmedString(decision.json?.tool?.name) || ''}。`,
+            thoughtSummary
           })
 
           if (!result.ok) {
@@ -1960,7 +1998,7 @@ export function createAgentRunner({
           })
 
           const recoveredReply = normalizeTrimmedString(recoveryFinal.json?.reply)
-          const recoveredSummary = normalizeTrimmedString(recoveryFinal.json?.summary) || '已基于最新工作区结果完成答复。'
+          const recoveredSummary = getDecisionProgressSummary(recoveryFinal.json) || '已基于最新工作区结果完成答复。'
           const refreshedSteps = finalizeRunningSteps(taskSteps, recoveredSummary)
           refreshedSteps.push(createFinalReplyStep(recoveredSummary))
 
@@ -2010,7 +2048,7 @@ export function createAgentRunner({
         throw new Error('Model reached the tool iteration limit without producing a final answer.')
       }
 
-      const completionSummary = normalizeTrimmedString(forcedFinal.json?.summary) || '已基于已收集的信息完成答复。'
+      const completionSummary = getDecisionProgressSummary(forcedFinal.json) || '已基于已收集的信息完成答复。'
       if (
         executionState.modifiedWorkspace
         && requiredCompanionExtensions.length
