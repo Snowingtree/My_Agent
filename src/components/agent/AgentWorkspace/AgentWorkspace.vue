@@ -2552,6 +2552,30 @@ onBeforeUnmount(() => {
   transform: translate(-50%, -8px) scale(0.96);
 }
 
+@keyframes agent-nav-active-pop {
+  0% {
+    opacity: 0.72;
+    transform: translateX(-6px) scale(0.985);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes agent-panel-switch-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .agent-shell.is-resizing-preview {
   transition: none;
 }
@@ -2725,6 +2749,8 @@ onBeforeUnmount(() => {
 }
 
 .agent-session-extra__nav-item {
+  position: relative;
+  overflow: hidden;
   width: 100%;
   min-width: 0;
   display: grid;
@@ -2737,18 +2763,26 @@ onBeforeUnmount(() => {
   text-align: left;
   cursor: pointer;
   font: inherit;
-  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  transition:
+    background-color 0.24s ease,
+    border-color 0.24s ease,
+    color 0.24s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.24s ease;
 }
 
 .agent-session-extra__nav-item:hover {
   background: #ffffff;
   border-color: #e5eaf4;
+  transform: translateX(2px);
 }
 
 .agent-session-extra__nav-item.is-active {
   background: #111111;
   border-color: #111111;
   color: #ffffff;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.16);
+  animation: agent-nav-active-pop 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .agent-session-extra__nav-item strong,
@@ -2782,6 +2816,7 @@ onBeforeUnmount(() => {
   display: grid;
   align-content: start;
   gap: 18px;
+  animation: agent-panel-switch-in 0.32s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .agent-session-extra__section-head {
@@ -3298,6 +3333,8 @@ onBeforeUnmount(() => {
 }
 
 .agent-session-item {
+  position: relative;
+  overflow: hidden;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
   gap: 0;
@@ -3306,10 +3343,15 @@ onBeforeUnmount(() => {
   padding: 0;
   border-radius: 10px;
   background: transparent;
+  transition:
+    background-color 0.24s ease,
+    box-shadow 0.24s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .agent-session-item.is-active {
   background: #e7e7e7;
+  animation: agent-nav-active-pop 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .agent-session-item__main {
@@ -3324,6 +3366,7 @@ onBeforeUnmount(() => {
 
 .agent-session-item__main:hover {
   background: #eeeeee;
+  transform: translateX(2px);
 }
 
 .agent-session-item__title {

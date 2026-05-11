@@ -542,6 +542,7 @@ watch(
 
 .model-config-section {
   min-height: 0;
+  animation: settings-section-switch-in 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .model-config-section:last-child {
@@ -736,6 +737,18 @@ watch(
 @media (max-width: 820px) {
   .config-grid--ai {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@keyframes settings-section-switch-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

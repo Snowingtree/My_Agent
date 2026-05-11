@@ -555,6 +555,8 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   let taskPollTimer = null
   let sessionLoadToken = 0
+  let sessionDetailAbortController = null
+  let sessionStreamStartTimer = null
   let sessionStreamAbortController = null
 
   function persistActiveSessionId() {
@@ -743,13 +745,40 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     taskPollTimer = null
   }
 
+  function stopSessionDetailRequest() {
+    if (sessionDetailAbortController) {
+      sessionDetailAbortController.abort()
+      sessionDetailAbortController = null
+    }
+  }
+
   function stopSessionStream() {
+    if (typeof window !== 'undefined' && sessionStreamStartTimer !== null) {
+      window.clearTimeout(sessionStreamStartTimer)
+      sessionStreamStartTimer = null
+    }
+
     if (sessionStreamAbortController) {
       sessionStreamAbortController.abort()
       sessionStreamAbortController = null
     }
 
     isSessionStreamConnected.value = false
+  }
+
+  function scheduleSessionStream(sessionId) {
+    stopSessionStream()
+
+    const normalizedSessionId = String(sessionId || '').trim()
+
+    if (!normalizedSessionId || typeof window === 'undefined') {
+      return
+    }
+
+    sessionStreamStartTimer = window.setTimeout(() => {
+      sessionStreamStartTimer = null
+      void startSessionStream(normalizedSessionId)
+    }, 180)
   }
 
   function upsertSessionSummary(item) {
@@ -1347,10 +1376,14 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   ) {
     const normalizedSessionId = String(sessionId || '').trim()
     const requestToken = ++sessionLoadToken
+    stopSessionDetailRequest()
+    const detailController = typeof AbortController !== 'undefined' ? new AbortController() : null
+    sessionDetailAbortController = detailController
 
     if (!normalizedSessionId) {
       stopTaskPolling()
       stopSessionStream()
+      stopSessionDetailRequest()
       activeSession.value = null
       activeSessionId.value = ''
       persistActiveSessionId()
@@ -1371,7 +1404,9 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     }
 
     try {
-      const data = await http.get(`/api/agent/sessions/${normalizedSessionId}`)
+      const data = await http.get(`/api/agent/sessions/${normalizedSessionId}`, {
+        signal: detailController?.signal
+      })
 
       if (requestToken !== sessionLoadToken) {
         return
@@ -1383,10 +1418,22 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         upsertSessionSummary(activeSession.value)
       }
     } catch (error) {
+      if (detailController?.signal.aborted) {
+        return
+      }
+
       if (!preserveChatError || !chatError.value) {
         chatError.value = normalizeErrorMessage(error, '读取会话详情失败。')
       }
     } finally {
+      if (sessionDetailAbortController === detailController) {
+        sessionDetailAbortController = null
+      }
+
+      if (requestToken !== sessionLoadToken) {
+        return
+      }
+
       if (!silent) {
         isLoadingSession.value = false
       }
@@ -1885,7 +1932,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         return
       }
 
-      void startSessionStream(nextSessionId)
+      scheduleSessionStream(nextSessionId)
     },
     { immediate: true }
   )
@@ -1908,6 +1955,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
   onUnmounted(() => {
     stopTaskPolling()
+    stopSessionDetailRequest()
     stopSessionStream()
     resetTaskProgressMessage()
     resetCurrentToolMessage()
