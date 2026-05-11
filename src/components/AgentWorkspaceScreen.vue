@@ -219,6 +219,7 @@
           :selected-lark-chat-id="selectedLarkChatId"
           :selected-lark-chat-label="selectedLarkChatLabel"
           :selected-rag-collection-id="selectedRagCollectionId"
+          :selected-rag-collection-ids="selectedRagCollectionIds"
           :selected-rag-collection-label="selectedRagCollectionLabel"
           :selected-embedding-ai-id="selectedEmbeddingAiId"
           :selected-skill-ids="selectedSkillIds"
@@ -253,6 +254,7 @@
           @update:mcp-server-ids="setSelectedMcpServerIds"
           @update:model="setSelectedModel"
           @update:rag-collection-id="setSelectedRagCollectionId"
+          @update:rag-collection-ids="setSelectedRagCollectionIds"
           @update:embedding-ai-id="setSelectedEmbeddingAiId"
           @update:skill-ids="setSelectedSkillIds"
         />
@@ -375,6 +377,7 @@ const {
   selectedLarkChatId,
   selectedLarkChatLabel,
   selectedRagCollectionId,
+  selectedRagCollectionIds,
   selectedRagCollectionLabel,
   selectedEmbeddingAiId,
   selectedSkillIds,
@@ -390,6 +393,7 @@ const {
   setSelectedLarkChatId,
   setSelectedMcpServerIds,
   setSelectedRagCollectionId,
+  setSelectedRagCollectionIds,
   setSelectedEmbeddingAiId,
   setSelectedSkillIds,
   setSelectedModel,

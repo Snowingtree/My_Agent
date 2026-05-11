@@ -1150,25 +1150,31 @@ function buildVerificationSummary(commandSpec) {
   return `正在验证刚才的文件修改：${commandLine}`
 }
 
-function buildRagContextText({ collectionId = '', items = [] } = {}) {
-  const normalizedCollectionId = normalizeTrimmedString(collectionId)
+function buildRagContextText({ collectionId = '', collectionIds = [], items = [] } = {}) {
+  const normalizedCollectionIds = [...new Set(
+    (Array.isArray(collectionIds) && collectionIds.length ? collectionIds : [collectionId])
+      .map((item) => normalizeTrimmedString(item))
+      .filter(Boolean)
+  )]
   const normalizedItems = Array.isArray(items) ? items : []
 
-  if (!normalizedCollectionId) {
+  if (!normalizedCollectionIds.length) {
     return ''
   }
 
+  const collectionLabel = normalizedCollectionIds.join(', ')
+
   if (!normalizedItems.length) {
     return [
-      `Selected knowledge base collection: ${normalizedCollectionId}`,
-      'The selected knowledge base was searched, but no relevant snippets were found.',
+      `Selected knowledge base collections: ${collectionLabel}`,
+      'The selected knowledge base collections were searched, but no relevant snippets were found.',
       'Do not silently switch to unrelated external tools such as chat history unless the user explicitly asks for that source.',
-      'Tell the user that the selected knowledge base did not contain matching information.'
+      'Tell the user that the selected knowledge base collections did not contain matching information.'
     ].join('\n')
   }
 
   return [
-    `Selected knowledge base collection: ${normalizedCollectionId}`,
+    `Selected knowledge base collections: ${collectionLabel}`,
     'Use the following retrieved knowledge snippets when they are relevant to the user request.',
     'Prioritize these knowledge snippets over unrelated external tools or chat history.',
     'Do not call chat/message-history tools for this question unless the user explicitly asks to search chat history.',
@@ -1178,6 +1184,7 @@ function buildRagContextText({ collectionId = '', items = [] } = {}) {
       `Snippet ${index + 1}:`,
       `Title: ${normalizeTrimmedString(item?.title) || 'Untitled'}`,
       `Document ID: ${normalizeTrimmedString(item?.documentId)}`,
+      `Collection ID: ${normalizeTrimmedString(item?.collectionId) || 'unknown'}`,
       `Source: ${normalizeTrimmedString(item?.sourcePath || item?.sourceType) || 'knowledge_base'}`,
       `Score: ${Number.isFinite(Number(item?.score)) ? Number(item.score).toFixed(4) : 'n/a'}`,
       'Content:',
@@ -1362,6 +1369,7 @@ export function createAgentRunner({
     requestedMcpToolPrefixes = [],
     requestedAttachments = [],
     requestedRagCollectionId = '',
+    requestedRagCollectionIds = [],
     requestedEmbeddingAiId = '',
     abortSignal
   }) {
@@ -1453,19 +1461,28 @@ export function createAgentRunner({
     const currentDateContextText = buildCurrentDateContext(runtimeConfig?.timezone)
     const attachmentContextText = buildAttachmentContextText(requestedAttachments)
     let ragContextText = ''
-    const normalizedRagCollectionId = normalizeTrimmedString(requestedRagCollectionId)
+    const normalizedRagCollectionIds = [...new Set(
+      (Array.isArray(requestedRagCollectionIds) && requestedRagCollectionIds.length
+        ? requestedRagCollectionIds
+        : [requestedRagCollectionId])
+        .map((item) => normalizeTrimmedString(item))
+        .filter(Boolean)
+    )]
     const normalizedEmbeddingAiId = normalizeTrimmedString(requestedEmbeddingAiId)
 
-    if (normalizedRagCollectionId && ragStore && typeof ragStore.search === 'function') {
+    if (normalizedRagCollectionIds.length && ragStore && typeof ragStore.search === 'function') {
       try {
         publishTaskProgress(sessionId, '正在检索当前知识库...', selectedModel)
-        const ragItems = await ragStore.search({
-          query: latestGoal,
-          collectionId: normalizedRagCollectionId,
-          embeddingAiId: normalizedEmbeddingAiId
-        })
+        const ragItemGroups = await Promise.all(
+          normalizedRagCollectionIds.map((collectionId) => ragStore.search({
+            query: latestGoal,
+            collectionId,
+            embeddingAiId: normalizedEmbeddingAiId
+          }))
+        )
+        const ragItems = ragItemGroups.flat()
         ragContextText = buildRagContextText({
-          collectionId: normalizedRagCollectionId,
+          collectionIds: normalizedRagCollectionIds,
           items: ragItems
         })
         publishTaskProgress(sessionId, `知识库检索完成，命中 ${ragItems.length} 条内容。`, selectedModel)

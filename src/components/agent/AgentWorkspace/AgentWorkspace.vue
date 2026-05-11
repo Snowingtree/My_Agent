@@ -111,6 +111,12 @@
     </aside>
 
     <section class="agent-shell__main">
+      <Transition name="agent-copy-toast">
+        <div v-if="conversationCopyToast" class="agent-copy-toast" role="status" aria-live="polite">
+          复制成功
+        </div>
+      </Transition>
+
       <header class="agent-mainbar">
         <div class="agent-mainbar__copy">
           <div class="agent-mainbar__status">
@@ -298,6 +304,21 @@
                 v-html="renderMessageMarkdown(item.content, item.role)"
               ></div>
               <p v-else>{{ formatMessageContentForDisplay(item.content, item.role) }}</p>
+            </div>
+            <div v-if="isCopyableConversationMessage(item)" class="agent-message__actions">
+              <button
+                type="button"
+                class="agent-message__copy"
+                :disabled="copyingMessageId === item.messageId"
+                aria-label="复制消息"
+                title="复制"
+                @click="copyConversationMessage(item)"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="8" y="8" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.8" />
+                  <path d="M5 15V7a2 2 0 0 1 2-2h8" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8" />
+                </svg>
+              </button>
             </div>
           </article>
 
@@ -506,22 +527,30 @@
                     <span>{{ embeddingConfigs.length }} 个</span>
                   </div>
 
-                  <select
-                    class="agent-session-extra__select"
-                    :value="selectedEmbeddingAiId"
-                    :disabled="isLoadingAiConfigs || !embeddingConfigs.length"
-                    @change="$emit('update:embedding-ai-id', $event.target.value)"
-                  >
-                    <option value="">使用数据库中的默认 embedding</option>
-                    <option
+                  <div class="agent-skill-picker__list">
+                    <button
+                      type="button"
+                      class="agent-skill-option"
+                      :class="{ 'is-active': !selectedEmbeddingAiId }"
+                      @click="selectDefaultEmbedding"
+                    >
+                      <strong>默认 embedding</strong>
+                      <small>使用服务器默认配置</small>
+                    </button>
+
+                    <button
                       v-for="item in embeddingConfigs"
                       :key="item.aiId"
-                      :value="item.aiId"
+                      type="button"
+                      class="agent-skill-option"
+                      :class="{ 'is-active': selectedEmbeddingAiId === item.aiId }"
+                      @click="selectEmbeddingConfig(item.aiId)"
                     >
-                      {{ item.label }}
-                    </option>
-                  </select>
-                  <small class="agent-session-extra__hint">RAG 向量化会从数据库中读取 type=embedding 的配置，不再读取 .env 中的 embedding key。</small>
+                      <strong>{{ item.label }}</strong>
+                      <small>{{ item.versions?.[0] || item.aiBaseUrl || 'embedding' }}</small>
+                    </button>
+                  </div>
+                  <small class="agent-session-extra__hint">{{ embeddingConfigs.length ? 'Embedding 只能选择一个；未选择时使用后端默认 embedding 配置。' : '当前没有可选 embedding 配置，后端会尝试使用默认配置。' }}</small>
                 </div>
 
                 <div v-else class="agent-session-extra__section">
@@ -533,27 +562,41 @@
                     <span>{{ ragCollections.length }} 个</span>
                   </div>
 
-                  <select
-                    class="agent-session-extra__select"
-                    :value="selectedRagCollectionId"
-                    @change="handleRagCollectionChange"
-                  >
-                    <option value="">不使用知识库</option>
-                    <option
+                  <div class="agent-skill-picker__list">
+                    <button
+                      type="button"
+                      class="agent-skill-option"
+                      :class="{ 'is-active': !normalizedSelectedRagCollectionIds.length }"
+                      @click="selectNoRagCollections"
+                    >
+                      <strong>不使用知识库</strong>
+                      <small>本轮不注入 RAG 检索结果</small>
+                    </button>
+
+                    <button
                       v-for="item in ragCollections"
                       :key="item.collectionId"
-                      :value="item.collectionId"
+                      type="button"
+                      class="agent-skill-option"
+                      :class="{ 'is-active': normalizedSelectedRagCollectionIds.includes(item.collectionId) }"
+                      @click="toggleRagCollectionSelection(item.collectionId)"
                     >
-                      {{ item.name }}
-                    </option>
-                    <option
-                      v-if="selectedRagCollectionId && !ragCollections.some((item) => item.collectionId === selectedRagCollectionId)"
-                      :value="selectedRagCollectionId"
+                      <strong>{{ item.name }}</strong>
+                      <small>{{ item.documentCount || 0 }} 个文档 · {{ item.chunkCount || 0 }} 个切片</small>
+                    </button>
+
+                    <button
+                      v-for="collectionId in staleSelectedRagCollectionIds"
+                      :key="collectionId"
+                      type="button"
+                      class="agent-skill-option is-active"
+                      @click="toggleRagCollectionSelection(collectionId)"
                     >
-                      {{ selectedRagCollectionLabel }}
-                    </option>
-                  </select>
-                  <small class="agent-session-extra__hint">{{ ragCollectionError || '选中后，本轮对话会优先检索该知识库。' }}</small>
+                      <strong>已选择知识库</strong>
+                      <small>{{ collectionId }}</small>
+                    </button>
+                  </div>
+                  <small class="agent-session-extra__hint">{{ ragCollectionError || 'RAG 可以选择多个；本轮会在选中的知识库中检索。' }}</small>
                 </div>
               </section>
             </div>
@@ -684,7 +727,7 @@
             type="button"
             class="agent-info-card agent-info-card--skill-launcher"
             :disabled="isLoadingSkills"
-            @click="openSkillPicker"
+            @click="toggleSkillPicker"
           >
             <span class="agent-info-card__label">会话附加信息</span>
             <strong class="agent-info-card__value">{{ sessionExtraSummary }}</strong>
@@ -843,6 +886,7 @@ const props = defineProps({
   selectedLarkChatId: { type: String, default: '' },
   selectedLarkChatLabel: { type: String, default: '未设置默认群聊' },
   selectedRagCollectionId: { type: String, default: '' },
+  selectedRagCollectionIds: { type: Array, default: () => [] },
   selectedRagCollectionLabel: { type: String, default: '不使用知识库' },
   selectedEmbeddingAiId: { type: String, default: '' },
   ragCollections: { type: Array, default: () => [] },
@@ -885,6 +929,7 @@ const emit = defineEmits([
   'update:mcp-server-ids',
   'update:model',
   'update:rag-collection-id',
+  'update:rag-collection-ids',
   'update:embedding-ai-id',
   'update:skill-ids'
 ])
@@ -897,6 +942,8 @@ const expandedToolMessages = ref({})
 const shouldRestoreFocus = ref(false)
 const isCopyingWorkspaceFile = ref(false)
 const hasCopiedWorkspaceFile = ref(false)
+const conversationCopyToast = ref(false)
+const copyingMessageId = ref('')
 const previewWidth = ref(520)
 const isInspectorCollapsed = ref(false)
 const isSkillPickerOpen = ref(false)
@@ -907,6 +954,7 @@ const hasInitializedWorkspaceFilesForSession = ref(false)
 const renderedWorkspaceFileContent = ref('')
 let activeResizePointerId = null
 let workspaceFileCopyResetTimer = null
+let conversationCopyToastTimer = null
 let suppressAutoOpenTimer = null
 let workspaceFileHighlightTimer = null
 let workspaceFileHighlightFrameId = null
@@ -1061,12 +1109,12 @@ function selectLarkChatFromMessage(chat) {
   emit('select-lark-chat', normalizedChat)
 }
 
-function openSkillPicker() {
+function toggleSkillPicker() {
   if (props.isLoadingSkills) {
     return
   }
 
-  isSkillPickerOpen.value = true
+  isSkillPickerOpen.value = !isSkillPickerOpen.value
 }
 
 function closeSkillPicker() {
@@ -1129,6 +1177,39 @@ function toggleMcpServerSelection(serverId) {
   emit('update:mcp-server-ids', nextServerIds)
 }
 
+function selectDefaultEmbedding() {
+  emit('update:embedding-ai-id', '')
+}
+
+function selectEmbeddingConfig(aiId) {
+  emit('update:embedding-ai-id', String(aiId || '').trim())
+}
+
+function selectNoRagCollections() {
+  emit('update:rag-collection-ids', [])
+  emit('update:rag-collection-id', '')
+}
+
+function toggleRagCollectionSelection(collectionId) {
+  const normalizedCollectionId = String(collectionId || '').trim()
+
+  if (!normalizedCollectionId) {
+    return
+  }
+
+  const nextCollectionIds = normalizedSelectedRagCollectionIds.value.slice()
+  const existingIndex = nextCollectionIds.indexOf(normalizedCollectionId)
+
+  if (existingIndex >= 0) {
+    nextCollectionIds.splice(existingIndex, 1)
+  } else {
+    nextCollectionIds.push(normalizedCollectionId)
+  }
+
+  emit('update:rag-collection-ids', nextCollectionIds)
+  emit('update:rag-collection-id', nextCollectionIds[0] || '')
+}
+
 const resolvedWorkspaceMode = computed(() => {
   const label = String(props.workspaceMode?.label || '').trim()
   const tone = String(props.workspaceMode?.tone || '').trim()
@@ -1155,6 +1236,26 @@ const selectedEmbeddingConfigLabel = computed(() => (
   selectedEmbeddingConfig.value?.label || '使用服务器默认 embedding'
 ))
 
+const normalizedSelectedRagCollectionIds = computed(() => {
+  const explicitIds = Array.isArray(props.selectedRagCollectionIds)
+    ? props.selectedRagCollectionIds
+    : []
+  const fallbackId = String(props.selectedRagCollectionId || '').trim()
+  const sourceIds = explicitIds.length ? explicitIds : (fallbackId ? [fallbackId] : [])
+
+  return [...new Set(
+    sourceIds
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  )]
+})
+
+const staleSelectedRagCollectionIds = computed(() => (
+  normalizedSelectedRagCollectionIds.value.filter((collectionId) => (
+    !props.ragCollections.some((item) => item.collectionId === collectionId)
+  ))
+))
+
 const sessionExtraSummary = computed(() => {
   const parts = []
 
@@ -1170,8 +1271,8 @@ const sessionExtraSummary = computed(() => {
     parts.push('Embedding')
   }
 
-  if (String(props.selectedRagCollectionId || '').trim()) {
-    parts.push('RAG')
+  if (normalizedSelectedRagCollectionIds.value.length) {
+    parts.push(`RAG ${normalizedSelectedRagCollectionIds.value.length}`)
   }
 
   return parts.length ? parts.join(' · ') : '自动选择'
@@ -1198,7 +1299,7 @@ const sessionExtraTabs = computed(() => [
   {
     id: 'rag',
     label: 'RAG',
-    summary: String(props.selectedRagCollectionId || '').trim()
+    summary: normalizedSelectedRagCollectionIds.value.length
       ? props.selectedRagCollectionLabel
       : '不使用'
   }
@@ -1682,6 +1783,72 @@ function formatMessageContentForDisplay(content, role) {
   return normalizedContent
 }
 
+function isCopyableConversationMessage(message) {
+  if (!message || typeof message !== 'object') {
+    return false
+  }
+
+  if (isProgressMessage(message) || isPartialAssistantMessage(message) || resolveMessageVariant(message) === 'tool') {
+    return false
+  }
+
+  const normalizedRole = String(message.role || '').trim().toLowerCase()
+
+  if (!['user', 'assistant'].includes(normalizedRole)) {
+    return false
+  }
+
+  return Boolean(formatMessageContentForDisplay(message.content, message.role).trim())
+}
+
+function showConversationCopyToast() {
+  conversationCopyToast.value = true
+
+  if (conversationCopyToastTimer) {
+    clearTimeout(conversationCopyToastTimer)
+  }
+
+  conversationCopyToastTimer = setTimeout(() => {
+    conversationCopyToast.value = false
+    conversationCopyToastTimer = null
+  }, 1400)
+}
+
+async function writeTextToClipboard(content) {
+  if (typeof navigator !== 'undefined' && navigator?.clipboard?.writeText) {
+    await navigator.clipboard.writeText(content)
+    return
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = content
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'absolute'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand('copy')
+  document.body.removeChild(textarea)
+}
+
+async function copyConversationMessage(message) {
+  const messageId = String(message?.messageId || '')
+  const content = formatMessageContentForDisplay(message?.content, message?.role)
+
+  if (!content.trim() || copyingMessageId.value) {
+    return
+  }
+
+  copyingMessageId.value = messageId
+
+  try {
+    await writeTextToClipboard(content)
+    showConversationCopyToast()
+  } finally {
+    copyingMessageId.value = ''
+  }
+}
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -2155,11 +2322,6 @@ function handleWorkspaceFileClick(filePath) {
   emit('open-workspace-file', normalizedPath)
 }
 
-function handleRagCollectionChange(event) {
-  emit('update:rag-collection-id', event.target.value)
-  focusComposer()
-}
-
 watch(
   () => props.isLoadingSession,
   (loading) => {
@@ -2322,6 +2484,11 @@ onBeforeUnmount(() => {
     suppressAutoOpenTimer = null
   }
 
+  if (conversationCopyToastTimer) {
+    clearTimeout(conversationCopyToastTimer)
+    conversationCopyToastTimer = null
+  }
+
   cancelWorkspaceFileHighlightSchedule()
   resetWorkspaceFileCopyState()
   stopPreviewResize()
@@ -2344,6 +2511,7 @@ onBeforeUnmount(() => {
   --agent-soft-surface-hover: #eeeeee;
   --agent-soft-surface-active: #e7e7e7;
   --agent-focus: rgba(23, 23, 23, 0.14);
+  position: relative;
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr) 0 minmax(0, 0) var(--agent-inspector-width);
   grid-template-rows: minmax(0, 1fr);
@@ -2352,6 +2520,36 @@ onBeforeUnmount(() => {
   background: var(--agent-surface);
   color: var(--agent-text);
   transition: grid-template-columns 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agent-copy-toast {
+  position: absolute;
+  left: 50%;
+  top: 20px;
+  z-index: 40;
+  transform: translateX(-50%);
+  min-width: 128px;
+  padding: 12px 18px;
+  border: 1px solid rgba(34, 197, 94, 0.22);
+  border-radius: 14px;
+  background: #ecfdf3;
+  color: #15803d;
+  box-shadow: 0 14px 34px rgba(34, 197, 94, 0.16);
+  font-size: 0.9rem;
+  font-weight: 800;
+  text-align: center;
+  pointer-events: none;
+}
+
+.agent-copy-toast-enter-active,
+.agent-copy-toast-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.agent-copy-toast-enter-from,
+.agent-copy-toast-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -8px) scale(0.96);
 }
 
 .agent-shell.is-resizing-preview {
@@ -2485,18 +2683,19 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 28px;
+  padding: 36px;
   background: rgba(255, 255, 255, 0.42);
   backdrop-filter: blur(6px);
 }
 
 .agent-skill-picker__panel {
-  width: min(860px, calc(100% - 40px));
-  max-height: min(720px, calc(100% - 48px));
+  width: min(1120px, calc(100% - 56px));
+  height: min(760px, calc(100% - 64px));
+  max-height: min(820px, calc(100% - 64px));
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 18px;
-  padding: 22px;
+  gap: 22px;
+  padding: 26px;
   border: 1px solid rgba(225, 229, 236, 0.92);
   border-radius: 28px;
   background: rgba(255, 255, 255, 0.96);
@@ -2506,7 +2705,7 @@ onBeforeUnmount(() => {
 .agent-session-extra {
   min-height: 0;
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 250px minmax(0, 1fr);
   gap: 0;
   overflow: hidden;
   border: 1px solid var(--agent-border);
@@ -2519,7 +2718,7 @@ onBeforeUnmount(() => {
   display: grid;
   align-content: start;
   gap: 8px;
-  padding: 12px;
+  padding: 14px;
   overflow: auto;
   border-right: 1px solid var(--agent-border);
   background: #f8fafc;
@@ -2574,14 +2773,15 @@ onBeforeUnmount(() => {
 .agent-session-extra__content {
   min-height: 0;
   overflow: auto;
-  padding: 16px;
+  padding: 22px;
 }
 
 .agent-session-extra__section {
   min-width: 0;
+  min-height: 100%;
   display: grid;
   align-content: start;
-  gap: 14px;
+  gap: 18px;
 }
 
 .agent-session-extra__section-head {
@@ -2704,8 +2904,8 @@ onBeforeUnmount(() => {
 .agent-skill-picker__list {
   min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
   align-content: start;
   overflow: auto;
   padding-right: 4px;
@@ -2767,12 +2967,25 @@ onBeforeUnmount(() => {
 
 .skill-picker-fade-enter-active,
 .skill-picker-fade-leave-active {
-  transition: opacity 0.22s ease;
+  transition: opacity 0.45s ease;
+}
+
+.skill-picker-fade-enter-active .agent-skill-picker__panel,
+.skill-picker-fade-leave-active .agent-skill-picker__panel {
+  transition:
+    opacity 0.45s ease,
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .skill-picker-fade-enter-from,
 .skill-picker-fade-leave-to {
   opacity: 0;
+}
+
+.skill-picker-fade-enter-from .agent-skill-picker__panel,
+.skill-picker-fade-leave-to .agent-skill-picker__panel {
+  opacity: 0;
+  transform: translateY(10px) scale(0.985);
 }
 
 .agent-inspector__toggle {
@@ -3442,6 +3655,60 @@ onBeforeUnmount(() => {
   color: var(--agent-text);
   line-height: 1.75;
   white-space: pre-wrap;
+}
+
+.agent-message__actions {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.agent-message:hover .agent-message__actions,
+.agent-message:focus-within .agent-message__actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.agent-message--user .agent-message__actions {
+  justify-content: flex-end;
+}
+
+.agent-message--assistant .agent-message__actions {
+  justify-content: flex-start;
+}
+
+.agent-message__copy {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #6f6f6f;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.agent-message__copy:hover:not(:disabled) {
+  background: #f4f4f4;
+  border-color: #e6e6e6;
+  color: #171717;
+}
+
+.agent-message__copy:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.agent-message__copy svg {
+  width: 16px;
+  height: 16px;
 }
 
 .agent-markdown-content {

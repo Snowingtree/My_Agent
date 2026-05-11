@@ -37,8 +37,8 @@
         <div v-else-if="aiError" class="model-config-state is-error">{{ aiError }}</div>
         <div v-else-if="!aiConfigs.length" class="model-config-state">当前没有可用的 AI 配置。</div>
 
-        <div v-else class="config-grid">
-          <article v-for="item in aiConfigs" :key="item.aiId" class="config-card">
+        <div v-else class="config-grid config-grid--ai">
+          <article v-for="item in aiConfigs" :key="item.aiId" class="config-card config-card--ai">
             <div class="config-card__head">
               <div class="config-card__title">
                 <h3>{{ item.name || item.aiId }}</h3>
@@ -554,6 +554,10 @@ watch(
   gap: 18px;
 }
 
+.config-grid--ai {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .config-card {
   display: grid;
   gap: 14px;
@@ -665,6 +669,15 @@ watch(
   word-break: break-word;
 }
 
+.config-card--ai .config-meta div:nth-child(1) dd,
+.config-card--ai .config-meta div:nth-child(2) dd {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
+}
+
 .config-description,
 .config-error {
   margin: 0;
@@ -712,6 +725,18 @@ watch(
   color: #667085;
   font-size: 0.84rem;
   line-height: 1.7;
+}
+
+@media (max-width: 1280px) {
+  .config-grid--ai {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .config-grid--ai {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .model-config-state {

@@ -1289,19 +1289,25 @@ async function handleChat(request, response) {
   )
   const requestedMcpServerIds = normalizeSkillIdArray(payload?.mcpServerIds)
   const requestedMcpToolPrefixes = resolveMcpToolPrefixes(requestedMcpServerIds)
-  const requestedRagCollectionId = normalizeTrimmedString(payload?.ragCollectionId)
+  const requestedRagCollectionIds = normalizeSkillIdArray(
+    Array.isArray(payload?.ragCollectionIds)
+      ? payload.ragCollectionIds
+      : [payload?.ragCollectionId]
+  )
+  const requestedRagCollectionId = requestedRagCollectionIds[0] || ''
   const requestedEmbeddingAiId = normalizeTrimmedString(payload?.embeddingAiId)
   const requestedAttachments = normalizeConversationAttachments(payload?.attachments)
-  if (requestedRagCollectionId) {
+  if (requestedRagCollectionIds.length) {
+    const selectedCollectionText = requestedRagCollectionIds.join(', ')
     requestedAttachments.push({
       name: 'selected-rag-knowledge-base.txt',
       type: 'text/plain',
-      sizeBytes: Buffer.byteLength(requestedRagCollectionId, 'utf8'),
+      sizeBytes: Buffer.byteLength(selectedCollectionText, 'utf8'),
       content: [
         'Selected RAG knowledge base context for this Agent request.',
-        `collectionId: ${requestedRagCollectionId}`,
+        `collectionIds: ${selectedCollectionText}`,
         requestedEmbeddingAiId ? `embeddingAiId: ${requestedEmbeddingAiId}` : '',
-        'When RAG retrieval is enabled, use this collection as the retrieval scope.'
+        'When RAG retrieval is enabled, use these collections as the retrieval scope.'
       ].filter(Boolean).join('\n')
     })
   }
@@ -1447,6 +1453,7 @@ async function handleChat(request, response) {
     requestedMcpServerIds,
     requestedMcpToolPrefixes,
     requestedRagCollectionId,
+    requestedRagCollectionIds,
     requestedEmbeddingAiId,
     requestedAttachments
   })

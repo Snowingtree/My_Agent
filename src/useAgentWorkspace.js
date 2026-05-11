@@ -9,6 +9,7 @@ import {
   AGENT_LARK_CHAT_ID_KEY,
   AGENT_MCP_SERVER_IDS_KEY,
   AGENT_RAG_COLLECTION_ID_KEY,
+  AGENT_RAG_COLLECTION_IDS_KEY,
   AGENT_SKILL_ID_KEY,
   AUTH_TOKEN_KEY
 } from './storage.js'
@@ -375,7 +376,11 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const selectedSkillIds = ref(readStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY))
   const selectedMcpServerIds = ref(readStorageStringArray(resolvedStorage, AGENT_MCP_SERVER_IDS_KEY))
   const selectedLarkChatId = ref(readStorageValue(resolvedStorage, AGENT_LARK_CHAT_ID_KEY))
-  const selectedRagCollectionId = ref(readStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY))
+  const legacySelectedRagCollectionId = readStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY)
+  const selectedRagCollectionIds = ref(readStorageStringArray(resolvedStorage, AGENT_RAG_COLLECTION_IDS_KEY))
+  if (!selectedRagCollectionIds.value.length && legacySelectedRagCollectionId) {
+    selectedRagCollectionIds.value = [legacySelectedRagCollectionId]
+  }
   const selectedEmbeddingAiId = ref(readStorageValue(resolvedStorage, AGENT_EMBEDDING_AI_ID_KEY))
   const ragCollections = ref([])
   const isLoadingRagCollections = ref(false)
@@ -491,22 +496,29 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
 
     return `已选择 ${selectedMcpServerIds.value.length} 个 MCP`
   })
-  const selectedRagCollection = computed(() => {
-    const collectionId = String(selectedRagCollectionId.value || '').trim()
-
-    if (!collectionId) {
-      return null
+  const selectedRagCollectionId = computed(() => selectedRagCollectionIds.value[0] || '')
+  const selectedRagCollections = computed(() => (
+    selectedRagCollectionIds.value.map((collectionId) => (
+      ragCollections.value.find((item) => item.collectionId === collectionId) || {
+        collectionId,
+        name: '已选择知识库',
+        description: '',
+        documentCount: 0,
+        chunkCount: 0
+      }
+    ))
+  ))
+  const selectedRagCollectionLabel = computed(() => {
+    if (!selectedRagCollectionIds.value.length) {
+      return '不使用知识库'
     }
 
-    return ragCollections.value.find((item) => item.collectionId === collectionId) || {
-      collectionId,
-      name: '已选择知识库',
-      description: '',
-      documentCount: 0,
-      chunkCount: 0
+    if (selectedRagCollections.value.length === 1) {
+      return selectedRagCollections.value[0].name
     }
+
+    return `已选择 ${selectedRagCollectionIds.value.length} 个知识库`
   })
-  const selectedRagCollectionLabel = computed(() => selectedRagCollection.value?.name || '不使用知识库')
   const hasDraftCodingIntent = computed(() => detectCodingIntent(draft.value))
   const workspaceMode = computed(() => {
     if (activeSkillIds.value.includes('coding_agent')) {
@@ -567,7 +579,8 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   }
 
   function persistSelectedRagCollection() {
-    writeStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY, selectedRagCollectionId.value)
+    writeStorageStringArray(resolvedStorage, AGENT_RAG_COLLECTION_IDS_KEY, selectedRagCollectionIds.value)
+    writeStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY, selectedRagCollectionIds.value[0] || '')
   }
 
   function persistSelectedEmbeddingAi() {
@@ -1531,7 +1544,19 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   }
 
   function setSelectedRagCollectionId(nextCollectionId) {
-    selectedRagCollectionId.value = String(nextCollectionId || '').trim()
+    const normalizedCollectionId = String(nextCollectionId || '').trim()
+    selectedRagCollectionIds.value = normalizedCollectionId ? [normalizedCollectionId] : []
+    persistSelectedRagCollection()
+  }
+
+  function setSelectedRagCollectionIds(nextCollectionIds) {
+    selectedRagCollectionIds.value = Array.isArray(nextCollectionIds)
+      ? [...new Set(
+        nextCollectionIds
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      )]
+      : []
     persistSelectedRagCollection()
   }
 
@@ -1701,7 +1726,8 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         skillId: selectedSkillIds.value[0] || '',
         skillIds: selectedSkillIds.value,
         mcpServerIds: selectedMcpServerIds.value,
-        ragCollectionId: selectedRagCollectionId.value,
+        ragCollectionId: selectedRagCollectionIds.value[0] || '',
+        ragCollectionIds: selectedRagCollectionIds.value,
         embeddingAiId: selectedEmbeddingAiId.value,
         attachments: [
           ...conversationAttachments.map((item) => ({
@@ -1955,6 +1981,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     selectedLarkChatId,
     selectedLarkChatLabel,
     selectedRagCollectionId,
+    selectedRagCollectionIds,
     selectedRagCollectionLabel,
     selectedEmbeddingAiId,
     sendMessage,
@@ -1964,6 +1991,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     setSelectedLarkChatId,
     setSelectedMcpServerIds,
     setSelectedRagCollectionId,
+    setSelectedRagCollectionIds,
     setSelectedEmbeddingAiId,
     setSelectedModel,
     setSelectedSkillIds
