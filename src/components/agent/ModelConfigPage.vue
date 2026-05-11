@@ -313,7 +313,8 @@ import SettingsSkillsExplorer from './SettingsSkillsExplorer.vue'
 import SettingsToolsExplorer from './SettingsToolsExplorer.vue'
 
 const props = defineProps({
-  activeSection: { type: String, default: 'settings-ai' }
+  activeSection: { type: String, default: 'settings-ai' },
+  isActive: { type: Boolean, default: true }
 })
 
 defineEmits(['back', 'config-updated'])
@@ -365,6 +366,11 @@ const editAiForm = ref({
 
 function toggleEditAiMode() {
   isEditAiMode.value = !isEditAiMode.value
+}
+
+function resetEditAiMode() {
+  isEditAiMode.value = false
+  closeEditAiModal()
 }
 
 function openAddAiModal() {
@@ -688,9 +694,22 @@ async function refreshActiveSection() {
 watch(
   () => props.activeSection,
   (section) => {
+    if (section !== 'settings-ai') {
+      resetEditAiMode()
+    }
+
     void ensureSectionLoaded(section, false)
   },
   { immediate: true }
+)
+
+watch(
+  () => props.isActive,
+  (isActive) => {
+    if (!isActive) {
+      resetEditAiMode()
+    }
+  }
 )
 </script>
 

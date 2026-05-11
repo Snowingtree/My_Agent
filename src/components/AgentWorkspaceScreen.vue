@@ -273,7 +273,11 @@
 
       <section class="agent-page__stage agent-page__stage--settings" :aria-hidden="showModelConfig ? 'false' : 'true'">
         <section class="agent-settings-content">
-          <ModelConfigPage :active-section="activeSettingsSection" @back="closeModelConfig" />
+          <ModelConfigPage
+            :active-section="activeSettingsSection"
+            :is-active="showModelConfig"
+            @back="closeModelConfig"
+          />
         </section>
       </section>
     </section>
