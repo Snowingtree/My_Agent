@@ -518,7 +518,9 @@
                     </button>
                   </div>
 
-                  <small class="agent-session-extra__hint">{{ mcpServerError || (mcpServers.length ? '选择后，本轮只暴露选中的 MCP 服务；不选择则使用全部可用 MCP。' : '当前没有可用的 MCP 服务。') }}</small>
+                  <small v-if="mcpServerError || !mcpServers.length" class="agent-session-extra__hint">
+                    {{ mcpServerError || '当前没有可用的 MCP 服务。' }}
+                  </small>
                 </div>
 
                 <div v-else-if="activeSessionExtraTab === 'embedding'" class="agent-session-extra__section">
@@ -553,7 +555,9 @@
                       <small>{{ item.versions?.[0] || item.aiBaseUrl || 'embedding' }}</small>
                     </button>
                   </div>
-                  <small class="agent-session-extra__hint">{{ embeddingConfigs.length ? 'Embedding 只能选择一个；未选择时使用后端默认 embedding 配置。' : '当前没有可选 embedding 配置，后端会尝试使用默认配置。' }}</small>
+                  <small v-if="!embeddingConfigs.length" class="agent-session-extra__hint">
+                    当前没有可选 embedding 配置。
+                  </small>
                 </div>
 
                 <div v-else class="agent-session-extra__section">
@@ -599,7 +603,7 @@
                       <small>{{ collectionId }}</small>
                     </button>
                   </div>
-                  <small class="agent-session-extra__hint">{{ ragCollectionError || 'RAG 可以选择多个；本轮会在选中的知识库中检索。' }}</small>
+                  <small v-if="ragCollectionError" class="agent-session-extra__hint">{{ ragCollectionError }}</small>
                 </div>
               </section>
             </div>
@@ -660,7 +664,11 @@
       </Transition>
     </section>
 
-    <aside class="agent-shell__inspector" :class="{ 'is-collapsed': isInspectorCollapsed }">
+    <aside
+      class="agent-shell__inspector"
+      :class="{ 'is-collapsed': isInspectorCollapsed }"
+      @click="handleInspectorClick"
+    >
       <button
         type="button"
         class="agent-inspector__toggle"
@@ -682,59 +690,54 @@
             <strong class="agent-info-card__value">{{ resolvedWorkspaceMode.label }}</strong>
           </article>
 
-          <article class="agent-info-card">
-            <span class="agent-info-card__label">AI 配置</span>
-            <select
-              class="agent-info-card__select"
-              :value="selectedAiId"
-              :disabled="isLoadingAiConfigs || !aiConfigs.length"
-              @change="$emit('update:ai-id', $event.target.value)"
-            >
-              <option value="">请选择配置</option>
-              <option
-                v-for="item in aiConfigs"
-                :key="item.aiId"
-                :value="item.aiId"
+          <article class="agent-info-card agent-info-card--model-config">
+            <div class="agent-info-card__field">
+              <span class="agent-info-card__label">AI 配置</span>
+              <select
+                class="agent-info-card__select"
+                :value="selectedAiId"
+                :disabled="isLoadingAiConfigs || !aiConfigs.length"
+                @change="$emit('update:ai-id', $event.target.value)"
               >
-                {{ item.label }}
-              </option>
-            </select>
-            <small class="agent-info-card__meta">
-              {{ isLoadingAiConfigs ? '正在读取配置...' : `共 ${aiConfigs.length} 个可用配置` }}
-            </small>
-          </article>
+                <option value="">请选择配置</option>
+                <option
+                  v-for="item in aiConfigs"
+                  :key="item.aiId"
+                  :value="item.aiId"
+                >
+                  {{ item.label }}
+                </option>
+              </select>
+            </div>
 
-          <article class="agent-info-card">
-            <span class="agent-info-card__label">当前模型</span>
-            <select
-              class="agent-info-card__select"
-              :value="selectedModel"
-              :disabled="!modelOptions.length"
-              @change="$emit('update:model', $event.target.value)"
-            >
-              <option value="">{{ modelOptions.length ? '请选择模型' : '暂无可选模型' }}</option>
-              <option
-                v-for="item in modelOptions"
-                :key="item"
-                :value="item"
+            <div class="agent-info-card__field">
+              <span class="agent-info-card__label">当前模型</span>
+              <select
+                class="agent-info-card__select"
+                :value="selectedModel"
+                :disabled="!modelOptions.length"
+                @change="$emit('update:model', $event.target.value)"
               >
-                {{ item }}
-              </option>
-            </select>
-            <small class="agent-info-card__meta">
-              {{ modelOptions.length ? `当前配置下可选 ${modelOptions.length} 个模型` : '当前配置未提供可选模型列表' }}
-            </small>
-          </article>
+                <option value="">{{ modelOptions.length ? '请选择模型' : '暂无可选模型' }}</option>
+                <option
+                  v-for="item in modelOptions"
+                  :key="item"
+                  :value="item"
+                >
+                  {{ item }}
+                </option>
+              </select>
+            </div>
 
-          <button
-            type="button"
-            class="agent-info-card agent-info-card--skill-launcher"
-            :disabled="isLoadingSkills"
-            @click="toggleSkillPicker"
-          >
-            <span class="agent-info-card__label">会话附加信息</span>
-            <strong class="agent-info-card__value">{{ sessionExtraSummary }}</strong>
-          </button>
+            <button
+              type="button"
+              class="agent-info-card__config-button"
+              :disabled="isLoadingSkills"
+              @click="toggleSkillPicker"
+            >
+              其他配置
+            </button>
+          </article>
 
           <article class="agent-info-card agent-info-card--files">
             <span class="agent-info-card__label">会话文件</span>
@@ -1125,6 +1128,20 @@ function toggleSkillPicker() {
 
 function closeSkillPicker() {
   isSkillPickerOpen.value = false
+}
+
+function handleInspectorClick(event) {
+  if (!isSkillPickerOpen.value) {
+    return
+  }
+
+  const target = event?.target
+
+  if (target instanceof Element && target.closest('.agent-info-card--model-config')) {
+    return
+  }
+
+  closeSkillPicker()
 }
 
 function selectAutoSkill() {
@@ -2709,42 +2726,6 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-.agent-info-card--skill-launcher {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  border: 1px solid var(--agent-border);
-  min-height: 116px;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    transform 0.18s ease;
-}
-
-.agent-info-card--skill-launcher:hover:not(:disabled) {
-  background: #f8fbff;
-  border-color: #d7def7;
-  box-shadow: 0 10px 24px rgba(38, 77, 183, 0.08);
-  transform: translateY(-1px);
-}
-
-.agent-info-card--skill-launcher:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.agent-info-card--skill-launcher .agent-info-card__value {
-  margin: 0;
-  line-height: 1.2;
-  text-align: left;
-}
-
 .agent-skill-picker {
   position: absolute;
   inset: 0;
@@ -3215,7 +3196,8 @@ onBeforeUnmount(() => {
 .agent-sidebar__logout,
 .agent-starter-card,
 .agent-composer__send,
-.agent-composer__stop {
+.agent-composer__stop,
+.agent-info-card__config-button {
   border: 0;
   font: inherit;
 }
@@ -3227,7 +3209,8 @@ onBeforeUnmount(() => {
 .agent-sidebar__logout,
 .agent-starter-card,
 .agent-composer__send,
-.agent-composer__stop {
+.agent-composer__stop,
+.agent-info-card__config-button {
   transition:
     background-color 150ms ease,
     border-color 150ms ease,
@@ -3243,7 +3226,8 @@ onBeforeUnmount(() => {
 .agent-sidebar__logout:focus-visible,
 .agent-starter-card:focus-visible,
 .agent-composer__send:focus-visible,
-.agent-composer__stop:focus-visible {
+.agent-composer__stop:focus-visible,
+.agent-info-card__config-button:focus-visible {
   outline: 0;
   box-shadow: 0 0 0 4px var(--agent-focus);
 }
@@ -4674,6 +4658,15 @@ onBeforeUnmount(() => {
   background: #ffffff;
 }
 
+.agent-info-card--model-config {
+  gap: 14px;
+}
+
+.agent-info-card__field {
+  display: grid;
+  gap: 8px;
+}
+
 .agent-info-card__label {
   color: var(--agent-muted);
   font-size: 0.76rem;
@@ -4710,6 +4703,34 @@ onBeforeUnmount(() => {
 }
 
 .agent-info-card__select:disabled {
+  background: #f5f5f5;
+  color: var(--agent-muted);
+  cursor: not-allowed;
+}
+
+.agent-info-card__config-button {
+  width: 100%;
+  min-width: 0;
+  min-height: 43px;
+  padding: 10px 12px;
+  border: 1px solid var(--agent-border-strong);
+  border-radius: 14px;
+  background: #ffffff;
+  color: var(--agent-text);
+  cursor: pointer;
+  text-align: center;
+  font-size: 0.92rem;
+  font-weight: 650;
+  line-height: 1.4;
+  outline: none;
+}
+
+.agent-info-card__config-button:hover:not(:disabled) {
+  background: #f7f7f7;
+  border-color: #cfcfcf;
+}
+
+.agent-info-card__config-button:disabled {
   background: #f5f5f5;
   color: var(--agent-muted);
   cursor: not-allowed;
