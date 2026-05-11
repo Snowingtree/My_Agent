@@ -838,8 +838,10 @@ watch(
 
 .config-card--ai.is-editable:hover {
   border-color: #9bbcff;
-  box-shadow: 0 16px 36px rgba(37, 99, 235, 0.12);
-  transform: translateY(-2px);
+  box-shadow:
+    inset 0 0 0 1px #9bbcff,
+    0 16px 36px rgba(37, 99, 235, 0.12);
+  transform: none;
 }
 
 .config-card__head {
