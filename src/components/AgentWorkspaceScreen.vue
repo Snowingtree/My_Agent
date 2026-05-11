@@ -169,6 +169,14 @@
                 >
                   工具
                 </button>
+                <button
+                  type="button"
+                  class="agent-settings-nav__item"
+                  :class="{ 'is-active': activeSettingsSection === 'settings-data-analysis' }"
+                  @click="selectSettingsSection('settings-data-analysis')"
+                >
+                  数据分析
+                </button>
               </div>
             </div>
           </section>

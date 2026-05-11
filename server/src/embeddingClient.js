@@ -67,6 +67,40 @@ function parseEmbeddingPayload(payload) {
   return normalizeEmbeddingVector(payload?.embedding)
 }
 
+function normalizeTokenCount(value) {
+  const normalizedValue = Number(value)
+  return Number.isFinite(normalizedValue) && normalizedValue > 0 ? Math.round(normalizedValue) : 0
+}
+
+function extractEmbeddingUsage(payload) {
+  const usage = payload?.usage && typeof payload.usage === 'object' ? payload.usage : {}
+  const inputTokens = normalizeTokenCount(
+    usage.input_tokens
+    ?? usage.prompt_tokens
+    ?? usage.inputTokens
+    ?? usage.promptTokens
+    ?? usage.total_tokens
+    ?? usage.totalTokens
+  )
+  const totalTokens = normalizeTokenCount(
+    usage.total_tokens
+    ?? usage.totalTokens
+    ?? usage.input_tokens
+    ?? usage.inputTokens
+    ?? inputTokens
+  )
+
+  if (inputTokens || totalTokens) {
+    return {
+      inputTokens: inputTokens || totalTokens,
+      outputTokens: 0,
+      totalTokens: totalTokens || inputTokens
+    }
+  }
+
+  return null
+}
+
 export function createEmbeddingClient(embeddingConfig = {}) {
   const baseURL = normalizeBaseUrl(embeddingConfig.baseURL)
   const apiKey = normalizeTrimmedString(embeddingConfig.apiKey)
@@ -77,7 +111,10 @@ export function createEmbeddingClient(embeddingConfig = {}) {
   const timeoutMs = Number.isFinite(Number(embeddingConfig.timeoutMs))
     ? Math.max(1000, Number(embeddingConfig.timeoutMs))
     : 30000
+  const onUsage = typeof embeddingConfig.onUsage === 'function' ? embeddingConfig.onUsage : null
   const expectedDimension = Number.parseInt(embeddingConfig.dimension, 10)
+  const chunkMaxChars = Number.parseInt(embeddingConfig.chunkMaxChars, 10)
+  const chunkOverlapChars = Number.parseInt(embeddingConfig.chunkOverlapChars, 10)
   const useDashScopeMultimodal = provider === 'dashscope-multimodal' || (provider === 'auto' && isDashScopeMultimodalModel(model))
   const enabled = Boolean((baseURL || useDashScopeMultimodal) && apiKey && model)
 
@@ -171,6 +208,18 @@ export function createEmbeddingClient(embeddingConfig = {}) {
         throw new Error(`RAG embedding dimension mismatch: expected ${expectedDimension}, got ${embedding.length}.`)
       }
 
+      const usage = extractEmbeddingUsage(payload)
+
+      if (usage && onUsage) {
+        await onUsage({
+          aiId,
+          name,
+          model,
+          provider: useDashScopeMultimodal ? 'dashscope-multimodal' : 'openai-compatible',
+          usage
+        })
+      }
+
       return embedding
     } finally {
       clearTimeout(timeout)
@@ -185,7 +234,9 @@ export function createEmbeddingClient(embeddingConfig = {}) {
       provider: useDashScopeMultimodal ? 'dashscope-multimodal' : 'openai-compatible',
       baseURL: useDashScopeMultimodal ? resolveDashScopeMultimodalEndpoint(baseURL) : (baseURL ? resolveEmbeddingEndpoint(baseURL) : ''),
       model,
-      dimension: expectedDimension || null
+      dimension: expectedDimension || null,
+      chunkMaxChars: Number.isFinite(chunkMaxChars) && chunkMaxChars > 0 ? chunkMaxChars : null,
+      chunkOverlapChars: Number.isFinite(chunkOverlapChars) && chunkOverlapChars > 0 ? chunkOverlapChars : null
     }
   }
 

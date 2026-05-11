@@ -30,6 +30,11 @@ function normalizeAiVersions(value) {
   return parseList(String(value || '').replace(/，/g, ',')).join(',')
 }
 
+function normalizeOptionalPositiveInteger(value) {
+  const parsedValue = Number.parseInt(value, 10)
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : null
+}
+
 function parseMysqlPort(value, envKey) {
   const normalized = normalizeEnvValue(value)
 
@@ -188,6 +193,8 @@ function normalizeAiConfig(item, index) {
   const models = parseList(item?.models || item?.aiVersions)
   const defaultModel = normalizeTrimmedString(item?.defaultModel) || models[0] || ''
   const type = normalizeAiConfigType(item?.type || item?.configType || item?.aiType)
+  const chunkMaxChars = normalizeOptionalPositiveInteger(item?.chunkMaxChars || item?.chunk_max_chars)
+  const chunkOverlapChars = normalizeOptionalPositiveInteger(item?.chunkOverlapChars || item?.chunk_overlap_chars)
 
   if (!baseURL || !defaultModel) {
     return null
@@ -202,6 +209,8 @@ function normalizeAiConfig(item, index) {
     models: models.length ? models : [defaultModel],
     defaultModel,
     type,
+    chunkMaxChars,
+    chunkOverlapChars,
     systemPrompt: normalizeTrimmedString(item?.systemPrompt),
     source: normalizeTrimmedString(item?.source) || 'file'
   }
@@ -309,6 +318,8 @@ async function ensureMysqlTable(connection, tableName) {
       ai_versions VARCHAR(1000) NOT NULL DEFAULT '',
       ai_base_url VARCHAR(2048) NOT NULL DEFAULT '',
       \`type\` VARCHAR(32) NOT NULL DEFAULT 'ai',
+      chunk_max_chars INT NULL,
+      chunk_overlap_chars INT NULL,
       api_key TEXT NOT NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -317,11 +328,20 @@ async function ensureMysqlTable(connection, tableName) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
   )
 
-  const [hasApiVersionsColumn, hasAiBaseUrlColumn, hasApiKeyColumn, hasLegacyTokenColumn] = await Promise.all([
+  const [
+    hasApiVersionsColumn,
+    hasAiBaseUrlColumn,
+    hasApiKeyColumn,
+    hasLegacyTokenColumn,
+    hasChunkMaxCharsColumn,
+    hasChunkOverlapCharsColumn
+  ] = await Promise.all([
     hasColumn(connection, tableName, 'ai_versions'),
     hasColumn(connection, tableName, 'ai_base_url'),
     hasColumn(connection, tableName, 'api_key'),
-    hasColumn(connection, tableName, 'token')
+    hasColumn(connection, tableName, 'token'),
+    hasColumn(connection, tableName, 'chunk_max_chars'),
+    hasColumn(connection, tableName, 'chunk_overlap_chars')
   ])
 
   if (!hasApiVersionsColumn) {
@@ -339,6 +359,18 @@ async function ensureMysqlTable(connection, tableName) {
   if (!hasApiKeyColumn && hasLegacyTokenColumn) {
     await connection.query(
       `ALTER TABLE ${tableName} CHANGE COLUMN token api_key TEXT NOT NULL`
+    )
+  }
+
+  if (!hasChunkMaxCharsColumn) {
+    await connection.query(
+      `ALTER TABLE ${tableName} ADD COLUMN chunk_max_chars INT NULL AFTER \`type\``
+    )
+  }
+
+  if (!hasChunkOverlapCharsColumn) {
+    await connection.query(
+      `ALTER TABLE ${tableName} ADD COLUMN chunk_overlap_chars INT NULL AFTER chunk_max_chars`
     )
   }
 }
@@ -392,6 +424,8 @@ async function readMysqlConfigs() {
           ai_versions AS aiVersions,
           ai_base_url AS aiBaseUrl,
           \`type\` AS type,
+          chunk_max_chars AS chunkMaxChars,
+          chunk_overlap_chars AS chunkOverlapChars,
           api_key AS apiKey
         FROM ${tableName}
         ORDER BY updated_at DESC, id DESC`
@@ -414,6 +448,8 @@ async function readMysqlConfigs() {
             ai_versions AS aiVersions,
             ai_base_url AS aiBaseUrl,
             'ai' AS type,
+            NULL AS chunkMaxChars,
+            NULL AS chunkOverlapChars,
             token AS apiKey
           FROM ${tableName}
           ORDER BY updated_at DESC, id DESC`
@@ -435,6 +471,8 @@ async function readMysqlConfigs() {
             '' AS aiVersions,
             '' AS aiBaseUrl,
             'ai' AS type,
+            NULL AS chunkMaxChars,
+            NULL AS chunkOverlapChars,
             api_key AS apiKey
           FROM ${tableName}
           WHERE is_active = 1
@@ -450,6 +488,8 @@ async function readMysqlConfigs() {
         aiVersions: normalizeTrimmedString(row.aiVersions),
         aiBaseUrl: normalizeTrimmedString(row.aiBaseUrl),
         type: normalizeAiConfigType(row.type),
+        chunkMaxChars: normalizeOptionalPositiveInteger(row.chunkMaxChars),
+        chunkOverlapChars: normalizeOptionalPositiveInteger(row.chunkOverlapChars),
         apiKey: normalizeStoredApiKey(row.apiKey),
         source: 'mysql'
       }, index))
@@ -508,6 +548,9 @@ export function toPublicAiConfig(aiConfig) {
     aiBaseUrl: aiConfig.baseURL,
     aiVersions: aiConfig.models.join(','),
     type: aiConfig.type || 'ai',
+    source: aiConfig.source || '',
+    chunkMaxChars: aiConfig.chunkMaxChars || null,
+    chunkOverlapChars: aiConfig.chunkOverlapChars || null,
     hasApiKey: Boolean(aiConfig.apiKey)
   }
 }
@@ -557,4 +600,73 @@ export async function insertAiConfig({ name, aiVersions, aiBaseUrl, apiKey, type
   })
 
   return { aiId, name: normalizedName, type: normalizedType }
+}
+
+export async function updateAiConfig(aiId, {
+  name,
+  aiVersions,
+  aiBaseUrl,
+  chunkMaxChars,
+  chunkOverlapChars
+} = {}) {
+  const normalizedAiId = normalizeTrimmedString(aiId)
+  const normalizedName = normalizeTrimmedString(name)
+  const normalizedBaseUrl = normalizeBaseUrl(aiBaseUrl)
+  const normalizedVersions = normalizeAiVersions(aiVersions)
+  const normalizedChunkMaxChars = normalizeOptionalPositiveInteger(chunkMaxChars)
+  const normalizedChunkOverlapChars = normalizeOptionalPositiveInteger(chunkOverlapChars)
+
+  if (!normalizedAiId) {
+    throw new Error('AI config id is required.')
+  }
+
+  if (!normalizedName) {
+    throw new Error('AI config name is required.')
+  }
+
+  if (!normalizedBaseUrl) {
+    throw new Error('AI config base URL is required.')
+  }
+
+  await withMysqlConnection(async (connection, tableName) => {
+    const [existingRows] = await connection.query(
+      `SELECT \`type\` AS type FROM ${tableName} WHERE ai_id = ? LIMIT 1`,
+      [normalizedAiId]
+    )
+
+    if (!Array.isArray(existingRows) || !existingRows.length) {
+      throw new Error('AI config was not found.')
+    }
+
+    const normalizedType = normalizeAiConfigType(existingRows[0]?.type)
+    const nextChunkMaxChars = normalizedType === 'embedding' ? normalizedChunkMaxChars : null
+    const nextChunkOverlapChars = normalizedType === 'embedding' ? normalizedChunkOverlapChars : null
+
+    await connection.query(
+      `UPDATE ${tableName}
+       SET ai_name = ?,
+           ai_versions = ?,
+           ai_base_url = ?,
+           chunk_max_chars = ?,
+           chunk_overlap_chars = ?
+       WHERE ai_id = ?`,
+      [
+        normalizedName,
+        normalizedVersions,
+        normalizedBaseUrl,
+        nextChunkMaxChars,
+        nextChunkOverlapChars,
+        normalizedAiId
+      ]
+    )
+  })
+
+  return {
+    aiId: normalizedAiId,
+    name: normalizedName,
+    aiVersions: normalizedVersions,
+    aiBaseUrl: normalizedBaseUrl,
+    chunkMaxChars: normalizedChunkMaxChars,
+    chunkOverlapChars: normalizedChunkOverlapChars
+  }
 }

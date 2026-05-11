@@ -67,7 +67,8 @@ function normalizeRepositoryOptions(options) {
       sessionsDir: resolve(dirname(options), 'sessions'),
       legacyFilePath: options,
       onSessionUpdated: null,
-      onSessionDeleted: null
+      onSessionDeleted: null,
+      onMessageAppended: null
     }
   }
 
@@ -75,7 +76,8 @@ function normalizeRepositoryOptions(options) {
     sessionsDir: String(options?.sessionsDir || '').trim(),
     legacyFilePath: String(options?.legacyFilePath || '').trim(),
     onSessionUpdated: typeof options?.onSessionUpdated === 'function' ? options.onSessionUpdated : null,
-    onSessionDeleted: typeof options?.onSessionDeleted === 'function' ? options.onSessionDeleted : null
+    onSessionDeleted: typeof options?.onSessionDeleted === 'function' ? options.onSessionDeleted : null,
+    onMessageAppended: typeof options?.onMessageAppended === 'function' ? options.onMessageAppended : null
   }
 }
 
@@ -86,6 +88,7 @@ export class SessionRepository {
     this.legacyFilePath = normalizedOptions.legacyFilePath
     this.onSessionUpdated = normalizedOptions.onSessionUpdated
     this.onSessionDeleted = normalizedOptions.onSessionDeleted
+    this.onMessageAppended = normalizedOptions.onMessageAppended
     this.pendingWrite = Promise.resolve()
     this.didAttemptLegacyMigration = false
   }
@@ -390,20 +393,35 @@ export class SessionRepository {
     usage
   } = {}) {
     const timestamp = nowIso()
+    const message = createMessage({
+      role,
+      content,
+      model,
+      usage
+    })
 
-    return this.updateSession(sessionId, (session) => {
+    const updatedSession = await this.updateSession(sessionId, (session) => {
       session.updatedAt = timestamp
       session.lastMessageAt = timestamp
       session.messages = Array.isArray(session.messages) ? session.messages : []
-      session.messages.push(createMessage({
-        role,
-        content,
-        model,
-        usage
-      }))
+      session.messages.push(message)
 
       return session
     })
+
+    if (updatedSession && this.onMessageAppended) {
+      try {
+        await this.onMessageAppended({
+          sessionId,
+          session: cloneValue(updatedSession),
+          message: cloneValue(message)
+        })
+      } catch (error) {
+        console.warn('[agent-api] failed to persist token usage:', error instanceof Error ? error.message : error)
+      }
+    }
+
+    return updatedSession
   }
 
   async recoverInterruptedTasks() {

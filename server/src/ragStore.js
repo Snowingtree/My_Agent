@@ -600,9 +600,10 @@ export function createRagStore(ragConfig = {}, {
         embeddingAiId: normalizeTrimmedString(embeddingAiId)
       }
     })
+    const embeddingStatus = await getEmbeddingStatus(embeddingAiId)
     const chunks = splitTextIntoChunks(normalizedContent, {
-      maxChars: chunkMaxChars,
-      overlapChars: chunkOverlapChars
+      maxChars: embeddingStatus.chunkMaxChars || chunkMaxChars,
+      overlapChars: embeddingStatus.chunkOverlapChars || chunkOverlapChars
     })
     const chunkResult = await replaceDocumentChunks(document.documentId, chunks, { embeddingAiId })
 

@@ -166,6 +166,9 @@ export function createConfig() {
       dataDir: resolveServerPath(process.env.AGENT_DATA_DIR, 'data'),
       legacySessionsFile: resolveServerPath(process.env.AGENT_SESSIONS_FILE, 'data/sessions.json'),
       sessionsDir,
+      tokenUsageFile: process.env.AGENT_TOKEN_USAGE_FILE
+        ? resolveServerPath(process.env.AGENT_TOKEN_USAGE_FILE, 'data/token-usage.jsonl')
+        : resolve(defaultAgentStorageDir, 'token-usage.jsonl'),
       sessionArtifactsDir: resolveServerPath(process.env.AGENT_SESSION_ARTIFACTS_DIR, 'data/session-files'),
       sessionWorkspacesDir
     },

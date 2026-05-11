@@ -6,14 +6,17 @@
         <h1>{{ activeSectionMeta.title }}</h1>
         <p class="model-config-header__desc">
           <span>{{ activeSectionMeta.description }}</span>
-          <button
+          <span
             v-if="props.activeSection === 'settings-ai'"
-            type="button"
-            class="primary-btn"
-            @click="openAddAiModal"
+            class="model-config-ai-actions"
           >
-            添加接口
-          </button>
+            <button type="button" class="secondary-btn" :class="{ 'is-active': isEditAiMode }" @click="toggleEditAiMode">
+              {{ isEditAiMode ? '完成修改' : '修改配置' }}
+            </button>
+            <button type="button" class="primary-btn" @click="openAddAiModal">
+              添加接口
+            </button>
+          </span>
           <span
             v-else-if="props.activeSection === 'settings-rag'"
             class="model-config-rag-status"
@@ -38,7 +41,13 @@
         <div v-else-if="!aiConfigs.length" class="model-config-state">当前没有可用的 AI 配置。</div>
 
         <div v-else class="config-grid config-grid--ai">
-          <article v-for="item in aiConfigs" :key="item.aiId" class="config-card config-card--ai">
+          <article
+            v-for="item in aiConfigs"
+            :key="item.aiId"
+            class="config-card config-card--ai"
+            :class="{ 'is-editable': isEditAiMode }"
+            @click="openEditAiModal(item)"
+          >
             <div class="config-card__head">
               <div class="config-card__title">
                 <h3>{{ item.name || item.aiId }}</h3>
@@ -60,6 +69,10 @@
               <div>
                 <dt>API Key</dt>
                 <dd>{{ item.hasApiKey ? '已配置' : '未配置' }}</dd>
+              </div>
+              <div v-if="getAiConfigType(item).className === 'is-embedding'">
+                <dt>Chunk</dt>
+                <dd>{{ formatChunkConfig(item) }}</dd>
               </div>
             </dl>
           </article>
@@ -110,6 +123,74 @@
 
       <section v-else-if="props.activeSection === 'settings-tools'" class="model-config-section">
         <SettingsToolsExplorer />
+      </section>
+
+      <section v-else-if="props.activeSection === 'settings-data-analysis'" class="model-config-section">
+        <div v-if="isLoadingTokenUsage" class="model-config-state">正在读取 token 使用数据...</div>
+        <div v-else-if="tokenUsageError" class="model-config-state is-error">{{ tokenUsageError }}</div>
+        <div v-else class="analytics-panel">
+          <div class="analytics-summary">
+            <article>
+              <span>总 Tokens</span>
+              <strong>{{ formatNumber(tokenUsageSummary.totalTokens) }}</strong>
+            </article>
+            <article>
+              <span>输入 Tokens</span>
+              <strong>{{ formatNumber(tokenUsageSummary.inputTokens) }}</strong>
+            </article>
+            <article>
+              <span>输出 Tokens</span>
+              <strong>{{ formatNumber(tokenUsageSummary.outputTokens) }}</strong>
+            </article>
+            <article>
+              <span>模型数量</span>
+              <strong>{{ formatNumber(tokenUsageSummary.modelCount) }}</strong>
+            </article>
+          </div>
+
+          <div class="analytics-table-wrap">
+            <table class="analytics-table">
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>类型</th>
+                  <th>配置</th>
+                  <th>消息数</th>
+                  <th>输入 Tokens</th>
+                  <th>输出 Tokens</th>
+                  <th>总 Tokens</th>
+                  <th>使用率</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in tokenUsageRows" :key="item.key">
+                  <td>{{ item.model || '未知模型' }}</td>
+                  <td>
+                    <span class="analytics-type-chip" :class="{ 'is-embedding': item.type === 'embedding' }">
+                      {{ formatUsageType(item.type) }}
+                    </span>
+                  </td>
+                  <td>{{ item.aiName || item.aiId || '未知配置' }}</td>
+                  <td>{{ formatNumber(item.messageCount) }}</td>
+                  <td>{{ formatNumber(item.inputTokens) }}</td>
+                  <td>{{ formatNumber(item.outputTokens) }}</td>
+                  <td>{{ formatNumber(item.totalTokens) }}</td>
+                  <td>
+                    <div class="analytics-ratio">
+                      <span>{{ formatPercent(item.usageRate) }}</span>
+                      <div>
+                        <i :style="{ width: getUsageRateWidth(item.usageRate) }"></i>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="!tokenUsageRows.length">
+                  <td colspan="8" class="analytics-table__empty">暂无 token 使用数据。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
     </div>
 
@@ -175,6 +256,51 @@
           </div>
         </div>
       </Transition>
+      <Transition name="modal-fade">
+        <div v-if="showEditAiModal" class="modal-overlay" @click.self="closeEditAiModal">
+          <div class="modal-dialog">
+            <div class="modal-header">
+              <h2>修改 AI 配置</h2>
+              <button type="button" class="modal-close" @click="closeEditAiModal">&times;</button>
+            </div>
+            <form class="modal-body" @submit.prevent="submitEditAi">
+              <label class="modal-field">
+                <span>名称</span>
+                <input v-model="editAiForm.name" type="text" required />
+              </label>
+              <label class="modal-field">
+                <span>模型版本（英文逗号分割）</span>
+                <input v-model="editAiForm.aiVersions" type="text" />
+              </label>
+              <label class="modal-field">
+                <span>接口地址</span>
+                <input v-model="editAiForm.aiBaseUrl" type="text" required />
+              </label>
+              <div class="modal-field">
+                <span>API Key</span>
+                <input type="password" value="********" disabled />
+              </div>
+              <template v-if="editAiForm.type === 'embedding'">
+                <label class="modal-field">
+                  <span>Chunk 最大字符数</span>
+                  <input v-model="editAiForm.chunkMaxChars" type="number" min="300" max="8000" placeholder="默认使用全局配置" />
+                </label>
+                <label class="modal-field">
+                  <span>Chunk 重叠字符数</span>
+                  <input v-model="editAiForm.chunkOverlapChars" type="number" min="0" placeholder="默认使用全局配置" />
+                </label>
+              </template>
+              <p v-if="editAiError" class="modal-error">{{ editAiError }}</p>
+              <div class="modal-footer">
+                <button type="button" class="secondary-btn" @click="closeEditAiModal">取消</button>
+                <button type="submit" class="primary-btn" :disabled="isSubmittingEditAi">
+                  {{ isSubmittingEditAi ? '保存中...' : '保存修改' }}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </Transition>
     </Teleport>
   </div>
 </template>
@@ -195,17 +321,31 @@ defineEmits(['back', 'config-updated'])
 const aiConfigs = ref([])
 const mcpServers = ref([])
 const ragStatus = ref({})
+const tokenUsageRows = ref([])
+const tokenUsageSummary = ref({
+  modelCount: 0,
+  messageCount: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0
+})
 
 const isLoadingAi = ref(false)
 const isLoadingCapabilities = ref(false)
+const isLoadingTokenUsage = ref(false)
 const isRefreshing = ref(false)
 
 const aiError = ref('')
 const capabilitiesError = ref('')
+const tokenUsageError = ref('')
 
 const showAddAiModal = ref(false)
+const showEditAiModal = ref(false)
+const isEditAiMode = ref(false)
 const isSubmittingAi = ref(false)
+const isSubmittingEditAi = ref(false)
 const addAiError = ref('')
+const editAiError = ref('')
 const addAiForm = ref({
   type: 'ai',
   name: '',
@@ -213,6 +353,19 @@ const addAiForm = ref({
   aiBaseUrl: '',
   apiKey: ''
 })
+const editAiForm = ref({
+  aiId: '',
+  type: 'ai',
+  name: '',
+  aiVersions: '',
+  aiBaseUrl: '',
+  chunkMaxChars: '',
+  chunkOverlapChars: ''
+})
+
+function toggleEditAiMode() {
+  isEditAiMode.value = !isEditAiMode.value
+}
 
 function openAddAiModal() {
   addAiForm.value = { type: 'ai', name: '', aiVersions: '', aiBaseUrl: '', apiKey: '' }
@@ -223,6 +376,51 @@ function openAddAiModal() {
 function closeAddAiModal() {
   showAddAiModal.value = false
   addAiError.value = ''
+}
+
+function openEditAiModal(item) {
+  if (!isEditAiMode.value) {
+    return
+  }
+
+  editAiForm.value = {
+    aiId: item.aiId || '',
+    type: getAiConfigType(item).className === 'is-embedding' ? 'embedding' : 'ai',
+    name: item.name || '',
+    aiVersions: item.aiVersions || '',
+    aiBaseUrl: item.aiBaseUrl || '',
+    chunkMaxChars: item.chunkMaxChars || '',
+    chunkOverlapChars: item.chunkOverlapChars || ''
+  }
+  editAiError.value = ''
+  showEditAiModal.value = true
+}
+
+function closeEditAiModal() {
+  showEditAiModal.value = false
+  editAiError.value = ''
+}
+
+async function submitEditAi() {
+  editAiError.value = ''
+  isSubmittingEditAi.value = true
+
+  try {
+    await http.put(`/api/ai/configs/${encodeURIComponent(editAiForm.value.aiId)}`, {
+      name: editAiForm.value.name,
+      aiVersions: editAiForm.value.aiVersions,
+      aiBaseUrl: editAiForm.value.aiBaseUrl,
+      chunkMaxChars: editAiForm.value.type === 'embedding' ? editAiForm.value.chunkMaxChars : null,
+      chunkOverlapChars: editAiForm.value.type === 'embedding' ? editAiForm.value.chunkOverlapChars : null
+    })
+
+    closeEditAiModal()
+    await loadAiConfigs()
+  } catch (error) {
+    editAiError.value = error instanceof Error ? error.message : '修改失败，请重试。'
+  } finally {
+    isSubmittingEditAi.value = false
+  }
 }
 
 async function submitAddAi() {
@@ -263,6 +461,10 @@ const SECTION_META = {
   'settings-rag': {
     title: '知识库',
     description: '上传文档并写入 RAG 数据库，让 Agent 后续可以检索你的长期资料。'
+  },
+  'settings-data-analysis': {
+    title: '数据分析',
+    description: '查看不同模型的 token 使用量和占比。'
   },
   'settings-tools': {
     title: '工具',
@@ -355,6 +557,12 @@ function getAiConfigType(item) {
   }
 }
 
+function formatChunkConfig(item) {
+  const maxChars = item?.chunkMaxChars || '全局'
+  const overlapChars = item?.chunkOverlapChars || '全局'
+  return `${maxChars} / ${overlapChars}`
+}
+
 async function loadAiConfigs() {
   isLoadingAi.value = true
   aiError.value = ''
@@ -397,6 +605,48 @@ async function loadRagStatus() {
   }
 }
 
+async function loadTokenUsage() {
+  isLoadingTokenUsage.value = true
+  tokenUsageError.value = ''
+
+  try {
+    const response = await http.get('/api/agent/analytics/token-usage')
+    tokenUsageRows.value = Array.isArray(response?.items) ? response.items : []
+    tokenUsageSummary.value = {
+      modelCount: Number(response?.summary?.modelCount || 0),
+      messageCount: Number(response?.summary?.messageCount || 0),
+      inputTokens: Number(response?.summary?.inputTokens || 0),
+      outputTokens: Number(response?.summary?.outputTokens || 0),
+      totalTokens: Number(response?.summary?.totalTokens || 0)
+    }
+  } catch (error) {
+    tokenUsageError.value = error instanceof Error ? error.message : '读取 token 使用数据失败。'
+    tokenUsageRows.value = []
+  } finally {
+    isLoadingTokenUsage.value = false
+  }
+}
+
+function formatNumber(value) {
+  const normalizedValue = Number(value || 0)
+  return Number.isFinite(normalizedValue) ? new Intl.NumberFormat('zh-CN').format(normalizedValue) : '0'
+}
+
+function formatPercent(value) {
+  const normalizedValue = Number(value || 0)
+  return `${(Number.isFinite(normalizedValue) ? normalizedValue * 100 : 0).toFixed(1)}%`
+}
+
+function formatUsageType(value) {
+  return String(value || '').toLowerCase() === 'embedding' ? 'Embedding' : 'AI'
+}
+
+function getUsageRateWidth(value) {
+  const normalizedValue = Number(value || 0)
+  const percent = Number.isFinite(normalizedValue) ? Math.max(0, Math.min(100, normalizedValue * 100)) : 0
+  return `${percent}%`
+}
+
 async function ensureSectionLoaded(section, force = false) {
   if (section === 'settings-ai') {
     if (force || (!aiConfigs.value.length && !isLoadingAi.value)) {
@@ -415,6 +665,12 @@ async function ensureSectionLoaded(section, force = false) {
   if (section === 'settings-rag') {
     if (force || !Object.keys(ragStatus.value || {}).length) {
       await loadRagStatus()
+    }
+  }
+
+  if (section === 'settings-data-analysis') {
+    if (force || (!tokenUsageRows.value.length && !isLoadingTokenUsage.value)) {
+      await loadTokenUsage()
     }
   }
 }
@@ -525,6 +781,13 @@ watch(
   color: #be123c;
 }
 
+.model-config-ai-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
 .model-config-header__actions {
   grid-column: 2;
   grid-row: 1 / 3;
@@ -566,6 +829,17 @@ watch(
   border: 1px solid #e7ebf3;
   border-radius: 20px;
   background: #ffffff;
+}
+
+.config-card--ai.is-editable {
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.config-card--ai.is-editable:hover {
+  border-color: #9bbcff;
+  box-shadow: 0 16px 36px rgba(37, 99, 235, 0.12);
+  transform: translateY(-2px);
 }
 
 .config-card__head {
@@ -728,14 +1002,148 @@ watch(
   line-height: 1.7;
 }
 
+.analytics-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.analytics-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.analytics-summary article {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid #e7ebf3;
+  border-radius: 18px;
+  background: #ffffff;
+}
+
+.analytics-summary span {
+  color: #7b8498;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.analytics-summary strong {
+  color: #171717;
+  font-size: 1.55rem;
+  line-height: 1.1;
+}
+
+.analytics-table-wrap {
+  overflow: auto;
+  border: 1px solid #e7ebf3;
+  border-radius: 20px;
+  background: #ffffff;
+}
+
+.analytics-table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: #ffffff;
+}
+
+.analytics-table th,
+.analytics-table td {
+  padding: 15px 18px;
+  border-bottom: 1px solid #edf1f7;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.analytics-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  color: #667085;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.analytics-table td {
+  color: #1f2a3d;
+  font-size: 0.9rem;
+}
+
+.analytics-table tbody tr:hover {
+  background: #f3f4f6;
+}
+
+.analytics-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.analytics-table__empty {
+  color: #7b8498;
+  text-align: center;
+}
+
+.analytics-type-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: #eaf3ff;
+  color: #2563eb;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.analytics-type-chip.is-embedding {
+  background: #e8f8ef;
+  color: #16834a;
+}
+
+.analytics-ratio {
+  display: grid;
+  grid-template-columns: 54px minmax(120px, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.analytics-ratio span {
+  color: #1f2a3d;
+  font-weight: 700;
+}
+
+.analytics-ratio div {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eef2f7;
+}
+
+.analytics-ratio i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #93c5fd, #22c55e);
+}
+
 @media (max-width: 1280px) {
   .config-grid--ai {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 820px) {
   .config-grid--ai {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .analytics-summary {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -781,6 +1189,12 @@ watch(
 .secondary-btn:disabled {
   opacity: 0.56;
   cursor: not-allowed;
+}
+
+.secondary-btn.is-active {
+  border-color: #111827;
+  background: #111827;
+  color: #ffffff;
 }
 
 .primary-btn {

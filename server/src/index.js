@@ -5,7 +5,7 @@ import { createConfig } from './config.js'
 import { createEmbeddingClient } from './embeddingClient.js'
 import { loadEnvFiles } from './env.js'
 import { createAuthToken, readBearerToken, safeCompare, verifyAuthToken } from './auth.js'
-import { getAiConfigById, insertAiConfig, loadAiConfigs, resolveModel, toPublicAiConfig } from './aiConfigs.js'
+import { getAiConfigById, insertAiConfig, loadAiConfigs, resolveModel, toPublicAiConfig, updateAiConfig } from './aiConfigs.js'
 import { createAgentRunner } from './agentRunner.js'
 import { createMcpRegistry } from './mcpRegistry.js'
 import { createRagStore } from './ragStore.js'
@@ -13,6 +13,7 @@ import { createSessionWorkspacesRepository } from './sessionWorkspaces.js'
 import { createSkillLibrary } from './skillLibrary.js'
 import { SessionRepository } from './sessionStore.js'
 import { createSkillRegistry } from './skillRegistry.js'
+import { createTokenUsageStore } from './tokenUsageStore.js'
 import { getToolDetailItem, listToolPreviewItems } from './toolCatalogDetails.js'
 import { createToolRunner } from './toolRunner.js'
 import { createId, normalizeTrimmedString } from './utils.js'
@@ -23,6 +24,7 @@ loadEnvFiles()
 const config = createConfig()
 let sessionWorkspaces = null
 const sessionStreamSubscribers = new Map()
+const tokenUsageStore = createTokenUsageStore(config.storage.tokenUsageFile)
 
 function subscribeToSessionStream(sessionId, listener) {
   const normalizedSessionId = normalizeTrimmedString(sessionId)
@@ -85,6 +87,13 @@ const sessionRepository = new SessionRepository({
     publishSessionStreamEvent(sessionId, {
       type: 'session.deleted',
       sessionId
+    })
+  },
+  onMessageAppended: async ({ sessionId, session, message }) => {
+    await tokenUsageStore.recordMessage({
+      sessionId,
+      message,
+      aiId: session?.lastAiId
     })
   }
 })
@@ -174,7 +183,17 @@ async function getEmbeddingClient(embeddingAiId = '') {
     model: embeddingDatabaseConfig.model,
     provider: embeddingDatabaseConfig.provider,
     dimension: config.rag.embeddingDimension,
-    timeoutMs: config.rag.embeddingTimeoutMs
+    chunkMaxChars: embeddingDatabaseConfig.chunkMaxChars,
+    chunkOverlapChars: embeddingDatabaseConfig.chunkOverlapChars,
+    timeoutMs: config.rag.embeddingTimeoutMs,
+    onUsage: async ({ aiId, model, usage, provider }) => {
+      await tokenUsageStore.recordEmbeddingUsage({
+        aiId,
+        model,
+        usage,
+        source: provider
+      })
+    }
   })
 
   if (embeddingDatabaseConfig.aiId) {
@@ -475,6 +494,11 @@ function matchRagDocumentPath(pathname) {
   return match?.[1] ? decodeURIComponent(match[1]) : ''
 }
 
+function matchAiConfigPath(pathname) {
+  const match = pathname.match(/^\/api\/ai\/configs\/([^/]+)$/)
+  return match?.[1] ? decodeURIComponent(match[1]) : ''
+}
+
 function getAuthorizedUser(request) {
   const token = readBearerToken(request.headers)
   return verifyAuthToken(token, config.auth.secret)
@@ -755,6 +779,26 @@ async function handleCreateAiConfig(request, response) {
   }
 }
 
+async function handleUpdateAiConfig(request, response, aiId) {
+  try {
+    const body = await readJsonBody(request)
+    const result = await updateAiConfig(aiId, {
+      name: body?.name,
+      aiVersions: body?.aiVersions,
+      aiBaseUrl: body?.aiBaseUrl,
+      chunkMaxChars: body?.chunkMaxChars,
+      chunkOverlapChars: body?.chunkOverlapChars
+    })
+
+    embeddingClientCache.clear()
+    sendJson(response, 200, { item: result })
+  } catch (error) {
+    sendJson(response, 400, {
+      message: error instanceof Error ? error.message : 'Update AI config failed.'
+    })
+  }
+}
+
 async function attachWorkspaceState(item) {
   if (!item?.sessionId) {
     return item
@@ -772,6 +816,11 @@ async function attachWorkspaceState(item) {
 async function handleListSessions(response) {
   const items = await sessionRepository.listSummaries()
   sendJson(response, 200, { items })
+}
+
+async function handleGetTokenUsageAnalytics(response) {
+  const aiConfigs = await loadAiConfigs(config.ai)
+  sendJson(response, 200, await tokenUsageStore.getAnalytics(aiConfigs))
 }
 
 async function handleListSkills(response) {
@@ -1521,8 +1570,20 @@ async function handleRequest(request, response) {
     return
   }
 
+  const aiConfigId = matchAiConfigPath(pathname)
+
+  if (aiConfigId && request.method === 'PUT') {
+    await handleUpdateAiConfig(request, response, aiConfigId)
+    return
+  }
+
   if (pathname === '/api/agent/sessions' && request.method === 'GET') {
     await handleListSessions(response)
+    return
+  }
+
+  if (pathname === '/api/agent/analytics/token-usage' && request.method === 'GET') {
+    await handleGetTokenUsageAnalytics(response)
     return
   }
 
@@ -1669,6 +1730,16 @@ const server = createServer(async (request, response) => {
     sendJson(response, 500, { message })
   }
 })
+
+try {
+  const importedTokenUsageCount = await tokenUsageStore.backfillFromSessions(await sessionRepository.readAll())
+
+  if (importedTokenUsageCount) {
+    console.log(`[agent-api] token usage backfilled: ${importedTokenUsageCount}`)
+  }
+} catch (error) {
+  console.warn('[agent-api] failed to backfill token usage:', error instanceof Error ? error.message : error)
+}
 
 await sessionRepository.recoverInterruptedTasks()
 
