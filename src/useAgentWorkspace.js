@@ -312,6 +312,21 @@ function normalizeMcpServerOption(item) {
   }
 }
 
+function normalizeContextMemoryConfig(item) {
+  const thresholdMessages = Number(item?.thresholdMessages)
+  const keepMessages = Number(item?.keepMessages)
+  const minBatchMessages = Number(item?.minBatchMessages)
+  const maxSummaryChars = Number(item?.maxSummaryChars)
+
+  return {
+    enabled: item?.enabled !== false,
+    thresholdMessages: Number.isFinite(thresholdMessages) && thresholdMessages > 0 ? thresholdMessages : 24,
+    keepMessages: Number.isFinite(keepMessages) && keepMessages > 0 ? keepMessages : 12,
+    minBatchMessages: Number.isFinite(minBatchMessages) && minBatchMessages > 0 ? minBatchMessages : 4,
+    maxSummaryChars: Number.isFinite(maxSummaryChars) && maxSummaryChars > 0 ? maxSummaryChars : 6000
+  }
+}
+
 function createFallbackSessionTitle(value) {
   const normalized = String(value || '').trim().replace(/\s+/g, ' ')
 
@@ -387,6 +402,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const ragCollectionError = ref('')
   const larkChats = ref([])
   const mcpServers = ref([])
+  const contextMemoryConfig = ref(normalizeContextMemoryConfig({}))
   const mcpServerError = ref('')
   const larkChatError = ref('')
   const isLoadingLarkChats = ref(false)
@@ -1280,6 +1296,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       mcpServers.value = Array.isArray(data?.mcpServers)
         ? data.mcpServers.map((item) => normalizeMcpServerOption(item)).filter(Boolean)
         : []
+      contextMemoryConfig.value = normalizeContextMemoryConfig(data?.contextMemory)
 
       if (selectedMcpServerIds.value.length) {
         selectedMcpServerIds.value = selectedMcpServerIds.value.filter((serverId) => (
@@ -1289,6 +1306,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       }
     } catch (error) {
       mcpServers.value = []
+      contextMemoryConfig.value = normalizeContextMemoryConfig({})
       mcpServerError.value = normalizeErrorMessage(error, '读取 MCP 服务失败。')
     } finally {
       isLoadingMcpServers.value = false
@@ -1967,6 +1985,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     activeMessages,
     activeSession,
     activeSessionId,
+    contextMemoryConfig,
     aiConfigs,
     embeddingConfigs,
     addEphemeralAttachments,

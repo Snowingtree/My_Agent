@@ -862,7 +862,14 @@ async function handleGetCapabilities(response) {
     skills: skillRegistry.listSkills(),
     tools: toolRunner.getToolCatalog(),
     mcpServers: mcpRegistry.getServerSummaries(),
-    rag: await ragStore.getStatus()
+    rag: await ragStore.getStatus(),
+    contextMemory: {
+      enabled: Boolean(config.ai.contextMemoryEnabled),
+      thresholdMessages: config.ai.contextMemoryThreshold,
+      keepMessages: config.ai.contextMemoryKeepMessages,
+      minBatchMessages: config.ai.contextMemoryMinBatchMessages,
+      maxSummaryChars: config.ai.contextMemoryMaxChars
+    }
   })
 }
 
@@ -1534,6 +1541,13 @@ async function handleRequest(request, response) {
       autoVerifyCommands: config.workspace.autoVerifyCommands,
       skills: skillRegistry.listSkills(),
       mcpServers: mcpRegistry.getServerSummaries(),
+      contextMemory: {
+        enabled: Boolean(config.ai.contextMemoryEnabled),
+        thresholdMessages: config.ai.contextMemoryThreshold,
+        keepMessages: config.ai.contextMemoryKeepMessages,
+        minBatchMessages: config.ai.contextMemoryMinBatchMessages,
+        maxSummaryChars: config.ai.contextMemoryMaxChars
+      },
       rag: await ragStore.getStatus(),
       toolCount: toolRunner.getToolCatalog().length,
       aiConfigs: (await loadAiConfigs(config.ai)).map((item) => ({

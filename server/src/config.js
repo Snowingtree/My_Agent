@@ -134,6 +134,7 @@ export function createConfig() {
   const agentPort = readNumberEnv('AGENT_PORT', readNumberEnv('API_PORT', 3001))
   const explicitSharedAuthBaseUrl = normalizeBaseUrl(process.env.AGENT_SHARED_AUTH_BASE_URL)
   const inferredSharedAuthBaseUrl = agentPort === 3001 ? '' : 'http://127.0.0.1:3001'
+  const recentMessages = readNumberEnv('AGENT_CONTEXT_MESSAGES', 12)
   const workspaceRootDir = resolveServerPath(process.env.AGENT_WORKSPACE_ROOT, '..')
   const defaultAgentStorageDir = resolve(
     workspaceRootDir,
@@ -179,7 +180,12 @@ export function createConfig() {
       timeoutRetries: readNumberEnv('AGENT_AI_TIMEOUT_RETRIES', 2),
       timeoutRetryDelayMs: readNumberEnv('AGENT_AI_TIMEOUT_RETRY_DELAY_MS', 1500),
       streamResponses: normalizeBooleanEnv(process.env.AGENT_AI_STREAM_RESPONSES, true),
-      recentMessages: readNumberEnv('AGENT_CONTEXT_MESSAGES', 12),
+      recentMessages,
+      contextMemoryEnabled: normalizeBooleanEnv(process.env.AGENT_CONTEXT_MEMORY_ENABLED, true),
+      contextMemoryThreshold: readNumberEnv('AGENT_CONTEXT_MEMORY_THRESHOLD', Math.max(24, recentMessages * 2)),
+      contextMemoryKeepMessages: readNumberEnv('AGENT_CONTEXT_MEMORY_KEEP_MESSAGES', recentMessages),
+      contextMemoryMinBatchMessages: readNumberEnv('AGENT_CONTEXT_MEMORY_MIN_BATCH_MESSAGES', 4),
+      contextMemoryMaxChars: readNumberEnv('AGENT_CONTEXT_MEMORY_MAX_CHARS', 6000),
       maxPlanSteps: readNumberEnv('AGENT_MAX_PLAN_STEPS', 5)
     },
     skills: {

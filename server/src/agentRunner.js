@@ -74,6 +74,70 @@ function toChatHistorySafe(messages) {
   })
 }
 
+function normalizeMemoryMessageCount(value, maxValue) {
+  const parsedValue = Number.parseInt(value, 10)
+  const safeMaxValue = Math.max(0, Number.parseInt(maxValue, 10) || 0)
+
+  if (!Number.isFinite(parsedValue) || parsedValue < 0) {
+    return 0
+  }
+
+  return Math.min(parsedValue, safeMaxValue)
+}
+
+function serializeMessagesForMemory(messages = [], maxCharsPerMessage = 1200) {
+  return messages
+    .map((message, index) => {
+      const role = normalizeTrimmedString(message?.role) || 'assistant'
+      const createdAt = normalizeTrimmedString(message?.createdAt)
+      const content = truncateText(String(message?.content || '').replace(/\s+/g, ' '), maxCharsPerMessage)
+      return content ? `${index + 1}. ${role}${createdAt ? ` @ ${createdAt}` : ''}: ${content}` : ''
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+function normalizeMemorySummary(value, maxChars = 6000) {
+  const normalizedValue = normalizeTrimmedString(value)
+
+  if (!normalizedValue) {
+    return ''
+  }
+
+  return normalizedValue.length > maxChars ? normalizedValue.slice(0, maxChars).trim() : normalizedValue
+}
+
+function createMemorySummaryMessages({ existingSummary = '', messagesToCompress = [], maxChars = 6000 } = {}) {
+  const serializedMessages = serializeMessagesForMemory(messagesToCompress)
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You compress conversation history for a long-running coding agent.',
+        'Return strict JSON only.',
+        'Do not include hidden reasoning.',
+        'Preserve durable user preferences, project decisions, selected tools, important constraints, file names, unresolved tasks, and facts needed for future turns.',
+        'Remove greetings, repeated status updates, transient tool logs, and low-value chatter.',
+        `Keep the summary under ${maxChars} characters.`,
+        'JSON schema:',
+        '{',
+        '  "summary": "compressed long-term conversation memory"',
+        '}'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: [
+        existingSummary ? `Existing memory summary:\n${existingSummary}` : 'Existing memory summary: (empty)',
+        '',
+        'New messages to merge into memory:',
+        serializedMessages || '(empty)'
+      ].join('\n')
+    }
+  ]
+}
+
 function looksLikeFileChangeRequestSafe(value) {
   const normalized = normalizeTrimmedString(value)
 
@@ -578,6 +642,7 @@ function buildAgentLoopMessages({
   workspaceContextText = '',
   attachmentContextText = '',
   ragContextText = '',
+  conversationMemoryText = '',
   currentDateContextText = ''
 }) {
   const promptSections = [
@@ -672,6 +737,12 @@ function buildAgentLoopMessages({
           content: `RAG knowledge context:\n${ragContextText}`
         }]
       : []),
+    ...(conversationMemoryText
+      ? [{
+          role: 'user',
+          content: `Long-term conversation memory summary:\n${conversationMemoryText}`
+        }]
+      : []),
     ...conversationHistory,
     ...toolMessages,
     {
@@ -695,6 +766,7 @@ function buildForcedFinalMessages({
   workspaceContextText = '',
   attachmentContextText = '',
   ragContextText = '',
+  conversationMemoryText = '',
   currentDateContextText = ''
 }) {
   const promptSections = [
@@ -772,6 +844,12 @@ function buildForcedFinalMessages({
       ? [{
           role: 'user',
           content: `RAG knowledge context:\n${ragContextText}`
+        }]
+      : []),
+    ...(conversationMemoryText
+      ? [{
+          role: 'user',
+          content: `Long-term conversation memory summary:\n${conversationMemoryText}`
         }]
       : []),
     ...conversationHistory,
@@ -1336,6 +1414,78 @@ export function createAgentRunner({
     })
   }
 
+  async function ensureConversationMemory({
+    sessionId,
+    session,
+    aiConfig,
+    selectedModel,
+    signal
+  } = {}) {
+    if (!aiRuntimeConfig?.contextMemoryEnabled) {
+      return normalizeMemorySummary(session?.memorySummary, aiRuntimeConfig?.contextMemoryMaxChars)
+    }
+
+    const messages = Array.isArray(session?.messages) ? session.messages : []
+    const threshold = Math.max(1, Number(aiRuntimeConfig.contextMemoryThreshold || 24))
+    const keepMessages = Math.max(1, Number(aiRuntimeConfig.contextMemoryKeepMessages || aiRuntimeConfig.recentMessages || 12))
+    const minBatchMessages = Math.max(1, Number(aiRuntimeConfig.contextMemoryMinBatchMessages || 4))
+    const maxChars = Math.max(1000, Number(aiRuntimeConfig.contextMemoryMaxChars || 6000))
+    const currentMemoryCount = normalizeMemoryMessageCount(session?.memoryMessageCount, messages.length)
+    const cutoffIndex = Math.max(0, messages.length - keepMessages)
+    const messagesToCompress = messages.slice(currentMemoryCount, cutoffIndex)
+    const existingSummary = normalizeMemorySummary(session?.memorySummary, maxChars)
+
+    if (
+      messages.length <= threshold
+      || cutoffIndex <= currentMemoryCount
+      || messagesToCompress.length < minBatchMessages
+    ) {
+      return existingSummary
+    }
+
+    try {
+      const completion = await createStructuredCompletion({
+        aiConfig,
+        model: selectedModel,
+        messages: createMemorySummaryMessages({
+          existingSummary,
+          messagesToCompress,
+          maxChars
+        }),
+        requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+        idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
+        streamResponses: false,
+        timeoutRetries: Math.min(1, Number(aiRuntimeConfig.timeoutRetries || 0)),
+        timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
+        signal
+      })
+      const nextSummary = normalizeMemorySummary(
+        completion?.json?.summary || completion?.json?.reply || completion?.rawText,
+        maxChars
+      )
+
+      if (!nextSummary) {
+        return existingSummary
+      }
+
+      await sessionRepository.updateSession(sessionId, (draftSession) => {
+        const keptMessages = messages.slice(cutoffIndex)
+        draftSession.memorySummary = nextSummary
+        draftSession.memoryUpdatedAt = nowIso()
+        draftSession.memoryMessageCount = 0
+        draftSession.memoryCompressedThroughMessageId = normalizeTrimmedString(messages[cutoffIndex - 1]?.messageId)
+        draftSession.messages = keptMessages
+        draftSession.updatedAt = nowIso()
+        return draftSession
+      })
+
+      return nextSummary
+    } catch (error) {
+      console.warn('[agent-runner] failed to compress conversation memory:', error instanceof Error ? error.message : error)
+      return existingSummary
+    }
+  }
+
   async function markTaskCancelled(sessionId, summary = '已停止当前处理。') {
     return sessionRepository.updateSession(sessionId, (draftSession) => {
       if (!draftSession?.task) {
@@ -1452,6 +1602,13 @@ export function createAgentRunner({
 
     const selectedModel = resolveModel(aiConfig, requestedModel)
     const taskId = session.task?.taskId || createId('task')
+    const conversationMemoryText = await ensureConversationMemory({
+      sessionId,
+      session,
+      aiConfig,
+      selectedModel,
+      signal: abortSignal
+    })
     const conversationHistory = toChatHistorySafe(
       getRecentMessages(session.messages || [], aiRuntimeConfig.recentMessages)
     )
@@ -1856,6 +2013,7 @@ export function createAgentRunner({
           workspaceContextText,
           attachmentContextText,
           ragContextText,
+          conversationMemoryText,
           currentDateContextText
         })
         })
@@ -2067,6 +2225,7 @@ export function createAgentRunner({
               workspaceContextText,
               attachmentContextText,
               ragContextText,
+              conversationMemoryText,
               currentDateContextText
             })
           })
@@ -2107,6 +2266,7 @@ export function createAgentRunner({
               workspaceContextText: refreshedWorkspaceContextText,
               attachmentContextText,
               ragContextText,
+              conversationMemoryText,
               currentDateContextText
             })
           })

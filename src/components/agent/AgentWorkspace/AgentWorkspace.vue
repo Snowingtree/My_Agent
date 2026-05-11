@@ -126,6 +126,9 @@
           <h2>{{ activeSessionTitle }}</h2>
         </div>
         <div class="agent-mainbar__actions">
+          <span class="agent-context-badge" :aria-label="contextUsageAriaLabel">
+            {{ formattedContextUsage }}
+          </span>
           <span v-if="totalTokens > 0" class="agent-token-badge">
             {{ formattedTotalTokens }}
           </span>
@@ -848,6 +851,9 @@ const LARK_CHAT_LIST_MARKER_END = ':::'
 const props = defineProps({
   activeSessionId: { type: String, default: '' },
   activeSessionTitle: { type: String, default: '当前会话' },
+  contextMemorySummary: { type: String, default: '' },
+  contextMemoryConfig: { type: Object, default: () => ({}) },
+  contextMessageCount: { type: Number, default: 0 },
   activeWorkspaceFiles: { type: Array, default: () => [] },
   activeWorkspaceFolder: { type: String, default: '' },
   aiConfigs: { type: Array, default: () => [] },
@@ -1594,6 +1600,45 @@ const formattedTotalTokens = computed(() => {
   }
 
   return `${tokens} tokens`
+})
+
+const contextMemoryThreshold = computed(() => {
+  const value = Number(props.contextMemoryConfig?.thresholdMessages)
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : 24
+})
+
+const contextMessageCount = computed(() => {
+  const explicitValue = Number(props.contextMessageCount)
+
+  if (Number.isFinite(explicitValue) && explicitValue >= 0) {
+    return Math.round(explicitValue)
+  }
+
+  return Array.isArray(props.messages) ? props.messages.length : 0
+})
+
+const contextUsagePercent = computed(() => {
+  if (props.contextMemoryConfig?.enabled === false) {
+    return 0
+  }
+
+  return Math.min(100, Math.round((contextMessageCount.value / contextMemoryThreshold.value) * 100))
+})
+
+const formattedContextUsage = computed(() => {
+  if (props.contextMemoryConfig?.enabled === false) {
+    return '关闭'
+  }
+
+  return `${contextUsagePercent.value}%`
+})
+
+const contextUsageAriaLabel = computed(() => {
+  if (props.contextMemoryConfig?.enabled === false) {
+    return '上下文压缩未启用'
+  }
+
+  return `上下文使用率 ${formattedContextUsage.value}`
 })
 
 function isProgressMessage(message) {
@@ -3476,6 +3521,20 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: rgba(147, 114, 255, 0.12);
   color: #7c5fe4;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.agent-context-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  min-width: 58px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.14);
+  color: #0369a1;
   font-size: 0.82rem;
   font-weight: 700;
 }

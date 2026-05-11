@@ -24,6 +24,8 @@ function createSessionSummary(session) {
     lastModel: session.lastModel,
     lastSkillId: session.lastSkillId || '',
     lastSkillIds: Array.isArray(session.lastSkillIds) ? session.lastSkillIds : [],
+    memoryUpdatedAt: session.memoryUpdatedAt || null,
+    memoryMessageCount: Number.isFinite(Number(session.memoryMessageCount)) ? Number(session.memoryMessageCount) : 0,
     workspaceFolder: String(session.workspaceFolder || '').trim(),
     workspaceFiles: Array.isArray(session.workspaceFiles) ? session.workspaceFiles : [],
     task: session.task

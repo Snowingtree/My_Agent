@@ -191,6 +191,9 @@
           :expired-attachment-notice="expiredAttachmentNotice"
           :active-session-id="activeSessionId"
           :active-session-title="activeSession?.title || '新对话'"
+          :context-memory-summary="activeSession?.memorySummary || ''"
+          :context-memory-config="contextMemoryConfig"
+          :context-message-count="activeSession?.messages?.length || 0"
           :active-workspace-files="activeWorkspaceFiles"
           :active-workspace-folder="activeWorkspaceFolder"
           :ai-configs="aiConfigs"
@@ -333,6 +336,7 @@ const {
   activeMessages,
   activeSession,
   activeSessionId,
+  contextMemoryConfig,
   activeWorkspaceFiles,
   activeWorkspaceFolder,
   addEphemeralAttachments,
