@@ -11,194 +11,6 @@
 - Axios
 - snowingress-my-components
 
-## 访问链路
-
-公开博客主页中的 Agent 链接指向私有网络地址：
-
-```text
-http://100.73.19.92/agent/
-```
-
-注意必须保留结尾 `/`。如果访问 `/agent`，服务器需要重定向到 `/agent/`。
-
-## 本地开发
-
-安装依赖：
-
-```bash
-npm install
-```
-
-启动开发环境：
-
-```bash
-npm run dev
-```
-
-默认开发地址：
-
-```text
-http://127.0.0.1:5175/agent/
-```
-
-开发服务器会把 `/api` 代理到后端：
-
-```text
-http://127.0.0.1:3001
-```
-
-可以通过 `API_PROXY_TARGET` 覆盖：
-
-```bash
-API_PROXY_TARGET=http://127.0.0.1:3001 npm run dev
-```
-
-Windows PowerShell 如果拦截 `npm.ps1`，可以使用：
-
-```powershell
-npm.cmd run dev
-```
-
-## 构建
-
-```bash
-npm run build
-```
-
-Windows PowerShell 可使用：
-
-```powershell
-npm.cmd run build
-```
-
-构建产物输出到：
-
-```text
-dist/
-```
-
-构建结束后会输出总文件大小和文件数量，例如：
-
-```text
-[build-size] Total: 1.17 MB | Files: 3
-```
-
-## 环境变量
-
-| 变量 | 用途 | 默认值 |
-| --- | --- | --- |
-| `API_PROXY_TARGET` | 本地开发时 Vite `/api` 代理目标 | `http://127.0.0.1:3001` |
-| `VITE_API_BASE_URL` | 前端请求 API 的显式后端地址 | 空 |
-| `VITE_PRIVATE_APP_BASE_URL` | 私有网络应用地址 | `http://100.73.19.92` |
-| `VITE_PUBLIC_APP_BASE_URL` | 返回公开主页时使用的地址 | `http://www.wmzh.online` |
-| `VITE_PRIVATE_APP_ALLOWED_HOSTS` | 额外允许的私有网络域名，英文逗号分隔 | 空 |
-
-生产部署通常不需要设置 `VITE_API_BASE_URL`，只要 Nginx 正确把 `/api` 转发到 Node 后端即可。
-
-## Nginx 部署示例
-
-假设服务器静态根目录结构如下：
-
-```text
-web-root/
-  index.html
-  assets/
-  agent/
-    index.html
-    assets/
-```
-
-Agent 子应用配置：
-
-```nginx
-location = /agent {
-    return 301 /agent/;
-}
-
-location ^~ /agent/ {
-    try_files $uri $uri/ /agent/index.html;
-}
-```
-
-后端 API 代理示例：
-
-```nginx
-location = /api/login {
-    proxy_pass http://127.0.0.1:3001;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-
-location ^~ /api/ai/ {
-    proxy_pass http://127.0.0.1:3001;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-
-    proxy_buffering off;
-    proxy_cache off;
-    proxy_request_buffering off;
-    proxy_read_timeout 3600s;
-    proxy_send_timeout 3600s;
-}
-
-location ^~ /api/agent/ {
-    proxy_pass http://127.0.0.1:3001;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-
-    proxy_buffering off;
-    proxy_cache off;
-    proxy_request_buffering off;
-    proxy_read_timeout 3600s;
-    proxy_send_timeout 3600s;
-}
-```
-
-不要添加下面这种规则，否则会和 `/agent -> /agent/` 形成无限重定向：
-
-```nginx
-location = /agent/ {
-    return 301 /agent;
-}
-```
-
-## 后端 API 依赖
-
-当前前端会调用这些接口：
-
-```text
-POST   /api/login
-GET    /api/ai/configs
-GET    /api/agent/sessions
-POST   /api/agent/sessions
-GET    /api/agent/sessions/:sessionId
-DELETE /api/agent/sessions/:sessionId
-POST   /api/agent/chat
-```
-
-登录成功后，后端需要返回 `token`，前端会把它写入 `localStorage` 并作为后续请求的 `Authorization: Bearer <token>`。
-
-## 私有网络访问
-
-项目会判断当前访问环境是否属于私有网络。以下情况会被认为允许访问：
-
-- `localhost`
-- `127.0.0.1`
-- Tailscale `100.64.0.0/10` 地址
-- `.ts.net` 域名
-- `VITE_PRIVATE_APP_ALLOWED_HOSTS` 中配置的域名
-
-如果从公开网络进入，会先尝试探测 `VITE_PRIVATE_APP_BASE_URL`，可达时跳转到私有网络地址；不可达时显示私有网络不可访问提示。
-
 ## 项目结构
 
 ```text
@@ -243,3 +55,43 @@ dist/
 ```
 
 `dist/` 是构建产物，可以随时通过 `npm run build` 重新生成。
+
+## git语句
+# Commit Message 标识说明
+
+| 标识 | 含义 | 作用 |
+|---|---|---|
+| ✨ `feat` | 新功能 | 新增一个功能、页面、模块或能力 |
+| 🐛 `fix` | 修复问题 | 修复 bug、错误逻辑、异常行为 |
+| 📝 `docs` | 文档修改 | 修改 README、注释、说明文档等，不影响代码逻辑 |
+| ♻️ `refactor` | 代码重构 | 不改变功能结果，只优化代码结构、可读性、可维护性 |
+| ⚡ `perf` | 性能优化 | 提升运行速度、减少内存占用、优化加载性能等 |
+| 🧑‍💻 `dx` | 开发体验优化 | 改善开发者使用体验，比如优化脚本、调试方式、错误提示 |
+| 🔨 `workflow` | 工作流修改 | 修改项目流程、自动化流程、开发流程配置 |
+| 🏷️ `types` | 类型相关 | 修改 TypeScript 类型、类型声明、接口类型等 |
+| 🚧 `wip` | 开发中 | 功能还没完成，临时提交当前进度 |
+| ✅ `test` | 测试相关 | 新增或修改测试代码，比如单元测试、集成测试 |
+| 🔨 `build` | 构建相关 | 修改打包配置、构建脚本、构建工具配置 |
+| 👷 `ci` | 持续集成 | 修改 GitHub Actions、GitLab CI、自动测试/部署流程 |
+| ❓ `chore` | 杂项维护 | 不属于功能、修复、文档、测试的日常维护工作 |
+| ⬆️ `deps` | 依赖更新 | 升级或修改 npm、pip、Maven 等依赖版本 |
+| 🔖 `release` | 发布版本 | 发布新版本、打 tag、更新版本号、生成 changelog |
+
+## 常见示例
+
+```bash
+✨ feat: 添加用户登录功能
+🐛 fix: 修复手机号校验失败的问题
+📝 docs: 更新项目启动说明
+♻️ refactor: 重构订单列表组件
+⚡ perf: 优化首页图片加载速度
+🧑‍💻 dx: 优化本地开发启动脚本
+🔨 workflow: 调整代码提交检查流程
+🏷️ types: 补充用户信息类型定义
+🚧 wip: 暂存个人中心页面开发进度
+✅ test: 添加登录模块单元测试
+🔨 build: 修改 Vite 构建配置
+👷 ci: 更新 GitHub Actions 自动部署流程
+❓ chore: 清理无用配置文件
+⬆️ deps: 升级 React 依赖版本
+🔖 release: 发布 v1.2.0
