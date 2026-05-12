@@ -2,63 +2,79 @@
   <main class="agent-page">
     <aside class="agent-page__sidebar">
       <div class="agent-sidebar__top">
-        <div class="agent-sidebar__brand">
+        <button
+          type="button"
+          class="agent-sidebar__brand"
+          :class="{ 'is-active': showHomePage }"
+          :aria-label="showHomePage ? '返回对话' : '打开主页'"
+          :title="showHomePage ? '返回对话' : '打开主页'"
+          @click="toggleHomePage"
+        >
           <span class="agent-user-card__avatar">{{ userInitial }}</span>
           <div>
             <strong>Agent</strong>
             <small>{{ username }}</small>
           </div>
-        </div>
-
-        <button
-          type="button"
-          class="agent-sidebar__icon-button"
-          :aria-label="showModelConfig ? '返回对话' : '打开设置'"
-          :title="showModelConfig ? '返回对话' : '打开设置'"
-          @click="toggleSettings"
-        >
-          <svg v-if="showModelConfig" viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M10 6L4 12L10 18"
-              fill="none"
-              stroke="currentColor"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.8"
-            />
-            <path
-              d="M5 12H14C17.314 12 20 14.686 20 18"
-              fill="none"
-              stroke="currentColor"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.8"
-            />
-          </svg>
-          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M10.325 4.317C10.751 2.561 13.249 2.561 13.675 4.317C13.95 5.454 15.229 5.991 16.243 5.44C17.81 4.589 19.577 6.355 18.726 7.923C18.175 8.936 18.712 10.216 19.849 10.49C21.605 10.917 21.605 13.414 19.849 13.84C18.712 14.115 18.175 15.394 18.726 16.408C19.577 17.975 17.81 19.742 16.243 18.891C15.229 18.34 13.95 18.877 13.675 20.014C13.249 21.77 10.751 21.77 10.325 20.014C10.05 18.877 8.771 18.34 7.757 18.891C6.19 19.742 4.423 17.975 5.274 16.408C5.825 15.394 5.288 14.115 4.151 13.84C2.395 13.414 2.395 10.917 4.151 10.49C5.288 10.216 5.825 8.936 5.274 7.923C4.423 6.355 6.19 4.589 7.757 5.44C8.771 5.991 10.05 5.454 10.325 4.317Z"
-              fill="none"
-              stroke="currentColor"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.6"
-            />
-            <circle
-              cx="12"
-              cy="12"
-              r="3.25"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.6"
-            />
-          </svg>
         </button>
+
+        <div class="agent-sidebar__top-actions">
+          <button
+            type="button"
+            class="agent-sidebar__icon-button"
+            :class="{ 'is-active': showModelConfig }"
+            :aria-label="showModelConfig ? '返回对话' : '打开设置'"
+            :title="showModelConfig ? '返回对话' : '打开设置'"
+            @click="toggleSettings"
+          >
+            <svg v-if="showModelConfig" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M10 6L4 12L10 18"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.8"
+              />
+              <path
+                d="M5 12H14C17.314 12 20 14.686 20 18"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.8"
+              />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M10.325 4.317C10.751 2.561 13.249 2.561 13.675 4.317C13.95 5.454 15.229 5.991 16.243 5.44C17.81 4.589 19.577 6.355 18.726 7.923C18.175 8.936 18.712 10.216 19.849 10.49C21.605 10.917 21.605 13.414 19.849 13.84C18.712 14.115 18.175 15.394 18.726 16.408C19.577 17.975 17.81 19.742 16.243 18.891C15.229 18.34 13.95 18.877 13.675 20.014C13.249 21.77 10.751 21.77 10.325 20.014C10.05 18.877 8.771 18.34 7.757 18.891C6.19 19.742 4.423 17.975 5.274 16.408C5.825 15.394 5.288 14.115 4.151 13.84C2.395 13.414 2.395 10.917 4.151 10.49C5.288 10.216 5.825 8.936 5.274 7.923C4.423 6.355 6.19 4.589 7.757 5.44C8.771 5.991 10.05 5.454 10.325 4.317Z"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.6"
+              />
+              <circle
+                cx="12"
+                cy="12"
+                r="3.25"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+              />
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div class="agent-sidebar-rail">
-        <div class="agent-sidebar-rail__track" :class="{ 'is-settings-open': showModelConfig }">
-          <section class="agent-sidebar-rail__panel">
+        <div
+          class="agent-sidebar-rail__track"
+          :class="{
+            'is-home-open': showHomePage,
+            'is-settings-open': showModelConfig
+          }"
+        >
+          <section class="agent-sidebar-rail__panel agent-sidebar-rail__panel--chat">
             <button
               type="button"
               class="agent-sidebar__new-chat"
@@ -120,7 +136,28 @@
             </div>
           </section>
 
-          <section class="agent-sidebar-rail__panel">
+          <section class="agent-sidebar-rail__panel agent-sidebar-rail__panel--home">
+            <div class="agent-settings-sidebar__offset" aria-hidden="true"></div>
+
+            <div class="agent-sidebar__section">
+              <div class="agent-sidebar__section-head">
+                <span>主页导航</span>
+              </div>
+
+              <div class="agent-settings-nav">
+                <button
+                  type="button"
+                  class="agent-settings-nav__item"
+                  :class="{ 'is-active': activeHomeSection === 'home-schedule' }"
+                  @click="selectHomeSection('home-schedule')"
+                >
+                  日程表
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="agent-sidebar-rail__panel agent-sidebar-rail__panel--settings">
             <div class="agent-settings-sidebar__offset" aria-hidden="true"></div>
 
             <div class="agent-sidebar__section">
@@ -184,8 +221,17 @@
       </div>
     </aside>
 
-    <section class="agent-page__content" :class="{ 'is-settings-open': showModelConfig }">
-      <section class="agent-page__stage agent-page__stage--workspace" :aria-hidden="showModelConfig ? 'true' : 'false'">
+    <section
+      class="agent-page__content"
+      :class="{
+        'is-home-open': showHomePage,
+        'is-settings-open': showModelConfig
+      }"
+    >
+      <section
+        class="agent-page__stage agent-page__stage--workspace"
+        :aria-hidden="showHomePage || showModelConfig ? 'true' : 'false'"
+      >
         <AgentWorkspace
           :ephemeral-attachments="activeEphemeralAttachments"
           :expired-attachment-notice="expiredAttachmentNotice"
@@ -271,6 +317,31 @@
         />
       </section>
 
+      <section class="agent-page__stage agent-page__stage--home" :aria-hidden="showHomePage ? 'false' : 'true'">
+        <section class="agent-home-content">
+          <header class="agent-home-header">
+            <p>主页</p>
+            <h1>日程表</h1>
+            <span>当前主页模块已接入左侧导航，后续可以继续扩展日程数据和操作能力。</span>
+          </header>
+
+          <section class="agent-schedule-panel">
+            <div class="agent-schedule-panel__head">
+              <div>
+                <p>今日安排</p>
+                <h2>日程表</h2>
+              </div>
+              <span>{{ currentDateLabel }}</span>
+            </div>
+
+            <div class="agent-schedule-empty">
+              <strong>暂无日程</strong>
+              <span>这里先作为主页日程表入口，后续可以接入飞书日历或本地日程数据。</span>
+            </div>
+          </section>
+        </section>
+      </section>
+
       <section class="agent-page__stage agent-page__stage--settings" :aria-hidden="showModelConfig ? 'false' : 'true'">
         <section class="agent-settings-content">
           <ModelConfigPage
@@ -294,8 +365,16 @@ import ModelConfigPage from './agent/ModelConfigPage.vue'
 
 defineEmits(['logout'])
 
-const showModelConfig = ref(false)
+const activeSurface = ref('chat')
+const showModelConfig = computed(() => activeSurface.value === 'settings')
+const showHomePage = computed(() => activeSurface.value === 'home')
+const activeHomeSection = ref('home-schedule')
 const activeSettingsSection = ref('settings-ai')
+const currentDateLabel = computed(() => new Intl.DateTimeFormat('zh-CN', {
+  month: 'long',
+  day: 'numeric',
+  weekday: 'long'
+}).format(new Date()))
 
 function notify({ message, type = 'success' }) {
   createMessage({
@@ -307,12 +386,30 @@ function notify({ message, type = 'success' }) {
 }
 
 function openModelConfig() {
-  showModelConfig.value = true
+  activeSurface.value = 'settings'
   activeSettingsSection.value = activeSettingsSection.value || 'settings-ai'
 }
 
 function closeModelConfig() {
-  showModelConfig.value = false
+  activeSurface.value = 'chat'
+}
+
+function openHomePage() {
+  activeSurface.value = 'home'
+  activeHomeSection.value = activeHomeSection.value || 'home-schedule'
+}
+
+function closeHomePage() {
+  activeSurface.value = 'chat'
+}
+
+function toggleHomePage() {
+  if (showHomePage.value) {
+    closeHomePage()
+    return
+  }
+
+  openHomePage()
 }
 
 function toggleSettings() {
@@ -326,7 +423,12 @@ function toggleSettings() {
 
 function selectSettingsSection(sectionId) {
   activeSettingsSection.value = sectionId
-  showModelConfig.value = true
+  activeSurface.value = 'settings'
+}
+
+function selectHomeSection(sectionId) {
+  activeHomeSection.value = sectionId
+  activeSurface.value = 'home'
 }
 
 const username = ref(getAgentUsername({ storage: localStorage }))
@@ -456,6 +558,21 @@ const {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  padding: 4px 6px 4px 2px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition:
+    background-color 150ms ease,
+    transform 150ms ease;
+}
+
+.agent-sidebar__brand:hover,
+.agent-sidebar__brand.is-active {
+  background: #ececec;
 }
 
 .agent-sidebar__brand strong,
@@ -523,7 +640,15 @@ const {
   line-height: 1;
 }
 
+.agent-sidebar__top-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
 .agent-sidebar__icon-button:hover,
+.agent-sidebar__icon-button.is-active,
 .agent-sidebar__new-chat:hover,
 .agent-sidebar__logout:hover {
   background: #ececec;
@@ -542,16 +667,20 @@ const {
 
 .agent-sidebar-rail__track {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  width: 200%;
+  grid-template-columns: 1fr 1fr 1fr;
+  width: 300%;
   height: 100%;
   transform: translateX(0);
   transition: transform 760ms cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
 }
 
+.agent-sidebar-rail__track.is-home-open {
+  transform: translateX(-33.333333%);
+}
+
 .agent-sidebar-rail__track.is-settings-open {
-  transform: translateX(-50%);
+  transform: translateX(-66.666667%);
 }
 
 .agent-sidebar-rail__panel {
@@ -563,7 +692,8 @@ const {
   padding-right: 10px;
 }
 
-.agent-sidebar-rail__panel:last-child {
+.agent-sidebar-rail__panel--home,
+.agent-sidebar-rail__panel--settings {
   padding-right: 0;
   padding-left: 10px;
 }
@@ -809,15 +939,131 @@ const {
   pointer-events: none;
 }
 
+.agent-page__stage--home {
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.agent-page__content.is-home-open .agent-page__stage--workspace,
 .agent-page__content.is-settings-open .agent-page__stage--workspace {
   opacity: 0;
   pointer-events: none;
 }
 
+.agent-page__content.is-home-open .agent-page__stage--home,
 .agent-page__content.is-settings-open .agent-page__stage--settings {
   z-index: 3;
   opacity: 1;
   pointer-events: auto;
+}
+
+.agent-home-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  height: 100%;
+  padding: 28px;
+  overflow: auto;
+  background: #f6f8fb;
+}
+
+.agent-home-header,
+.agent-schedule-panel {
+  border: 1px solid #e7ebf3;
+  border-radius: 22px;
+  background: #ffffff;
+}
+
+.agent-home-header {
+  padding: 24px;
+}
+
+.agent-home-header p,
+.agent-home-header h1,
+.agent-home-header span,
+.agent-schedule-panel__head p,
+.agent-schedule-panel__head h2,
+.agent-schedule-empty strong,
+.agent-schedule-empty span {
+  margin: 0;
+}
+
+.agent-home-header p {
+  color: #7b8498;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.agent-home-header h1 {
+  margin-top: 8px;
+  color: #171717;
+  font-size: 1.7rem;
+}
+
+.agent-home-header span {
+  display: block;
+  margin-top: 10px;
+  color: #667085;
+  line-height: 1.7;
+}
+
+.agent-schedule-panel {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+}
+
+.agent-schedule-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.agent-schedule-panel__head p {
+  color: #7b8498;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.agent-schedule-panel__head h2 {
+  margin-top: 6px;
+  color: #171717;
+  font-size: 1.2rem;
+}
+
+.agent-schedule-panel__head > span {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #f2f4f7;
+  color: #667085;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.agent-schedule-empty {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-height: 260px;
+  border: 1px dashed #d8dee9;
+  border-radius: 18px;
+  background: #fbfcff;
+  text-align: center;
+}
+
+.agent-schedule-empty strong {
+  color: #1f2937;
+  font-size: 1rem;
+}
+
+.agent-schedule-empty span {
+  max-width: 460px;
+  color: #7b8498;
+  line-height: 1.7;
 }
 
 .agent-settings-content {
@@ -862,6 +1108,7 @@ const {
     transform: none;
   }
 
+  .agent-sidebar-rail__track.is-home-open,
   .agent-sidebar-rail__track.is-settings-open {
     transform: none;
   }
@@ -870,7 +1117,8 @@ const {
     padding: 0;
   }
 
-  .agent-sidebar-rail__panel:last-child {
+  .agent-sidebar-rail__panel--home,
+  .agent-sidebar-rail__panel--settings {
     display: none;
   }
 }
