@@ -148,10 +148,10 @@
                 <button
                   type="button"
                   class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeHomeSection === 'home-schedule' }"
-                  @click="selectHomeSection('home-schedule')"
+                  :class="{ 'is-active': activeHomeSection === 'home-overview' }"
+                  @click="selectHomeSection('home-overview')"
                 >
-                  日程表
+                  主页
                 </button>
               </div>
             </div>
@@ -320,23 +320,15 @@
       <section class="agent-page__stage agent-page__stage--home" :aria-hidden="showHomePage ? 'false' : 'true'">
         <section class="agent-home-content">
           <header class="agent-home-header">
-            <p>主页</p>
-            <h1>日程表</h1>
-            <span>当前主页模块已接入左侧导航，后续可以继续扩展日程数据和操作能力。</span>
+            <h1>主页</h1>
+            <p>保留主页入口，后续可以继续放常用能力、项目概览或个人工作台内容。</p>
           </header>
 
-          <section class="agent-schedule-panel">
-            <div class="agent-schedule-panel__head">
-              <div>
-                <p>今日安排</p>
-                <h2>日程表</h2>
-              </div>
-              <span>{{ currentDateLabel }}</span>
-            </div>
-
-            <div class="agent-schedule-empty">
-              <strong>暂无日程</strong>
-              <span>这里先作为主页日程表入口，后续可以接入飞书日历或本地日程数据。</span>
+          <section class="agent-home-panel">
+            <div class="agent-home-panel__body">
+              <span class="agent-home-panel__eyebrow">Agent Home</span>
+              <h2>主页已保留</h2>
+              <p>这里暂时作为主页占位，后续可以接入你真正需要的主页模块。</p>
             </div>
           </section>
         </section>
@@ -368,19 +360,14 @@ defineEmits(['logout'])
 const activeSurface = ref('chat')
 const showModelConfig = computed(() => activeSurface.value === 'settings')
 const showHomePage = computed(() => activeSurface.value === 'home')
-const activeHomeSection = ref('home-schedule')
+const activeHomeSection = ref('home-overview')
 const activeSettingsSection = ref('settings-ai')
-const currentDateLabel = computed(() => new Intl.DateTimeFormat('zh-CN', {
-  month: 'long',
-  day: 'numeric',
-  weekday: 'long'
-}).format(new Date()))
 
-function notify({ message, type = 'success' }) {
+function notify({ message, type = 'success', duration = 3000 }) {
   createMessage({
     message,
     type,
-    duration: 1600,
+    duration,
     offset: 24
   })
 }
@@ -396,7 +383,7 @@ function closeModelConfig() {
 
 function openHomePage() {
   activeSurface.value = 'home'
-  activeHomeSection.value = activeHomeSection.value || 'home-schedule'
+  activeHomeSection.value = activeHomeSection.value || 'home-overview'
 }
 
 function closeHomePage() {
@@ -961,109 +948,82 @@ const {
 .agent-home-content {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
   height: 100%;
   padding: 28px;
-  overflow: auto;
+  overflow: hidden;
   background: #f6f8fb;
 }
 
 .agent-home-header,
-.agent-schedule-panel {
+.agent-home-panel {
   border: 1px solid #e7ebf3;
   border-radius: 22px;
   background: #ffffff;
 }
 
 .agent-home-header {
-  padding: 24px;
+  flex: 0 0 auto;
+  padding: 18px 22px;
 }
 
-.agent-home-header p,
 .agent-home-header h1,
-.agent-home-header span,
-.agent-schedule-panel__head p,
-.agent-schedule-panel__head h2,
-.agent-schedule-empty strong,
-.agent-schedule-empty span {
+.agent-home-header p,
+.agent-home-panel h2,
+.agent-home-panel p {
   margin: 0;
 }
 
-.agent-home-header p {
-  color: #7b8498;
-  font-size: 0.78rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-}
-
 .agent-home-header h1 {
-  margin-top: 8px;
   color: #171717;
   font-size: 1.7rem;
 }
 
-.agent-home-header span {
-  display: block;
-  margin-top: 10px;
+.agent-home-header p {
+  margin-top: 8px;
   color: #667085;
+  font-size: 0.92rem;
   line-height: 1.7;
 }
 
-.agent-schedule-panel {
+.agent-home-panel {
+  flex: 1;
+  min-height: 0;
+  padding: 24px;
+  overflow: hidden;
+}
+
+.agent-home-panel__body {
   display: grid;
-  gap: 18px;
-  padding: 22px;
-}
-
-.agent-schedule-panel__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.agent-schedule-panel__head p {
-  color: #7b8498;
-  font-size: 0.78rem;
-  font-weight: 800;
-}
-
-.agent-schedule-panel__head h2 {
-  margin-top: 6px;
-  color: #171717;
-  font-size: 1.2rem;
-}
-
-.agent-schedule-panel__head > span {
-  flex: 0 0 auto;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: #f2f4f7;
-  color: #667085;
-  font-size: 0.86rem;
-  font-weight: 700;
-}
-
-.agent-schedule-empty {
-  display: grid;
-  place-items: center;
-  gap: 8px;
-  min-height: 260px;
+  place-items: start;
+  align-content: center;
+  gap: 10px;
+  height: 100%;
   border: 1px dashed #d8dee9;
   border-radius: 18px;
-  background: #fbfcff;
-  text-align: center;
+  background:
+    radial-gradient(circle at 12% 18%, rgba(59, 130, 246, 0.08), transparent 28%),
+    linear-gradient(135deg, #fbfcff 0%, #f6f8fb 100%);
+  padding: 28px;
 }
 
-.agent-schedule-empty strong {
-  color: #1f2937;
-  font-size: 1rem;
+.agent-home-panel__eyebrow {
+  color: #667085;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-.agent-schedule-empty span {
-  max-width: 460px;
-  color: #7b8498;
-  line-height: 1.7;
+.agent-home-panel h2 {
+  color: #171717;
+  font-size: 1.3rem;
+}
+
+.agent-home-panel p {
+  max-width: 560px;
+  color: #667085;
+  line-height: 1.8;
 }
 
 .agent-settings-content {
@@ -1095,31 +1055,81 @@ const {
 @media (max-width: 920px) {
   .agent-page {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .agent-page__sidebar {
+    max-height: 42dvh;
     border-right: 0;
     border-bottom: 1px solid #ececec;
   }
 
-  .agent-sidebar-rail__track {
-    grid-template-columns: 1fr;
-    width: 100%;
-    transform: none;
+  .agent-sidebar-rail {
+    max-height: calc(42dvh - 68px);
   }
 
-  .agent-sidebar-rail__track.is-home-open,
-  .agent-sidebar-rail__track.is-settings-open {
-    transform: none;
+  .agent-page__content {
+    min-height: 0;
   }
 
-  .agent-sidebar-rail__panel {
-    padding: 0;
+  .agent-home-content {
+    padding: 14px;
+    gap: 12px;
   }
 
-  .agent-sidebar-rail__panel--home,
-  .agent-sidebar-rail__panel--settings {
+  .agent-home-header {
+    padding: 14px 16px;
+    border-radius: 18px;
+  }
+
+  .agent-home-header h1 {
+    font-size: 1.28rem;
+  }
+
+  .agent-home-panel {
+    border-radius: 18px;
+  }
+
+  .agent-home-panel__body {
+    padding: 26px;
+  }
+}
+
+@media (max-width: 640px) {
+  .agent-page__sidebar {
+    max-height: 36dvh;
+    padding: 8px;
+  }
+
+  .agent-sidebar__top {
+    padding: 2px 2px 6px;
+  }
+
+  .agent-sidebar__brand small {
     display: none;
+  }
+
+  .agent-sidebar__new-chat {
+    min-height: 36px;
+    padding: 7px 8px;
+  }
+
+  .agent-sidebar-rail {
+    max-height: calc(36dvh - 58px);
+  }
+
+  .agent-session-item,
+  .agent-session-item__main {
+    min-height: 36px;
+  }
+
+  .agent-home-content {
+    padding: 10px;
+  }
+
+  .agent-home-panel__body h2 {
+    font-size: 1.1rem;
   }
 }
 </style>
+

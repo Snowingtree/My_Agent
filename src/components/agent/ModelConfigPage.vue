@@ -1355,8 +1355,82 @@ watch(
   }
 
   .model-config-header {
+    display: flex;
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .model-config-header__copy {
+    display: grid;
+    gap: 6px;
+  }
+
+  .model-config-header__eyebrow,
+  .model-config-header__copy h1,
+  .model-config-header__desc,
+  .model-config-header__actions {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .model-config-header__copy h1 {
+    font-size: 1.5rem;
+  }
+
+  .model-config-header__desc {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 0.9rem;
+  }
+
+  .model-config-header__actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .model-config-ai-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .model-config-ai-actions button,
+  .model-config-header__actions button {
+    flex: 1 1 150px;
+  }
+}
+
+@media (max-width: 640px) {
+  .model-config-page {
+    padding: 12px;
+  }
+
+  .model-config-header {
+    gap: 10px;
+  }
+
+  .model-config-header__copy h1 {
+    font-size: 1.28rem;
+  }
+
+  .model-config-rag-status {
+    width: fit-content;
+    min-height: 32px;
+    padding: 0 12px;
+    font-size: 0.82rem;
+  }
+
+  .config-grid,
+  .config-grid--ai {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .config-card {
+    padding: 16px;
+    border-radius: 18px;
   }
 }
 </style>

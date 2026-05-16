@@ -774,7 +774,7 @@ async function handleCreateAiConfig(request, response) {
     sendJson(response, 201, { item: result })
   } catch (error) {
     sendJson(response, 400, {
-      message: error instanceof Error ? error.message : '添加 AI 配置失败。'
+      message: error instanceof Error ? error.message : 'Create AI config failed.'
     })
   }
 }
@@ -1115,7 +1115,7 @@ async function listLarkChatsViaMcp({ sessionId = '' } = {}) {
     .map((tool) => tool.name)
 
   if (!larkChatListTools.length) {
-    const error = new Error('当前 Lark MCP 没有加载群聊列表工具。请确认 IM 群组权限和 AGENT_LARK_TOOLS 配置。')
+    const error = new Error('Current Lark MCP has no chat list tool. Check IM permissions and AGENT_LARK_TOOLS.')
     error.statusCode = 501
     throw error
   }
@@ -1147,7 +1147,7 @@ async function listLarkChatsViaMcp({ sessionId = '' } = {}) {
     }
   }
 
-  throw new Error(lastError || '读取飞书群聊列表失败。')
+  throw new Error(lastError || 'Failed to read Feishu chat list.')
 }
 
 async function handleListLarkChats(response, requestUrl) {
@@ -1157,7 +1157,7 @@ async function handleListLarkChats(response, requestUrl) {
     sendJson(response, 200, await listLarkChatsViaMcp({ sessionId }))
   } catch (error) {
     sendJson(response, error?.statusCode || 500, {
-      message: error instanceof Error ? error.message : '读取飞书群聊列表失败。'
+      message: error instanceof Error ? error.message : 'Failed to read Feishu chat list.'
     })
   }
 }
@@ -1452,7 +1452,7 @@ async function handleChat(request, response) {
           ...draftSession.task,
           status: 'completed',
           summary: chatList.items.length
-            ? `已获取 ${chatList.items.length} 个飞书群聊。`
+            ? `已获取 ${chatList.items.length} 个机器人可见的飞书群聊。`
             : '未找到机器人可见的飞书群聊。',
           steps: [
             {

@@ -3471,6 +3471,15 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.agent-mainbar__actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .agent-mainbar__status {
   display: inline-flex;
   align-items: center;
@@ -5048,7 +5057,30 @@ onBeforeUnmount(() => {
   }
 
   .agent-shell__preview {
-    display: none;
+    position: fixed;
+    inset: 12px;
+    z-index: 30;
+    display: flex;
+    justify-content: stretch;
+    padding: 0;
+    background: transparent;
+    opacity: 0;
+    transform: translateX(18px);
+    pointer-events: none;
+  }
+
+  .agent-shell__preview.is-visible {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+  }
+
+  .agent-code-viewer {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    flex: 1 1 auto;
+    box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
   }
 }
 
@@ -5068,13 +5100,48 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 720px) {
+  .agent-shell {
+    --agent-content-width: 100%;
+  }
+
   .agent-mainbar {
-    min-height: 56px;
-    padding: 0 16px;
+    min-height: auto;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
   }
 
   .agent-mainbar__status {
     display: none;
+  }
+
+  .agent-mainbar__copy h2 {
+    margin-top: 0;
+    font-size: 1rem;
+  }
+
+  .agent-mainbar__actions {
+    width: 100%;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .agent-mainbar__actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .agent-context-badge,
+  .agent-token-badge,
+  .agent-mode-badge,
+  .agent-task-badge {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 0.74rem;
   }
 
   .agent-conversation__status {
@@ -5084,7 +5151,8 @@ onBeforeUnmount(() => {
   }
 
   .agent-conversation__messages {
-    padding: 22px 14px 186px;
+    gap: 22px;
+    padding: 18px 12px 162px;
   }
 
   .agent-conversation__welcome {
@@ -5101,18 +5169,132 @@ onBeforeUnmount(() => {
     max-width: 100%;
   }
 
+  .agent-message__actions {
+    opacity: 1;
+    transform: none;
+  }
+
   .agent-composer {
     width: calc(100% - 24px);
+    min-height: 104px;
+    gap: 10px;
     margin-bottom: 12px;
+    padding: 12px;
+    border-radius: 22px;
+  }
+
+  .agent-composer__input {
+    min-height: 54px;
+    max-height: 140px;
+    font-size: 16px;
   }
 
   .agent-composer__actions {
+    align-items: center;
     justify-content: stretch;
+  }
+
+  .agent-composer__upload {
+    flex: 0 0 38px;
   }
 
   .agent-composer__send,
   .agent-composer__stop {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 12px;
+  }
+
+  .agent-shell__preview {
+    inset: 8px;
+  }
+
+  .agent-code-viewer {
+    gap: 10px;
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .agent-code-viewer__head {
+    align-items: center;
+  }
+
+  .agent-code-viewer__head-copy h3 {
+    font-size: 0.94rem;
+  }
+
+  .agent-code-viewer__head-copy small {
+    margin-top: 4px;
+    font-size: 0.72rem;
+  }
+
+  .agent-code-viewer__body {
+    padding: 12px;
+    border-radius: 14px;
+    font-size: 0.78rem;
+    line-height: 1.65;
+  }
+
+  .agent-skill-picker {
+    align-items: end;
+    padding: 10px;
+  }
+
+  .agent-skill-picker__panel {
     width: 100%;
+    height: min(86dvh, 760px);
+    max-height: 86dvh;
+    padding: 16px;
+    border-radius: 22px;
+  }
+
+  .agent-skill-picker__head {
+    align-items: center;
+  }
+
+  .agent-session-extra {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .agent-session-extra__nav {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--agent-border);
+  }
+
+  .agent-session-extra__nav-item {
+    min-width: 126px;
+  }
+
+  .agent-session-extra__content {
+    padding: 14px;
+  }
+}
+
+@media (max-width: 520px) {
+  .agent-conversation__messages {
+    padding-inline: 10px;
+  }
+
+  .agent-message--user .agent-message__bubble {
+    max-width: 92vw;
+  }
+
+  .agent-tool-card {
+    border-radius: 16px;
+  }
+
+  .agent-composer {
+    width: calc(100% - 16px);
+    margin-bottom: 8px;
+  }
+
+  .agent-skill-picker__panel {
+    height: min(90dvh, 760px);
+    max-height: 90dvh;
   }
 }
 </style>

@@ -1,154 +1,112 @@
 # Agent API
 
-This directory contains a standalone Node.js API for the Agent workspace.
+`server/` 是 Agent Workspace 的独立 Node.js 后端服务，负责认证、会话持久化、Agent 执行循环、文件工具、MCP、RAG 和 token 使用统计。
 
-## What It Provides
+## 核心能力
+
+- 登录认证和 Bearer Token 校验
+- Agent 会话创建、读取、删除和流式事件推送
+- 会话级文件工作区管理
+- 内置工具：列文件、读文件、写文件、搜索、补丁修改、命令执行等
+- Skills 加载和注入
+- MCP server 启动、工具发现和调用
+- RAG 知识库、文档上传、向量化、检索
+- AI 配置和 embedding 配置读取
+- token usage 持久化统计
+
+## 主要接口
 
 - `POST /api/login`
+- `GET /api/health`
 - `GET /api/ai/configs`
+- `POST /api/ai/configs`
+- `PUT /api/ai/configs/:aiId`
 - `GET /api/agent/sessions`
 - `POST /api/agent/sessions`
 - `GET /api/agent/sessions/:sessionId`
 - `DELETE /api/agent/sessions/:sessionId`
-- `GET /api/agent/skills`
-- `GET /api/agent/capabilities`
+- `GET /api/agent/sessions/:sessionId/stream`
 - `POST /api/agent/chat`
-- `GET /api/health`
+- `GET /api/agent/capabilities`
+- `GET /api/agent/skills`
+- `GET /api/agent/tools`
+- `GET /api/agent/tool-detail`
+- `GET /api/agent/rag/status`
+- `GET /api/agent/rag/collections`
+- `POST /api/agent/rag/collections`
+- `GET /api/agent/rag/documents`
+- `POST /api/agent/rag/documents`
+- `POST /api/agent/rag/upload`
+- `GET /api/agent/rag/search`
+- `POST /api/agent/rag/rebuild-embeddings`
+- `GET /api/agent/analytics/token-usage`
+- `GET /api/integrations/lark/chats`
 
-The service is independent from your blog backend API routes. It has its own:
-
-- login credentials
-- auth token signing
-- agent session persistence
-- agent routes
-- agent session persistence
-- task execution loop
-- skill registry
-- MCP registry
-
-It can still reuse the same AI provider records stored in your existing blog database.
-
-## Local Run
-
-1. Copy `.env.example` to `.env`
-2. Fill in the MySQL env values so the service can read the same `ai_provider_configs` table used by your blog notes AI
-3. Install server dependencies:
+## 本地运行
 
 ```bash
 cd server
 npm install
-```
-
-4. Start the API:
-
-```bash
-cd server
+cp .env.example .env
 npm run dev
 ```
 
-The default port is `3001`, which matches the Vite proxy already used by the frontend.
+生产环境建议使用 PM2 或 systemd：
 
-## AI Config Source
+```bash
+pm2 start src/index.js --name agent-api
+```
 
-Preferred mode: MySQL, using the same table as your blog notes AI config page.
+## 配置来源
 
-Relevant env vars:
+服务启动时会读取：
 
-- `AGENT_AI_CONFIG_SOURCE=mysql`
-- `MYSQL_*`
-- `AI_SETTINGS_MYSQL_*`
-- `OPENAI_KEY_ENCRYPTION_SECRET`
+1. `server/.env.local`
+2. `server/.env`
+3. 系统环境变量
 
-## Skills
+真实密钥只应该放在部署环境中，不要提交到 Git。
 
-The Agent can load reusable skill definitions from:
+## AI 配置
 
-- `server/config/skills.json`
-- or a custom path via `AGENT_SKILLS_CONFIG_PATH`
+支持三种来源：
 
-Supported skill fields:
+- `mysql`：从 MySQL 表读取，推荐生产使用。
+- `env`：从环境变量读取单个模型配置。
+- `file`：从 JSON 文件读取。
 
-- `skillId`
-- `name`
-- `description`
-- `instruction` or `instructionPath`
-- `preferredTools`
-- `disabledTools`
-- `allowedTools`
+通过 `AGENT_AI_CONFIG_SOURCE` 控制。
 
-You can also set a default skill with:
+## MCP 配置
 
-- `AGENT_DEFAULT_SKILL_ID`
+MCP 入口文件：
 
-## MCP
+```text
+mcp/mcp-servers.json
+```
 
-The Agent can preload MCP servers from:
-
-- `mcp/mcp-servers.json`
-- or a custom path via `AGENT_MCP_CONFIG_PATH`
-
-`mcp/mcp-servers.json` is the entry file. It can keep inline `items`, or reference
-per-service files:
+推荐一个服务一个 JSON：
 
 ```json
 {
   "files": [
-    "servers/lark.json",
-    "servers/xiaohongshu.json"
+    "servers/lark.json"
   ],
   "items": []
 }
 ```
 
-Each referenced file can contain one MCP server object, an array of server objects,
-or another `{ "items": [...] }` object.
+密钥使用环境变量占位符，例如 `${AGENT_LARK_APP_SECRET}`。
 
-Current scaffold support:
+## RAG 配置
 
-- `stdio` transport
-- `tools/list`
-- `tools/call`
+RAG 依赖 PostgreSQL + pgvector。
 
-Useful env vars:
+后端会根据 `AGENT_RAG_DATABASE_URL` 连接数据库，并根据当前选择的 embedding 配置生成向量。embedding API Key 推荐存放在数据库 AI 配置表中，不建议硬编码到 `.env`。
 
-- `AGENT_MCP_ENABLED`
-- `AGENT_MCP_CONFIG_PATH`
-- `AGENT_MCP_TIMEOUT_MS`
-- `AGENT_MCP_PROTOCOL_VERSION`
+## 安全注意
 
-Each configured MCP server can define:
-
-- `serverId`
-- `name`
-- `enabled`
-- `transport`
-- `command`
-- `args`
-- `cwd`
-- `env`
-- `toolNamePrefix`
-- `includeTools`
-- `excludeTools`
-
-The standalone service also accepts the same shared env names already used by your blog backend:
-
-- `MYSQL_HOST`
-- `MYSQL_USER`
-- `MYSQL_PASSWORD`
-- `MYSQL_DATABASE`
-- `AUTH_TOKEN_SECRET`
-- `AUTH_TOKEN_TTL_SECONDS`
-- `API_HOST`
-- `API_PORT`
-
-If you do not want to use MySQL temporarily, the service still supports fallback env/file config.
-
-## PM2
-
-Example start command:
-
-```bash
-pm2 start ecosystem.config.cjs
-```
-
-Then point Nginx `/api` to this service.
+- `AGENT_ADMIN_PASSWORD` 和 `AGENT_AUTH_SECRET` 生产环境必须改成强随机值。
+- `AGENT_ENABLE_WRITE_TOOLS=true` 会允许 Agent 写文件，只应写入受控工作区。
+- `AGENT_ALLOWED_COMMANDS` 应保持最小化。
+- MCP server 可以访问外部系统，启用前需要确认权限范围。
