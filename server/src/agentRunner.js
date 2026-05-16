@@ -107,6 +107,19 @@ function normalizeMemorySummary(value, maxChars = 6000) {
   return normalizedValue.length > maxChars ? normalizedValue.slice(0, maxChars).trim() : normalizedValue
 }
 
+function looksLikeUserProfileMemoryRequest(value) {
+  const normalized = normalizeTrimmedString(value)
+
+  if (!normalized) {
+    return false
+  }
+
+  return (
+    /记住|记一下|长期记忆|用户画像|我的偏好|我喜欢|我不喜欢|我习惯|以后你|以后都|之后你|默认用|默认不要/.test(normalized)
+    || /\b(remember this|remember that|my preference|i prefer|i like|i dislike|from now on|by default)\b/i.test(normalized)
+  )
+}
+
 function createMemorySummaryMessages({ existingSummary = '', messagesToCompress = [], maxChars = 6000 } = {}) {
   const serializedMessages = serializeMessagesForMemory(messagesToCompress)
 
@@ -117,7 +130,8 @@ function createMemorySummaryMessages({ existingSummary = '', messagesToCompress 
         'You compress conversation history for a long-running coding agent.',
         'Return strict JSON only.',
         'Do not include hidden reasoning.',
-        'Preserve durable user preferences, project decisions, selected tools, important constraints, file names, unresolved tasks, and facts needed for future turns.',
+        'Preserve current-session project decisions, selected tools, important constraints, file names, unresolved tasks, and facts needed for future turns in this session.',
+        'Stable user preferences belong in the long-term user profile memory, not in this short-term session summary, unless they directly affect the current session.',
         'Remove greetings, repeated status updates, transient tool logs, and low-value chatter.',
         `Keep the summary under ${maxChars} characters.`,
         'JSON schema:',
@@ -395,6 +409,8 @@ function mergeActiveSkills(skills) {
 
 const SKILL_TOOL_NAME = 'skill'
 const SKILL_HELP_MAX_CHARS = 6000
+const MEMORY_TOOL_NAME = 'memory'
+const MEMORY_PROFILE_MAX_REPLY_CHARS = 2000
 
 function buildSkillHelpText(instruction) {
   const normalizedInstruction = normalizeTrimmedString(instruction)
@@ -449,9 +465,30 @@ function buildSkillCatalogPrompt(skills = [], selectedSkillIds = []) {
   ].join('\n')
 }
 
-function buildToolPromptWithSkillLoader(toolPromptText, skillCatalogPrompt) {
+function buildMemoryToolPrompt(userProfileText = '') {
+  return [
+    '- memory: Long-term user profile memory tool. Use it only when the user reveals durable preferences, stable identity/context, project preferences, recurring workflow rules, or explicitly asks you to remember something.',
+    '  Source: local',
+    '  Input schema: {',
+    '    "type": "object",',
+    '    "properties": {',
+    '      "action": { "type": "string", "enum": ["save_user_profile"], "description": "Persist an updated long-term user profile." },',
+    '      "profile": { "type": "string", "description": "The complete updated user profile in concise Markdown. Preserve useful existing profile items and merge the new durable preference." },',
+    '      "reason": { "type": "string", "description": "Short reason for the update." }',
+    '    },',
+    '    "required": ["action", "profile"]',
+    '  }',
+    '  Usage rule: Do not save API keys, passwords, tokens, temporary task facts, one-off file contents, or private secrets. If there is no durable user preference to save, do not call this tool.',
+    userProfileText
+      ? '  Current profile is already provided in the prompt; submit a complete merged profile if you update it.'
+      : '  Current profile is empty; create one only when there is durable information worth remembering.'
+  ].join('\n')
+}
+
+function buildToolPromptWithSkillLoader(toolPromptText, skillCatalogPrompt, memoryToolPrompt = '') {
   return [
     normalizeTrimmedString(skillCatalogPrompt),
+    normalizeTrimmedString(memoryToolPrompt),
     normalizeTrimmedString(toolPromptText)
   ].filter(Boolean).join('\n')
 }
@@ -557,6 +594,11 @@ function inferFilePathFromReply(latestGoal, replyContent) {
     || normalizedReply.includes('addEventListener(')
   ) {
     return 'main.js'
+  }
+
+  if (toolName === MEMORY_TOOL_NAME) {
+    const length = Number(toolExecution?.result?.profileLength || 0)
+    return length > 0 ? `长期画像：${length} 字符` : '长期画像'
   }
 
   return ''
@@ -704,6 +746,7 @@ function buildAgentLoopMessages({
   attachmentContextText = '',
   ragContextText = '',
   conversationMemoryText = '',
+  userProfileText = '',
   currentDateContextText = ''
 }) {
   const promptSections = [
@@ -733,6 +776,8 @@ function buildAgentLoopMessages({
     'Use "final" for greetings, everyday Q&A, explanations, brainstorming, summaries, translations, or any request that does not require workspace inspection.',
     'Do not force tool usage when a direct answer is sufficient.',
     'Do not ask clarifying questions unless the missing detail truly blocks a useful next response.',
+    'Long-term memory rule: when the user states a durable preference, stable personal/project context, or explicitly asks you to remember something, call the memory tool to update the user profile before the final answer.',
+    'Do not store temporary task details, secrets, API keys, passwords, tokens, or file contents in long-term memory.',
     'When the user asks for the current date, weekday, or time, use the provided current date context directly.',
     'When the request is about the codebase or file changes, prefer inspecting the workspace before making code claims.',
     'If ephemeral uploaded files are provided, treat them as conversation-scoped reference material for this run.',
@@ -801,7 +846,13 @@ function buildAgentLoopMessages({
     ...(conversationMemoryText
       ? [{
           role: 'user',
-          content: `Long-term conversation memory summary:\n${conversationMemoryText}`
+          content: `Short-term session summary:\n${conversationMemoryText}`
+        }]
+      : []),
+    ...(userProfileText
+      ? [{
+          role: 'user',
+          content: `Long-term user profile memory:\n${userProfileText}`
         }]
       : []),
     ...conversationHistory,
@@ -828,6 +879,7 @@ function buildFinalTextMessages({
   attachmentContextText = '',
   ragContextText = '',
   conversationMemoryText = '',
+  userProfileText = '',
   currentDateContextText = ''
 }) {
   const promptSections = [
@@ -849,6 +901,7 @@ function buildFinalTextMessages({
     'If the request never needed workspace tools, answer as a normal conversation.',
     'If ephemeral uploaded files were provided, treat them as reference material for the final answer.',
     'When the user asks for the current date, weekday, or time, use the provided current date context directly.',
+    'Use the long-term user profile only as preference/context. Do not mention it unless it is directly useful.',
     ...(modifiedWorkspace
       ? [
           'Files were changed in the workspace.',
@@ -902,7 +955,13 @@ function buildFinalTextMessages({
     ...(conversationMemoryText
       ? [{
           role: 'user',
-          content: `Long-term conversation memory summary:\n${conversationMemoryText}`
+          content: `Short-term session summary:\n${conversationMemoryText}`
+        }]
+      : []),
+    ...(userProfileText
+      ? [{
+          role: 'user',
+          content: `Long-term user profile memory:\n${userProfileText}`
         }]
       : []),
     ...conversationHistory,
@@ -979,6 +1038,10 @@ function createToolStepTitle(toolName, args) {
 
   if (toolName === SKILL_TOOL_NAME) {
     return `加载 Skill ${truncateText(args?.skillId || '', 36) || ''}`.trim()
+  }
+
+  if (toolName === MEMORY_TOOL_NAME) {
+    return '更新长期记忆'
   }
 
   if (toolName === 'write_file') {
@@ -1397,6 +1460,7 @@ export function createAgentRunner({
   workspaceConfig,
   toolRunner,
   ragStore,
+  memoryStore,
   auditLogger
 } = {}) {
   const activeRuns = new Map()
@@ -1840,6 +1904,20 @@ export function createAgentRunner({
       selectedModel,
       signal: abortSignal
     })
+    let userProfileText = ''
+
+    if (aiRuntimeConfig?.userProfileMemoryEnabled && memoryStore && typeof memoryStore.readUserProfile === 'function') {
+      try {
+        userProfileText = await memoryStore.readUserProfile()
+      } catch (error) {
+        audit(sessionId, 'error', {
+          scope: 'user_profile_memory_read',
+          message: error instanceof Error ? error.message : String(error || '')
+        })
+        console.warn('[agent-runner] failed to read user profile memory:', error instanceof Error ? error.message : error)
+      }
+    }
+
     const conversationHistory = toChatHistorySafe(
       getRecentMessages(session.messages || [], aiRuntimeConfig.recentMessages)
     )
@@ -1859,7 +1937,8 @@ export function createAgentRunner({
     const normalizedEmbeddingAiId = normalizeTrimmedString(requestedEmbeddingAiId)
     const getAvailableToolPromptText = () => buildToolPromptWithSkillLoader(
       toolRunner.getPromptText({ skill: getRuntimeActiveSkill(), mcpToolPrefixes: activeMcpToolPrefixes }),
-      skillCatalogPrompt
+      skillCatalogPrompt,
+      aiRuntimeConfig?.userProfileMemoryEnabled ? buildMemoryToolPrompt(userProfileText) : ''
     )
 
     if (normalizedRagCollectionIds.length && ragStore && typeof ragStore.search === 'function') {
@@ -1911,7 +1990,8 @@ export function createAgentRunner({
       modifiedWorkspace: false,
       changedFiles: [],
       verifiedAfterModification: false,
-      autoVerificationAttempted: false
+      autoVerificationAttempted: false,
+      updatedUserProfileMemory: false
     }
     const analysisStep = createTaskStep({
       title: '理解目标',
@@ -1960,10 +2040,18 @@ export function createAgentRunner({
       const normalizedRequest = normalizeToolRequest(toolRequest)
       const toolExecutionId = createId('tool')
       const isMcpTool = normalizedRequest.name.startsWith('mcp.')
+      const isMemoryTool = normalizedRequest.name === MEMORY_TOOL_NAME
+      const auditArgs = isMemoryTool
+        ? {
+            action: normalizeTrimmedString(normalizedRequest.args?.action),
+            reason: normalizeTrimmedString(normalizedRequest.args?.reason),
+            profileLength: String(normalizedRequest.args?.profile || '').length
+          }
+        : normalizedRequest.args
       audit(sessionId, isMcpTool ? 'mcp_call' : 'tool_call', {
         executionId: toolExecutionId,
         tool: normalizedRequest.name,
-        args: normalizedRequest.args,
+        args: auditArgs,
         thoughtSummary,
         status: 'started'
       })
@@ -2102,6 +2190,49 @@ export function createAgentRunner({
               durationMs: Date.now() - toolStartedAt
             }
           }
+        } else if (normalizedRequest.name === MEMORY_TOOL_NAME) {
+          const action = normalizeTrimmedString(normalizedRequest.args?.action).toLowerCase()
+          const profile = normalizeTrimmedString(normalizedRequest.args?.profile)
+          const reason = normalizeTrimmedString(normalizedRequest.args?.reason)
+
+          if (!aiRuntimeConfig?.userProfileMemoryEnabled) {
+            throw new Error('Long-term user profile memory is disabled.')
+          }
+
+          if (!memoryStore || typeof memoryStore.writeUserProfile !== 'function') {
+            throw new Error('Long-term user profile memory store is not available.')
+          }
+
+          if (action !== 'save_user_profile') {
+            throw new Error('Memory tool requires action="save_user_profile".')
+          }
+
+          if (!profile) {
+            throw new Error('Memory tool requires a non-empty profile.')
+          }
+
+          const savedProfile = await memoryStore.writeUserProfile(profile, { reason })
+          userProfileText = savedProfile.profile || ''
+          executionState.updatedUserProfileMemory = true
+
+          toolExecution = {
+            tool: MEMORY_TOOL_NAME,
+            args: {
+              action,
+              ...(reason ? { reason } : {})
+            },
+            result: {
+              action,
+              updatedAt: savedProfile.updatedAt,
+              profileLength: userProfileText.length,
+              profilePreview: truncateText(userProfileText, MEMORY_PROFILE_MAX_REPLY_CHARS),
+              reason
+            },
+            summary: 'Long-term user profile memory updated.',
+            message: 'Long-term user profile memory updated.',
+            status: 'success',
+            durationMs: Date.now() - toolStartedAt
+          }
         } else {
           toolExecution = await toolRunner.executeToolCall(normalizedRequest, {
             skill: getRuntimeActiveSkill(),
@@ -2214,6 +2345,14 @@ export function createAgentRunner({
           mode: toolExecution.result?.mode,
           instructionLength: toolExecution.result?.instructionLength,
           running: toolExecution.result?.running
+        })
+      }
+      if (toolExecution.tool === MEMORY_TOOL_NAME) {
+        audit(sessionId, 'system_action', {
+          action: 'user_profile_memory_updated',
+          executionId: toolExecutionId,
+          profileLength: toolExecution.result?.profileLength,
+          reason: toolExecution.result?.reason
         })
       }
 
@@ -2412,6 +2551,7 @@ export function createAgentRunner({
           attachmentContextText,
           ragContextText,
           conversationMemoryText,
+          userProfileText,
           currentDateContextText
         })
         audit(sessionId, 'llm_input', {
@@ -2421,7 +2561,8 @@ export function createAgentRunner({
           messageCount: loopMessages.length,
           toolMessageCount: toolMessages.length,
           ragContext: Boolean(ragContextText),
-          memoryContext: Boolean(conversationMemoryText)
+          memoryContext: Boolean(conversationMemoryText),
+          userProfileMemoryContext: Boolean(userProfileText)
         })
 
         const decision = await createStructuredCompletion({
@@ -2536,6 +2677,25 @@ export function createAgentRunner({
           continue
         }
 
+        if (
+          aiRuntimeConfig?.userProfileMemoryEnabled
+          && looksLikeUserProfileMemoryRequest(latestGoal)
+          && !executionState.updatedUserProfileMemory
+        ) {
+          toolMessages.push({
+            role: 'user',
+            content: [
+              'The latest user message appears to contain an explicit durable memory or preference request.',
+              'Do not finish yet.',
+              'Call tool "memory" with action="save_user_profile" and a complete concise Markdown profile that merges the existing profile with this durable preference.',
+              'Do not store secrets, temporary task details, or file contents.'
+            ].join('\n')
+          })
+
+          await sleep(runtimeConfig.stepDelayMs)
+          continue
+        }
+
         if (fileChangesRequired && !executionState.modifiedWorkspace) {
           toolMessages.push({
             role: 'user',
@@ -2611,6 +2771,7 @@ export function createAgentRunner({
             attachmentContextText,
             ragContextText,
             conversationMemoryText,
+            userProfileText,
             currentDateContextText
           }),
           fileChangesRequired,
@@ -2687,6 +2848,7 @@ export function createAgentRunner({
           attachmentContextText,
           ragContextText,
           conversationMemoryText,
+          userProfileText,
           currentDateContextText
         }),
         fileChangesRequired,

@@ -9,6 +9,7 @@ import { createAuthToken, readBearerToken, safeCompare, verifyAuthToken } from '
 import { getAiConfigById, insertAiConfig, loadAiConfigs, resolveModel, toPublicAiConfig, updateAiConfig } from './aiConfigs.js'
 import { createAgentRunner } from './agentRunner.js'
 import { createMcpRegistry } from './mcpRegistry.js'
+import { createMemoryStore } from './memoryStore.js'
 import { createRagStore } from './ragStore.js'
 import { createSessionWorkspacesRepository } from './sessionWorkspaces.js'
 import { createSkillLibrary } from './skillLibrary.js'
@@ -28,6 +29,10 @@ const sessionStreamSubscribers = new Map()
 const tokenUsageStore = createTokenUsageStore(config.storage.tokenUsageFile)
 const auditLogger = createAuditLogger({
   auditDir: config.storage.auditDir
+})
+const memoryStore = createMemoryStore({
+  memoryDir: config.storage.memoryDir,
+  maxProfileChars: config.ai.userProfileMemoryMaxChars
 })
 
 function subscribeToSessionStream(sessionId, listener) {
@@ -258,6 +263,7 @@ const agentRunner = createAgentRunner({
   workspaceConfig: config.workspace,
   toolRunner,
   ragStore,
+  memoryStore,
   auditLogger
 })
 
@@ -1561,6 +1567,7 @@ async function handleRequest(request, response) {
       sessionStore: config.storage.sessionsDir,
       legacySessionStore: config.storage.legacySessionsFile,
       auditStore: config.storage.auditDir,
+      memoryStore: config.storage.memoryDir,
       workspaceRoot: config.workspace.rootDir,
       allowedCommands: config.workspace.allowedCommands,
       enableWriteTools: config.workspace.enableWriteTools,
@@ -1573,7 +1580,9 @@ async function handleRequest(request, response) {
         thresholdMessages: config.ai.contextMemoryThreshold,
         keepMessages: config.ai.contextMemoryKeepMessages,
         minBatchMessages: config.ai.contextMemoryMinBatchMessages,
-        maxSummaryChars: config.ai.contextMemoryMaxChars
+        maxSummaryChars: config.ai.contextMemoryMaxChars,
+        userProfileEnabled: Boolean(config.ai.userProfileMemoryEnabled),
+        userProfile: await memoryStore.getStatus()
       },
       rag: await ragStore.getStatus(),
       toolCount: toolRunner.getToolCatalog().length,

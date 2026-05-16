@@ -174,7 +174,10 @@ export function createConfig() {
       sessionWorkspacesDir,
       auditDir: process.env.AGENT_AUDIT_DIR
         ? resolveServerPath(process.env.AGENT_AUDIT_DIR, 'data/audit')
-        : resolve(defaultAgentStorageDir, 'audit')
+        : resolve(defaultAgentStorageDir, 'audit'),
+      memoryDir: process.env.AGENT_MEMORY_DIR
+        ? resolveServerPath(process.env.AGENT_MEMORY_DIR, 'data/memory')
+        : resolve(defaultAgentStorageDir, 'memory')
     },
     ai: {
       configPath: resolveServerPath(process.env.AGENT_AI_CONFIG_PATH, 'config/ai-configs.json'),
@@ -189,6 +192,8 @@ export function createConfig() {
       contextMemoryKeepMessages: readNumberEnv('AGENT_CONTEXT_MEMORY_KEEP_MESSAGES', recentMessages),
       contextMemoryMinBatchMessages: readNumberEnv('AGENT_CONTEXT_MEMORY_MIN_BATCH_MESSAGES', 4),
       contextMemoryMaxChars: readNumberEnv('AGENT_CONTEXT_MEMORY_MAX_CHARS', 6000),
+      userProfileMemoryEnabled: normalizeBooleanEnv(process.env.AGENT_USER_PROFILE_MEMORY_ENABLED, true),
+      userProfileMemoryMaxChars: readNumberEnv('AGENT_USER_PROFILE_MEMORY_MAX_CHARS', 8000),
       maxPlanSteps: readNumberEnv('AGENT_MAX_PLAN_STEPS', 5)
     },
     skills: {
