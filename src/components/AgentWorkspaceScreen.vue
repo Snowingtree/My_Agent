@@ -346,8 +346,30 @@
             <p v-else-if="isLoadingUserProfile" class="agent-home-profile__status">
               正在读取长期记忆...
             </p>
-            <div v-else-if="userProfileText" class="agent-home-profile__content">
-              <pre>{{ userProfileText }}</pre>
+            <div v-else-if="userProfileSections.length" class="agent-home-profile__content">
+              <article
+                v-for="section in userProfileSections"
+                :key="section.sectionId"
+                class="agent-home-profile__section"
+              >
+                <header class="agent-home-profile__section-head">
+                  <span>{{ section.kicker }}</span>
+                  <h3>{{ section.title }}</h3>
+                </header>
+
+                <div class="agent-home-profile__blocks">
+                  <template v-for="block in section.blocks" :key="block.blockId">
+                    <p v-if="block.type === 'paragraph'" class="agent-home-profile__paragraph">
+                      {{ block.text }}
+                    </p>
+                    <ul v-else-if="block.type === 'list'" class="agent-home-profile__list">
+                      <li v-for="item in block.items" :key="item.itemId">
+                        {{ item.text }}
+                      </li>
+                    </ul>
+                  </template>
+                </div>
+              </article>
             </div>
             <div v-else class="agent-home-profile__empty">
               <h2>暂无个人画像</h2>
@@ -392,6 +414,102 @@ const userProfileText = ref('')
 
 const activeHomeTitle = computed(() => '个人画像')
 const activeHomeDescription = computed(() => '展示 Agent 已学习的长期偏好和稳定个人上下文。')
+const userProfileSections = computed(() => parseUserProfileMarkdown(userProfileText.value))
+
+function stripMarkdownInline(value) {
+  return String(value || '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[*_`~]/g, '')
+    .trim()
+}
+
+function parseUserProfileMarkdown(value) {
+  const lines = String(value || '').split(/\r?\n/)
+  const sections = []
+  let currentSection = null
+  let blockIndex = 0
+  let itemIndex = 0
+
+  const createSection = (title = '个人画像', level = 2) => {
+    const section = {
+      sectionId: `profile-section-${sections.length + 1}`,
+      title: stripMarkdownInline(title) || '个人画像',
+      kicker: level <= 1 ? 'Profile' : `Section ${sections.length + 1}`,
+      blocks: []
+    }
+    sections.push(section)
+    currentSection = section
+    return section
+  }
+
+  const ensureSection = () => currentSection || createSection()
+
+  const addParagraph = (text) => {
+    const section = ensureSection()
+    section.blocks.push({
+      blockId: `profile-block-${blockIndex += 1}`,
+      type: 'paragraph',
+      text
+    })
+  }
+
+  const addListItem = (text) => {
+    const section = ensureSection()
+    const lastBlock = section.blocks[section.blocks.length - 1]
+
+    if (lastBlock?.type === 'list') {
+      lastBlock.items.push({
+        itemId: `profile-item-${itemIndex += 1}`,
+        text
+      })
+      return
+    }
+
+    section.blocks.push({
+      blockId: `profile-block-${blockIndex += 1}`,
+      type: 'list',
+      items: [{
+        itemId: `profile-item-${itemIndex += 1}`,
+        text
+      }]
+    })
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+
+    if (!line || /^-{3,}$/.test(line)) {
+      continue
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/)
+
+    if (headingMatch) {
+      createSection(headingMatch[2], headingMatch[1].length)
+      continue
+    }
+
+    const listMatch = line.match(/^(?:[-*+]|\d+[.)])\s+(.+)$/)
+
+    if (listMatch) {
+      addListItem(stripMarkdownInline(listMatch[1]))
+      continue
+    }
+
+    addParagraph(stripMarkdownInline(line))
+  }
+
+  return sections
+    .map((section) => ({
+      ...section,
+      blocks: section.blocks.filter((block) => (
+        block.type === 'list'
+          ? block.items.length
+          : Boolean(block.text)
+      ))
+    }))
+    .filter((section) => section.blocks.length)
+}
 
 function notify({ message, type = 'success', duration = 3000 }) {
   createMessage({
@@ -1155,20 +1273,91 @@ const {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 14px;
   border: 1px solid #e7ebf3;
   border-radius: 18px;
-  background: #fbfcff;
-  padding: 20px;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(14, 165, 233, 0.08), transparent 30%),
+    linear-gradient(180deg, #fbfdff 0%, #f7f9fc 100%);
+  padding: 18px;
 }
 
-.agent-home-profile__content pre {
+.agent-home-profile__section {
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.05);
+  padding: 18px;
+}
+
+.agent-home-profile__section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.agent-home-profile__section-head span {
+  order: 2;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 5px 9px;
+  text-transform: uppercase;
+}
+
+.agent-home-profile__section-head h3 {
   margin: 0;
-  color: #1f2937;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 0.92rem;
+  color: #111827;
+  font-size: 1.05rem;
+  line-height: 1.35;
+}
+
+.agent-home-profile__blocks {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-home-profile__paragraph {
+  margin: 0;
+  color: #475467;
+  font-size: 0.94rem;
   line-height: 1.8;
-  white-space: pre-wrap;
-  word-break: break-word;
+}
+
+.agent-home-profile__list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-home-profile__list li {
+  position: relative;
+  padding-left: 18px;
+  color: #344054;
+  font-size: 0.94rem;
+  line-height: 1.7;
+}
+
+.agent-home-profile__list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.72em;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #38bdf8;
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
 }
 
 .agent-settings-content {
