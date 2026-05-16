@@ -24,6 +24,8 @@ import { createWorkspace } from './workspace.js'
 loadEnvFiles()
 
 const config = createConfig()
+const MCP_DISABLED_SELECTION = '__mcp_disabled__'
+const MCP_ALL_SELECTION = '__mcp_all__'
 let sessionWorkspaces = null
 const sessionStreamSubscribers = new Map()
 const tokenUsageStore = createTokenUsageStore(config.storage.tokenUsageFile)
@@ -834,6 +836,16 @@ async function handleGetTokenUsageAnalytics(response) {
   sendJson(response, 200, await tokenUsageStore.getAnalytics(aiConfigs))
 }
 
+async function handleGetUserMemoryProfile(response) {
+  const profile = await memoryStore.readUserProfile()
+  const status = await memoryStore.getStatus()
+
+  sendJson(response, 200, {
+    profile,
+    status
+  })
+}
+
 async function handleListSkills(response) {
   sendJson(response, 200, {
     items: skillRegistry.listSkills()
@@ -1190,7 +1202,15 @@ function createLarkChatListAssistantContent({ items = [], tool = '' } = {}) {
 function resolveMcpToolPrefixes(serverIds = []) {
   const normalizedServerIds = normalizeSkillIdArray(serverIds)
 
+  if (normalizedServerIds.includes(MCP_DISABLED_SELECTION)) {
+    return [MCP_DISABLED_SELECTION]
+  }
+
   if (!normalizedServerIds.length) {
+    return []
+  }
+
+  if (normalizedServerIds.includes(MCP_ALL_SELECTION)) {
     return []
   }
 
@@ -1634,6 +1654,11 @@ async function handleRequest(request, response) {
 
   if (pathname === '/api/agent/analytics/token-usage' && request.method === 'GET') {
     await handleGetTokenUsageAnalytics(response)
+    return
+  }
+
+  if (pathname === '/api/agent/memory/profile' && request.method === 'GET') {
+    await handleGetUserMemoryProfile(response)
     return
   }
 

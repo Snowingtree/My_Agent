@@ -6,6 +6,8 @@ import { createRunCommandTool } from './tools/runCommand.js'
 import { createSearchTextTool } from './tools/searchText.js'
 import { createWriteFileTool } from './tools/writeFile.js'
 
+const MCP_DISABLED_PREFIX = '__mcp_disabled__'
+
 function serializeJson(value) {
   return JSON.stringify(value, null, 2)
 }
@@ -91,6 +93,10 @@ export function createToolRunner({
 
   function filterToolsByMcpPrefixes(tools, mcpToolPrefixes = []) {
     const normalizedPrefixes = normalizeStringArray(mcpToolPrefixes)
+
+    if (normalizedPrefixes.includes(MCP_DISABLED_PREFIX)) {
+      return tools.filter((tool) => String(tool.source || '').trim() !== 'mcp')
+    }
 
     if (!normalizedPrefixes.length) {
       return tools

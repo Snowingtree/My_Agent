@@ -148,10 +148,10 @@
                 <button
                   type="button"
                   class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeHomeSection === 'home-overview' }"
-                  @click="selectHomeSection('home-overview')"
+                  :class="{ 'is-active': activeHomeSection === 'home-profile' }"
+                  @click="selectHomeSection('home-profile')"
                 >
-                  主页
+                  个人画像
                 </button>
               </div>
             </div>
@@ -320,15 +320,38 @@
       <section class="agent-page__stage agent-page__stage--home" :aria-hidden="showHomePage ? 'false' : 'true'">
         <section class="agent-home-content">
           <header class="agent-home-header">
-            <h1>主页</h1>
-            <p>保留主页入口，后续可以继续放常用能力、项目概览或个人工作台内容。</p>
+            <h1>{{ activeHomeTitle }}</h1>
+            <p>{{ activeHomeDescription }}</p>
           </header>
 
-          <section class="agent-home-panel">
-            <div class="agent-home-panel__body">
-              <span class="agent-home-panel__eyebrow">Agent Home</span>
-              <h2>主页已保留</h2>
-              <p>这里暂时作为主页占位，后续可以接入你真正需要的主页模块。</p>
+          <section class="agent-home-panel agent-home-profile">
+            <div class="agent-home-profile__toolbar">
+              <div>
+                <span class="agent-home-panel__eyebrow">Long-Term Memory</span>
+                <h2>长期个人画像</h2>
+              </div>
+              <button
+                type="button"
+                class="agent-home-profile__refresh"
+                :disabled="isLoadingUserProfile"
+                @click="loadUserProfile"
+              >
+                {{ isLoadingUserProfile ? '刷新中...' : '刷新' }}
+              </button>
+            </div>
+
+            <p v-if="userProfileError" class="agent-home-profile__status agent-home-profile__status--error">
+              {{ userProfileError }}
+            </p>
+            <p v-else-if="isLoadingUserProfile" class="agent-home-profile__status">
+              正在读取长期记忆...
+            </p>
+            <div v-else-if="userProfileText" class="agent-home-profile__content">
+              <pre>{{ userProfileText }}</pre>
+            </div>
+            <div v-else class="agent-home-profile__empty">
+              <h2>暂无个人画像</h2>
+              <p>当你在对话中说“以后回答先说结论”“请记住我的偏好”等稳定偏好后，这里会显示长期记忆内容。</p>
             </div>
           </section>
         </section>
@@ -348,9 +371,10 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { createMessage } from 'snowingress-my-components'
 import { getAgentUsername } from '../auth.js'
+import http from '../http.js'
 import { useAgentWorkspace } from '../useAgentWorkspace.js'
 import AgentWorkspace from './agent/AgentWorkspace/AgentWorkspace.vue'
 import ModelConfigPage from './agent/ModelConfigPage.vue'
@@ -360,8 +384,14 @@ defineEmits(['logout'])
 const activeSurface = ref('chat')
 const showModelConfig = computed(() => activeSurface.value === 'settings')
 const showHomePage = computed(() => activeSurface.value === 'home')
-const activeHomeSection = ref('home-overview')
+const activeHomeSection = ref('home-profile')
 const activeSettingsSection = ref('settings-ai')
+const isLoadingUserProfile = ref(false)
+const userProfileError = ref('')
+const userProfileText = ref('')
+
+const activeHomeTitle = computed(() => '个人画像')
+const activeHomeDescription = computed(() => '展示 Agent 已学习的长期偏好和稳定个人上下文。')
 
 function notify({ message, type = 'success', duration = 3000 }) {
   createMessage({
@@ -383,7 +413,7 @@ function closeModelConfig() {
 
 function openHomePage() {
   activeSurface.value = 'home'
-  activeHomeSection.value = activeHomeSection.value || 'home-overview'
+  activeHomeSection.value = 'home-profile'
 }
 
 function closeHomePage() {
@@ -417,6 +447,29 @@ function selectHomeSection(sectionId) {
   activeHomeSection.value = sectionId
   activeSurface.value = 'home'
 }
+
+async function loadUserProfile() {
+  isLoadingUserProfile.value = true
+  userProfileError.value = ''
+
+  try {
+    const response = await http.get('/api/agent/memory/profile')
+    userProfileText.value = String(response?.profile || '').trim()
+  } catch (error) {
+    userProfileError.value = error instanceof Error ? error.message : '读取个人画像失败。'
+  } finally {
+    isLoadingUserProfile.value = false
+  }
+}
+
+watch(
+  () => [showHomePage.value, activeHomeSection.value],
+  ([isHomeOpen, section]) => {
+    if (isHomeOpen && section === 'home-profile') {
+      void loadUserProfile()
+    }
+  }
+)
 
 const username = ref(getAgentUsername({ storage: localStorage }))
 const userInitial = computed(() => {
@@ -1024,6 +1077,98 @@ const {
   max-width: 560px;
   color: #667085;
   line-height: 1.8;
+}
+
+.agent-home-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.agent-home-profile__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex: 0 0 auto;
+}
+
+.agent-home-profile__toolbar h2 {
+  margin: 6px 0 0;
+  color: #171717;
+  font-size: 1.24rem;
+}
+
+.agent-home-profile__refresh {
+  height: 38px;
+  border: 1px solid #d8dee9;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #344054;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 0 16px;
+  transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.agent-home-profile__refresh:hover:not(:disabled) {
+  border-color: #b9c2d2;
+  background: #f8fafc;
+  transform: translateY(-1px);
+}
+
+.agent-home-profile__refresh:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.agent-home-profile__status,
+.agent-home-profile__empty {
+  margin: 0;
+  border: 1px dashed #d8dee9;
+  border-radius: 18px;
+  background: #fbfcff;
+  color: #667085;
+  padding: 22px;
+}
+
+.agent-home-profile__status--error {
+  border-color: #fecaca;
+  background: #fff7f7;
+  color: #b42318;
+}
+
+.agent-home-profile__empty {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+.agent-home-profile__empty h2,
+.agent-home-profile__empty p {
+  margin: 0;
+}
+
+.agent-home-profile__content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #e7ebf3;
+  border-radius: 18px;
+  background: #fbfcff;
+  padding: 20px;
+}
+
+.agent-home-profile__content pre {
+  margin: 0;
+  color: #1f2937;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.92rem;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .agent-settings-content {

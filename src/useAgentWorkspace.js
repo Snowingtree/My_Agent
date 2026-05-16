@@ -24,6 +24,8 @@ const AI_CONFIG_REQUEST_TIMEOUT = 10000
 const LARK_CHAT_REQUEST_TIMEOUT = 15000
 const TASK_POLL_INTERVAL_MS = 2500
 const DRAFT_ATTACHMENT_BUCKET_KEY = '__draft__'
+const MCP_DISABLED_SELECTION = '__mcp_disabled__'
+const MCP_ALL_SELECTION = '__mcp_all__'
 const MAX_EPHEMERAL_ATTACHMENT_COUNT = 12
 const MAX_EPHEMERAL_ATTACHMENT_SIZE_BYTES = 2 * 1024 * 1024
 const MAX_EPHEMERAL_ATTACHMENT_TOTAL_BYTES = 12 * 1024 * 1024
@@ -389,7 +391,8 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const selectedAiId = ref(readStorageValue(resolvedStorage, AGENT_AI_ID_KEY))
   const selectedModel = ref(readStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY))
   const selectedSkillIds = ref(readStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY))
-  const selectedMcpServerIds = ref(readStorageStringArray(resolvedStorage, AGENT_MCP_SERVER_IDS_KEY))
+  const storedMcpServerIds = readStorageStringArray(resolvedStorage, AGENT_MCP_SERVER_IDS_KEY)
+  const selectedMcpServerIds = ref(storedMcpServerIds.length ? storedMcpServerIds : [MCP_DISABLED_SELECTION])
   const selectedLarkChatId = ref(readStorageValue(resolvedStorage, AGENT_LARK_CHAT_ID_KEY))
   const legacySelectedRagCollectionId = readStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY)
   const selectedRagCollectionIds = ref(readStorageStringArray(resolvedStorage, AGENT_RAG_COLLECTION_IDS_KEY))
@@ -498,11 +501,22 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     }
   })
   const selectedLarkChatLabel = computed(() => selectedLarkChat.value?.name || '未设置默认群聊')
+  const isMcpDisabled = computed(() => selectedMcpServerIds.value.includes(MCP_DISABLED_SELECTION))
+  const isAllMcpSelected = computed(() => selectedMcpServerIds.value.includes(MCP_ALL_SELECTION))
+  const selectedConcreteMcpServerIds = computed(() => (
+    selectedMcpServerIds.value.filter((serverId) => (
+      serverId !== MCP_DISABLED_SELECTION && serverId !== MCP_ALL_SELECTION
+    ))
+  ))
   const selectedMcpServers = computed(() => (
-    mcpServers.value.filter((item) => selectedMcpServerIds.value.includes(item.serverId))
+    mcpServers.value.filter((item) => selectedConcreteMcpServerIds.value.includes(item.serverId))
   ))
   const selectedMcpServerLabel = computed(() => {
-    if (!selectedMcpServerIds.value.length) {
+    if (isMcpDisabled.value) {
+      return '不使用 MCP'
+    }
+
+    if (isAllMcpSelected.value || !selectedConcreteMcpServerIds.value.length) {
       return '使用全部可用 MCP'
     }
 
@@ -510,7 +524,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       return selectedMcpServers.value[0].name
     }
 
-    return `已选择 ${selectedMcpServerIds.value.length} 个 MCP`
+    return `已选择 ${selectedConcreteMcpServerIds.value.length} 个 MCP`
   })
   const selectedRagCollectionId = computed(() => selectedRagCollectionIds.value[0] || '')
   const selectedRagCollections = computed(() => (
@@ -1298,10 +1312,13 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         : []
       contextMemoryConfig.value = normalizeContextMemoryConfig(data?.contextMemory)
 
-      if (selectedMcpServerIds.value.length) {
-        selectedMcpServerIds.value = selectedMcpServerIds.value.filter((serverId) => (
+      if (!isMcpDisabled.value && !isAllMcpSelected.value && selectedConcreteMcpServerIds.value.length) {
+        selectedMcpServerIds.value = selectedConcreteMcpServerIds.value.filter((serverId) => (
           mcpServers.value.some((item) => item.serverId === serverId)
         ))
+        if (!selectedMcpServerIds.value.length) {
+          selectedMcpServerIds.value = [MCP_DISABLED_SELECTION]
+        }
         persistSelectedMcpServers()
       }
     } catch (error) {
@@ -1510,6 +1527,10 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       persistActiveSessionId()
       upsertSessionSummary(item)
       moveAttachmentBucket(previousSessionId, item.sessionId)
+      selectedMcpServerIds.value = [MCP_DISABLED_SELECTION]
+      selectedRagCollectionIds.value = []
+      persistSelectedMcpServers()
+      persistSelectedRagCollection()
       draft.value = ''
     } catch (error) {
       chatError.value = normalizeErrorMessage(error, '新建会话失败。')
@@ -1593,13 +1614,16 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   }
 
   function setSelectedMcpServerIds(nextServerIds) {
-    selectedMcpServerIds.value = Array.isArray(nextServerIds)
+    const normalizedServerIds = Array.isArray(nextServerIds)
       ? [...new Set(
         nextServerIds
           .map((item) => String(item || '').trim())
           .filter(Boolean)
       )]
       : []
+    selectedMcpServerIds.value = normalizedServerIds.length
+      ? normalizedServerIds
+      : [MCP_DISABLED_SELECTION]
     persistSelectedMcpServers()
   }
 
@@ -1790,7 +1814,11 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
         model: selectedModel.value,
         skillId: selectedSkillIds.value[0] || '',
         skillIds: selectedSkillIds.value,
-        mcpServerIds: selectedMcpServerIds.value,
+        mcpServerIds: isMcpDisabled.value
+          ? [MCP_DISABLED_SELECTION]
+          : isAllMcpSelected.value
+            ? [MCP_ALL_SELECTION]
+            : selectedConcreteMcpServerIds.value,
         ragCollectionId: selectedRagCollectionIds.value[0] || '',
         ragCollectionIds: selectedRagCollectionIds.value,
         embeddingAiId: selectedEmbeddingAiId.value,

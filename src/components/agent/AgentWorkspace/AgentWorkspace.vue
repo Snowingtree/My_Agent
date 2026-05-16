@@ -498,7 +498,17 @@
                     <button
                       type="button"
                       class="agent-skill-option"
-                      :class="{ 'is-active': !selectedMcpServerIds.length }"
+                      :class="{ 'is-active': isMcpDisabled }"
+                      @click="selectNoMcpServers"
+                    >
+                      <strong>不使用 MCP</strong>
+                      <small>本轮不暴露任何 MCP 工具</small>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="agent-skill-option"
+                      :class="{ 'is-active': isAllMcpSelected }"
                       @click="selectAllMcpServers"
                     >
                       <strong>全部可用 MCP</strong>
@@ -510,7 +520,7 @@
                       :key="item.serverId"
                       type="button"
                       class="agent-skill-option"
-                      :class="{ 'is-active': selectedMcpServerIds.includes(item.serverId), 'is-disabled': item.status !== 'ready' }"
+                      :class="{ 'is-active': selectedConcreteMcpServerIds.includes(item.serverId), 'is-disabled': item.status !== 'ready' }"
                       @click="toggleMcpServerSelection(item.serverId)"
                     >
                       <strong>{{ item.name }}</strong>
@@ -850,6 +860,8 @@ const TASK_STATUS_LABELS = {
 }
 const LARK_CHAT_LIST_MARKER_START = ':::agent-lark-chat-list'
 const LARK_CHAT_LIST_MARKER_END = ':::'
+const MCP_DISABLED_SELECTION = '__mcp_disabled__'
+const MCP_ALL_SELECTION = '__mcp_all__'
 
 const props = defineProps({
   activeSessionId: { type: String, default: '' },
@@ -891,7 +903,7 @@ const props = defineProps({
   selectedModel: { type: String, default: '' },
   selectedModelLabel: { type: String, default: '' },
   selectedMcpServerIds: { type: Array, default: () => [] },
-  selectedMcpServerLabel: { type: String, default: '使用全部可用 MCP' },
+  selectedMcpServerLabel: { type: String, default: '不使用 MCP' },
   selectedLarkChatId: { type: String, default: '' },
   selectedLarkChatLabel: { type: String, default: '未设置默认群聊' },
   selectedRagCollectionId: { type: String, default: '' },
@@ -1148,8 +1160,12 @@ function selectAutoSkill() {
   emit('update:skill-ids', [])
 }
 
+function selectNoMcpServers() {
+  emit('update:mcp-server-ids', [MCP_DISABLED_SELECTION])
+}
+
 function selectAllMcpServers() {
-  emit('update:mcp-server-ids', [])
+  emit('update:mcp-server-ids', [MCP_ALL_SELECTION])
 }
 
 function toggleSkillSelection(skillId) {
@@ -1186,9 +1202,7 @@ function toggleMcpServerSelection(serverId) {
     return
   }
 
-  const nextServerIds = Array.isArray(props.selectedMcpServerIds)
-    ? [...props.selectedMcpServerIds]
-    : []
+  const nextServerIds = selectedConcreteMcpServerIds.value.slice()
   const existingIndex = nextServerIds.indexOf(normalizedServerId)
 
   if (existingIndex >= 0) {
@@ -1279,6 +1293,24 @@ const staleSelectedRagCollectionIds = computed(() => (
   ))
 ))
 
+const isMcpDisabled = computed(() => (
+  Array.isArray(props.selectedMcpServerIds)
+  && props.selectedMcpServerIds.includes(MCP_DISABLED_SELECTION)
+))
+
+const isAllMcpSelected = computed(() => (
+  Array.isArray(props.selectedMcpServerIds)
+  && props.selectedMcpServerIds.includes(MCP_ALL_SELECTION)
+))
+
+const selectedConcreteMcpServerIds = computed(() => (
+  Array.isArray(props.selectedMcpServerIds)
+    ? props.selectedMcpServerIds.filter((serverId) => (
+        serverId !== MCP_DISABLED_SELECTION && serverId !== MCP_ALL_SELECTION
+      ))
+    : []
+))
+
 const sessionExtraSummary = computed(() => {
   const parts = []
 
@@ -1286,8 +1318,10 @@ const sessionExtraSummary = computed(() => {
     parts.push(`Skill ${props.selectedSkillIds.length}`)
   }
 
-  if (Array.isArray(props.selectedMcpServerIds) && props.selectedMcpServerIds.length) {
-    parts.push(`MCP ${props.selectedMcpServerIds.length}`)
+  if (isAllMcpSelected.value) {
+    parts.push('MCP 全部')
+  } else if (selectedConcreteMcpServerIds.value.length) {
+    parts.push(`MCP ${selectedConcreteMcpServerIds.value.length}`)
   }
 
   if (String(props.selectedEmbeddingAiId || '').trim()) {
