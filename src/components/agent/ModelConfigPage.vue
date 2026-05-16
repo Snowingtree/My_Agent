@@ -462,7 +462,7 @@ const SECTION_META = {
   },
   'settings-agent-skills': {
     title: 'Skills',
-    description: '查看项目 skills 目录中的技能包说明文件，例如 description.md 和 SKILL.md。'
+    description: '查看项目 skills 目录中的技能 Markdown 文件。'
   },
   'settings-rag': {
     title: '知识库',

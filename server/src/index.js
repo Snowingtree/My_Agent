@@ -1531,6 +1531,7 @@ async function handleChat(request, response) {
     requestedModel: selectedModel,
     requestedSkillId: primarySkill?.skillId || '',
     requestedSkillIds: activeSkills.map((item) => item.skillId),
+    requestedManualSkillIds: requestedSkillIds,
     requestedMcpServerIds,
     requestedMcpToolPrefixes,
     requestedRagCollectionId,

@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs'
+import { basename, dirname, extname, isAbsolute, parse, resolve } from 'node:path'
 import { normalizeTrimmedString } from './utils.js'
 
 function readJsonFile(filePath) {
@@ -28,12 +28,43 @@ function normalizeStringArray(value) {
   )]
 }
 
-function readMarkdownSummary(filePath) {
+function readSkillHeaderText(filePath, {
+  maxBytes = 16 * 1024,
+  maxLines = 50
+} = {}) {
   if (!filePath || !existsSync(filePath)) {
     return ''
   }
 
-  const content = readFileSync(filePath, 'utf8')
+  const fileDescriptor = openSync(filePath, 'r')
+
+  try {
+    const buffer = Buffer.alloc(maxBytes)
+    const bytesRead = readSync(fileDescriptor, buffer, 0, maxBytes, 0)
+
+    return buffer
+      .toString('utf8', 0, bytesRead)
+      .split(/\r?\n/)
+      .slice(0, maxLines)
+      .join('\n')
+  } finally {
+    closeSync(fileDescriptor)
+  }
+}
+
+function readMarkdownSummary(filePath) {
+  const content = readSkillHeaderText(filePath)
+
+  if (!content) {
+    return ''
+  }
+
+  const metadata = parseSkillMarkdownMetadata(content)
+
+  if (metadata.description) {
+    return metadata.description
+  }
+
   const lines = content
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -47,41 +78,88 @@ function readMarkdownSummary(filePath) {
     .trim()
 }
 
-function walkSkillPackages(currentDir, items) {
-  if (!existsSync(currentDir)) {
-    return
+function parseSkillMarkdownMetadata(content) {
+  const metadata = {}
+  const lines = String(content || '').split(/\r?\n/)
+  let index = 0
+
+  if (lines[index]?.trim() === '---') {
+    index += 1
+    for (; index < lines.length; index += 1) {
+      const line = lines[index].trim()
+      if (line === '---') {
+        break
+      }
+      const match = line.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/)
+      if (match) {
+        metadata[match[1].toLowerCase()] = match[2].trim().replace(/^['"]|['"]$/g, '')
+      }
+    }
+    return metadata
   }
 
-  const entries = readdirSync(currentDir, { withFileTypes: true })
-  const hasSkillFile = entries.some((entry) => entry.isFile() && entry.name.toLowerCase() === 'skill.md')
+  for (const line of lines) {
+    const trimmed = line.trim()
 
-  if (hasSkillFile) {
-    items.push(currentDir)
-  }
-
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) {
+    if (!trimmed) {
       continue
     }
 
-    walkSkillPackages(join(currentDir, entry.name), items)
+    if (trimmed.startsWith('#')) {
+      break
+    }
+
+    const match = trimmed.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/)
+
+    if (!match) {
+      break
+    }
+
+    metadata[match[1].toLowerCase()] = match[2].trim().replace(/^['"]|['"]$/g, '')
   }
+
+  return metadata
 }
 
-function createLibrarySkillItem(packageDir) {
-  const skillFilePath = join(packageDir, 'SKILL.md')
+function deriveSkillIdFromMarkdownPath(filePath) {
+  return parse(filePath).name
+}
 
+function shouldLoadSkillFile(entry) {
+  if (!entry.isFile()) {
+    return false
+  }
+
+  const lowerName = entry.name.toLowerCase()
+
+  return extname(lowerName) === '.md'
+    && lowerName !== 'readme.md'
+}
+
+function listSkillSources(skillsDir) {
+  if (!existsSync(skillsDir)) {
+    return []
+  }
+
+  return readdirSync(skillsDir, { withFileTypes: true })
+    .filter((entry) => shouldLoadSkillFile(entry))
+    .map((entry) => resolve(skillsDir, entry.name))
+}
+
+function createLibrarySkillItem(skillFilePath) {
   if (!existsSync(skillFilePath)) {
     return null
   }
 
-  const descriptionFilePath = join(packageDir, 'description.md')
-  const packageName = basename(packageDir)
-  const description = readMarkdownSummary(descriptionFilePath) || readMarkdownSummary(skillFilePath)
+  const content = readSkillHeaderText(skillFilePath)
+  const metadata = parseSkillMarkdownMetadata(content)
+  const skillId = normalizeTrimmedString(metadata.name) || deriveSkillIdFromMarkdownPath(skillFilePath)
+  const name = normalizeTrimmedString(metadata.title) || skillId
+  const description = normalizeTrimmedString(metadata.description) || readMarkdownSummary(skillFilePath)
 
   return {
-    skillId: packageName,
-    name: packageName,
+    skillId,
+    name,
     description,
     instructionPath: skillFilePath,
     preferredTools: [],
@@ -90,38 +168,16 @@ function createLibrarySkillItem(packageDir) {
   }
 }
 
-function readInstructionText(item, configPath) {
-  const inlineInstruction = normalizeTrimmedString(item?.instruction)
-
-  if (inlineInstruction) {
-    return inlineInstruction
-  }
-
-  const instructionPath = normalizeTrimmedString(item?.instructionPath)
-
-  if (!instructionPath) {
-    return ''
-  }
-
-  const absolutePath = isAbsolute(instructionPath)
-    ? instructionPath
-    : resolve(dirname(configPath), instructionPath)
-
-  if (!existsSync(absolutePath)) {
-    throw new Error(`Skill instruction file was not found: ${absolutePath}`)
-  }
-
-  return readFileSync(absolutePath, 'utf8').trim()
-}
-
 function resolveInstructionMetadata(item, configPath) {
   const inlineInstruction = normalizeTrimmedString(item?.instruction)
 
   if (inlineInstruction) {
     return {
       instructionPath: '',
+      absoluteInstructionPath: '',
       sourcePackage: '',
-      sourceFile: ''
+      sourceFile: '',
+      hasInstruction: true
     }
   }
 
@@ -130,8 +186,10 @@ function resolveInstructionMetadata(item, configPath) {
   if (!instructionPath) {
     return {
       instructionPath: '',
+      absoluteInstructionPath: '',
       sourcePackage: '',
-      sourceFile: ''
+      sourceFile: '',
+      hasInstruction: false
     }
   }
 
@@ -141,27 +199,45 @@ function resolveInstructionMetadata(item, configPath) {
 
   return {
     instructionPath,
+    absoluteInstructionPath: absolutePath,
     sourcePackage: basename(dirname(absolutePath)),
-    sourceFile: basename(absolutePath)
+    sourceFile: basename(absolutePath),
+    hasInstruction: existsSync(absolutePath)
   }
 }
 
 function normalizeSkill(item, index, configPath) {
   const skillId = normalizeTrimmedString(item?.skillId) || `skill_${index + 1}`
-  const instruction = readInstructionText(item, configPath)
   const instructionMeta = resolveInstructionMetadata(item, configPath)
 
   return {
     skillId,
     name: normalizeTrimmedString(item?.name) || skillId,
     description: normalizeTrimmedString(item?.description),
-    instruction,
     instructionPath: instructionMeta.instructionPath,
+    absoluteInstructionPath: instructionMeta.absoluteInstructionPath,
     sourcePackage: instructionMeta.sourcePackage,
     sourceFile: instructionMeta.sourceFile,
+    inlineInstruction: normalizeTrimmedString(item?.instruction),
+    hasInstruction: instructionMeta.hasInstruction,
     preferredTools: normalizeStringArray(item?.preferredTools),
     disabledTools: normalizeStringArray(item?.disabledTools),
     allowedTools: normalizeStringArray(item?.allowedTools)
+  }
+}
+
+const SKILL_INSTRUCTION_CACHE_LIMIT = 32
+
+function touchInstructionCache(cache, cacheKey, value) {
+  if (cache.has(cacheKey)) {
+    cache.delete(cacheKey)
+  }
+
+  cache.set(cacheKey, value)
+
+  while (cache.size > SKILL_INSTRUCTION_CACHE_LIMIT) {
+    const oldestKey = cache.keys().next().value
+    cache.delete(oldestKey)
   }
 }
 
@@ -172,6 +248,7 @@ export function createSkillRegistry({
 } = {}) {
   let skills = []
   let resolvedDefaultSkillId = normalizeTrimmedString(defaultSkillId)
+  const instructionCache = new Map()
 
   function reload() {
     const rawValue = readJsonFile(configPath)
@@ -182,20 +259,19 @@ export function createSkillRegistry({
         : []
     const normalizedConfigItems = configItems.map((item, index) => normalizeSkill(item, index, configPath))
     const existingSkillIds = new Set(normalizedConfigItems.map((item) => item.skillId))
-    const libraryPackageDirs = []
+    const librarySkillFiles = normalizeTrimmedString(libraryDir)
+      ? listSkillSources(resolve(libraryDir))
+      : []
 
-    if (normalizeTrimmedString(libraryDir)) {
-      walkSkillPackages(resolve(libraryDir), libraryPackageDirs)
-    }
-
-    const normalizedLibraryItems = libraryPackageDirs
-      .map((packageDir) => createLibrarySkillItem(packageDir))
+    const normalizedLibraryItems = librarySkillFiles
+      .map((skillFilePath) => createLibrarySkillItem(skillFilePath))
       .filter(Boolean)
       .filter((item) => !existingSkillIds.has(item.skillId))
       .map((item, index) => normalizeSkill(item, normalizedConfigItems.length + index, configPath))
 
     skills = [...normalizedConfigItems, ...normalizedLibraryItems]
     resolvedDefaultSkillId = normalizeTrimmedString(rawValue?.defaultSkillId) || normalizeTrimmedString(defaultSkillId)
+    instructionCache.clear()
   }
 
   function listSkills() {
@@ -209,7 +285,7 @@ export function createSkillRegistry({
       preferredTools: [...item.preferredTools],
       disabledTools: [...item.disabledTools],
       allowedTools: [...item.allowedTools],
-      hasInstruction: Boolean(item.instruction)
+      hasInstruction: item.hasInstruction
     }))
   }
 
@@ -232,12 +308,45 @@ export function createSkillRegistry({
     )
   }
 
+  function loadSkillInstruction(skillId) {
+    const skill = getSkillById(skillId)
+
+    if (!skill) {
+      return ''
+    }
+
+    if (skill.inlineInstruction) {
+      return skill.inlineInstruction
+    }
+
+    const absolutePath = normalizeTrimmedString(skill.absoluteInstructionPath)
+
+    if (!absolutePath || !existsSync(absolutePath)) {
+      return ''
+    }
+
+    const stats = statSync(absolutePath)
+    const cacheKey = `${absolutePath}:${stats.mtimeMs}:${stats.size}`
+    const cachedValue = instructionCache.get(cacheKey)
+
+    if (cachedValue) {
+      touchInstructionCache(instructionCache, cacheKey, cachedValue)
+      return cachedValue
+    }
+
+    const instruction = readFileSync(absolutePath, 'utf8').trim()
+    touchInstructionCache(instructionCache, cacheKey, instruction)
+
+    return instruction
+  }
+
   reload()
 
   return {
     reload,
     listSkills,
     getSkillById,
-    resolveSkill
+    resolveSkill,
+    loadSkillInstruction
   }
 }

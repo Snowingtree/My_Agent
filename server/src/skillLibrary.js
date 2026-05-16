@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { basename, join, relative, resolve } from 'node:path'
+import { basename, extname, join, parse, relative, resolve } from 'node:path'
 import { normalizeTrimmedString } from './utils.js'
 
 function ensureDirectoryExists(dirPath) {
@@ -11,28 +11,70 @@ function normalizeRelativePath(rootDir, filePath) {
   return normalizeTrimmedString(normalized)
 }
 
-function walkSkillPackages(rootDir, currentDir, items) {
-  const entries = readdirSync(currentDir, { withFileTypes: true })
-  const hasSkillFile = entries.some((entry) => entry.isFile() && entry.name.toLowerCase() === 'skill.md')
+function parseSkillMarkdownMetadata(content) {
+  const metadata = {}
+  const lines = String(content || '').split(/\r?\n/)
 
-  if (hasSkillFile) {
-    const skillAbsolutePath = join(currentDir, 'SKILL.md')
-    const descriptionAbsolutePath = join(currentDir, 'description.md')
-    const preferredContentPath = existsSync(descriptionAbsolutePath) ? descriptionAbsolutePath : skillAbsolutePath
-    const stats = statSync(preferredContentPath)
-    const relativePackagePath = normalizeRelativePath(rootDir, currentDir)
+  for (const line of lines) {
+    const trimmed = line.trim()
 
-    items.push({
-      skillPath: relativePackagePath || '.',
-      name: basename(currentDir),
-      title: basename(currentDir),
-      contentPath: normalizeRelativePath(rootDir, preferredContentPath),
-      contentSource: existsSync(descriptionAbsolutePath) ? 'description.md' : 'SKILL.md',
-      hasDescription: existsSync(descriptionAbsolutePath),
-      sizeBytes: stats.size,
-      updatedAt: stats.mtime.toISOString()
-    })
+    if (!trimmed) {
+      continue
+    }
+
+    if (trimmed.startsWith('#')) {
+      break
+    }
+
+    const match = trimmed.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/)
+
+    if (!match) {
+      break
+    }
+
+    metadata[match[1].toLowerCase()] = match[2].trim().replace(/^['"]|['"]$/g, '')
   }
+
+  return metadata
+}
+
+function shouldLoadSkillMarkdown(entry) {
+  if (!entry.isFile()) {
+    return false
+  }
+
+  const lowerName = entry.name.toLowerCase()
+
+  return extname(lowerName) === '.md'
+    && lowerName !== 'readme.md'
+}
+
+function deriveTitleFromFile(filePath) {
+  return parse(filePath).name
+}
+
+function createSkillFileItem(rootDir, absolutePath) {
+  const content = readFileSync(absolutePath, 'utf8')
+  const metadata = parseSkillMarkdownMetadata(content)
+  const stats = statSync(absolutePath)
+  const relativePath = normalizeRelativePath(rootDir, absolutePath)
+  const fallbackTitle = deriveTitleFromFile(absolutePath)
+
+  return {
+    skillPath: relativePath,
+    name: normalizeTrimmedString(metadata.name) || parse(relativePath).name,
+    title: normalizeTrimmedString(metadata.title) || normalizeTrimmedString(metadata.name) || fallbackTitle,
+    description: normalizeTrimmedString(metadata.description),
+    contentPath: relativePath,
+    contentSource: basename(absolutePath),
+    hasDescription: false,
+    sizeBytes: stats.size,
+    updatedAt: stats.mtime.toISOString()
+  }
+}
+
+function walkSkillFiles(rootDir, currentDir, items) {
+  const entries = readdirSync(currentDir, { withFileTypes: true })
 
   for (const entry of entries) {
     if (entry.name.startsWith('.')) {
@@ -41,8 +83,8 @@ function walkSkillPackages(rootDir, currentDir, items) {
 
     const absolutePath = join(currentDir, entry.name)
 
-    if (entry.isDirectory()) {
-      walkSkillPackages(rootDir, absolutePath, items)
+    if (shouldLoadSkillMarkdown(entry)) {
+      items.push(createSkillFileItem(rootDir, absolutePath))
     }
   }
 }
@@ -53,7 +95,7 @@ export function createSkillLibrary({ rootDir }) {
 
   function listSkillFiles() {
     const items = []
-    walkSkillPackages(resolvedRootDir, resolvedRootDir, items)
+    walkSkillFiles(resolvedRootDir, resolvedRootDir, items)
 
     return items
       .sort((left, right) => left.skillPath.localeCompare(right.skillPath))

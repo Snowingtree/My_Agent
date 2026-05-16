@@ -4,15 +4,14 @@
       <div class="settings-skills__sidebar-head">
         <div>
           <p class="settings-skills__eyebrow">项目 Skills 目录</p>
-          <h3>技能包</h3>
+          <h3>技能文件</h3>
         </div>
       </div>
 
       <p v-if="listError" class="settings-skills__status is-error">{{ listError }}</p>
-      <p v-else-if="isLoadingList" class="settings-skills__status">正在读取技能包...</p>
+      <p v-else-if="isLoadingList" class="settings-skills__status">正在读取技能文件...</p>
       <p v-else-if="!skills.length" class="settings-skills__status">
-        当前还没有上传任何技能包。你后续可以把包含 <code>SKILL.md</code> 的文件夹放进项目的
-        <code>skills/</code> 目录。
+        当前还没有技能文件。把 <code>.md</code> 文件直接放到 <code>skills/</code> 目录即可。
       </p>
 
       <div v-else class="settings-skills__list">
@@ -37,7 +36,6 @@
           <h3>{{ selectedSkillDetail.title }}</h3>
           <p class="settings-skills__meta">
             <span>{{ selectedSkillDetail.skillPath }}</span>
-            <span>{{ selectedSkillDetail.contentSource }}</span>
             <span>{{ selectedSkillDetail.updatedAt }}</span>
           </p>
         </div>
@@ -45,7 +43,7 @@
 
       <p v-if="detailError" class="settings-skills__status is-error">{{ detailError }}</p>
       <p v-else-if="isLoadingDetail" class="settings-skills__status">正在读取技能说明...</p>
-      <p v-else-if="!selectedSkillDetail" class="settings-skills__status">从左侧选择一个技能包，查看它的说明文档。</p>
+      <p v-else-if="!selectedSkillDetail" class="settings-skills__status">从左侧选择一个技能文件，查看它的说明文档。</p>
 
       <article
         v-else
@@ -195,7 +193,7 @@ async function loadSkillList() {
       await selectSkill(skills.value[0].skillPath)
     }
   } catch (error) {
-    listError.value = error instanceof Error ? error.message : '读取技能包列表失败。'
+    listError.value = error instanceof Error ? error.message : '读取技能文件列表失败。'
     skills.value = []
     selectedSkillPath.value = ''
     selectedSkillDetail.value = null

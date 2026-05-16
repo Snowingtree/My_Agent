@@ -338,27 +338,25 @@ function buildActiveSkillPrompt(skills) {
 
   return normalizedSkills.map((skill) => {
     const promptSections = [
-      `Active skill: ${skill.name} (${skill.skillId}).`
+      `Candidate skill: ${skill.name} (${skill.skillId}).`
     ]
 
     if (skill.description) {
       promptSections.push(`Skill purpose: ${skill.description}`)
     }
 
-    if (skill.instruction) {
-      promptSections.push(`Skill instruction: ${skill.instruction}`)
-    }
+    promptSections.push('Detailed Skill instructions are not loaded yet. If you need this Skill, call the skill tool with mode="help" first, then mode="run".')
 
     if (Array.isArray(skill.preferredTools) && skill.preferredTools.length) {
-      promptSections.push(`Prefer these tools or namespaces when relevant: ${skill.preferredTools.join(', ')}`)
+      promptSections.push(`After this Skill is running, prefer these tools or namespaces when relevant: ${skill.preferredTools.join(', ')}`)
     }
 
     if (Array.isArray(skill.allowedTools) && skill.allowedTools.length) {
-      promptSections.push(`Only use these tools or namespaces: ${skill.allowedTools.join(', ')}`)
+      promptSections.push(`After this Skill is running, only use these tools or namespaces, except the skill tool: ${skill.allowedTools.join(', ')}`)
     }
 
     if (Array.isArray(skill.disabledTools) && skill.disabledTools.length) {
-      promptSections.push(`Never use these tools or namespaces: ${skill.disabledTools.join(', ')}`)
+      promptSections.push(`After this Skill is running, never use these tools or namespaces: ${skill.disabledTools.join(', ')}`)
     }
 
     return promptSections.join('\n')
@@ -393,6 +391,69 @@ function mergeActiveSkills(skills) {
     allowedTools: unique(normalizedSkills.flatMap((item) => item.allowedTools || [])),
     disabledTools: unique(normalizedSkills.flatMap((item) => item.disabledTools || []))
   }
+}
+
+const SKILL_TOOL_NAME = 'skill'
+const SKILL_HELP_MAX_CHARS = 6000
+
+function buildSkillHelpText(instruction) {
+  const normalizedInstruction = normalizeTrimmedString(instruction)
+
+  if (normalizedInstruction.length <= SKILL_HELP_MAX_CHARS) {
+    return normalizedInstruction
+  }
+
+  return [
+    normalizedInstruction.slice(0, SKILL_HELP_MAX_CHARS),
+    '',
+    `[Skill help truncated: showing first ${SKILL_HELP_MAX_CHARS} of ${normalizedInstruction.length} characters. Put the most important rules at the top of the Skill file.]`
+  ].join('\n')
+}
+
+function buildSkillCatalogPrompt(skills = [], selectedSkillIds = []) {
+  const normalizedSkills = (Array.isArray(skills) ? skills : [])
+    .filter(Boolean)
+  const selectedSet = new Set(
+    (Array.isArray(selectedSkillIds) ? selectedSkillIds : [])
+      .map((item) => normalizeTrimmedString(item))
+      .filter(Boolean)
+  )
+
+  if (!normalizedSkills.length) {
+    return ''
+  }
+
+  const skillLines = normalizedSkills.map((skill) => {
+    const skillId = normalizeTrimmedString(skill.skillId)
+    const name = normalizeTrimmedString(skill.name) || skillId
+    const description = normalizeTrimmedString(skill.description) || 'No description.'
+    const selectedLabel = selectedSet.has(skillId) ? ' [selected for this session]' : ''
+    return `  - ${skillId}: ${name}${selectedLabel}. ${description}`
+  })
+
+  return [
+    '- skill: Two-phase Skill control tool. Use mode="help" first to read Skill instructions, then mode="run" to activate that Skill for the rest of this task.',
+    '  Source: local',
+    '  Input schema: {',
+    '    "type": "object",',
+    '    "properties": {',
+    '      "skillId": { "type": "string", "description": "The Skill ID to inspect or activate." },',
+    '      "mode": { "type": "string", "enum": ["help", "run"], "description": "Use help first, then run." },',
+    '      "command": { "type": "string", "description": "Optional short natural-language instruction for how you intend to use this Skill." }',
+    '    },',
+    '    "required": ["skillId", "mode"]',
+    '  }',
+    '  Usage rule: Skill summaries are visible initially, but detailed Skill instructions are lazy-loaded. A selected Skill is not active yet. If a Skill is selected or relevant, call skill with mode="help" first. Only after reading the help result may you call skill with mode="run". After run succeeds, continue with normal workspace tools under that Skill.',
+    '  Available Skill summaries:',
+    ...skillLines
+  ].join('\n')
+}
+
+function buildToolPromptWithSkillLoader(toolPromptText, skillCatalogPrompt) {
+  return [
+    normalizeTrimmedString(skillCatalogPrompt),
+    normalizeTrimmedString(toolPromptText)
+  ].filter(Boolean).join('\n')
 }
 
 function looksLikeToolSummaryContent(value) {
@@ -916,6 +977,10 @@ function createToolStepTitle(toolName, args) {
     return `查看目录 ${truncateText(args?.path || '.', 36)}`
   }
 
+  if (toolName === SKILL_TOOL_NAME) {
+    return `加载 Skill ${truncateText(args?.skillId || '', 36) || ''}`.trim()
+  }
+
   if (toolName === 'write_file') {
     return `写入文件 ${truncateText(args?.path || '', 36) || ''}`.trim()
   }
@@ -950,6 +1015,12 @@ function summarizeToolTarget(toolExecution) {
       .join(' ')
 
     return commandLine ? `命令：${commandLine}` : ''
+  }
+
+  if (toolName === SKILL_TOOL_NAME) {
+    const skillId = normalizeTrimmedString(args?.skillId || toolExecution?.result?.skillId)
+    const mode = normalizeTrimmedString(args?.mode || toolExecution?.result?.mode)
+    return skillId ? `Skill：${skillId}${mode ? ` (${mode})` : ''}` : ''
   }
 
   return ''
@@ -1060,9 +1131,9 @@ function createSkillMessageContent(skills = []) {
 
   return [
     `技能：${skillNames.join(' + ')}`,
-    '状态：已启用',
+    '状态：已选择为候选技能，等待按需加载',
     skillIds.length ? `目标：${skillIds.join(', ')}` : '',
-    `结果：本轮已启用技能：${skillNames.join('、')}。`
+    `结果：本轮已选择技能摘要：${skillNames.join('、')}。如需使用完整技能，Agent 需要先调用 skill mode=help，再调用 skill mode=run。`
   ].filter(Boolean).join('\n')
 }
 
@@ -1635,6 +1706,7 @@ export function createAgentRunner({
     requestedModel,
     requestedSkillId,
     requestedSkillIds = [],
+    requestedManualSkillIds = [],
     requestedMcpServerIds = [],
     requestedMcpToolPrefixes = [],
     requestedAttachments = [],
@@ -1695,8 +1767,35 @@ export function createAgentRunner({
         ? requestedSkillIds.map((skillId) => skillRegistry?.getSkillById(skillId)).filter(Boolean)
         : [skillRegistry?.resolveSkill(requestedSkillId)].filter(Boolean)
     )
-    const activeSkill = mergeActiveSkills(activeSkills)
     const activeSkillPrompt = buildActiveSkillPrompt(activeSkills)
+    const activeSkillIds = activeSkills
+      .map((item) => normalizeTrimmedString(item.skillId))
+      .filter(Boolean)
+    const manualSkillIds = [...new Set(
+      (Array.isArray(requestedManualSkillIds) ? requestedManualSkillIds : [])
+        .map((item) => normalizeTrimmedString(item))
+        .filter(Boolean)
+    )]
+    const skillRuntimeState = new Map()
+    const resolveRuntimeSkill = (skillId) => (
+      skillRegistry && typeof skillRegistry.getSkillById === 'function'
+        ? skillRegistry.getSkillById(skillId)
+        : null
+    )
+    const getRuntimeActiveSkill = () => {
+      const runningSkills = [...skillRuntimeState.entries()]
+        .filter(([, state]) => state?.running)
+        .map(([skillId]) => resolveRuntimeSkill(skillId))
+        .filter(Boolean)
+
+      return mergeActiveSkills(runningSkills)
+    }
+    const skillCatalogPrompt = buildSkillCatalogPrompt(
+      skillRegistry && typeof skillRegistry.listSkills === 'function'
+        ? skillRegistry.listSkills()
+        : activeSkills,
+      activeSkillIds
+    )
     const activeMcpToolPrefixes = Array.isArray(requestedMcpToolPrefixes)
       ? requestedMcpToolPrefixes.map((item) => String(item || '').trim()).filter(Boolean)
       : []
@@ -1758,6 +1857,10 @@ export function createAgentRunner({
         .filter(Boolean)
     )]
     const normalizedEmbeddingAiId = normalizeTrimmedString(requestedEmbeddingAiId)
+    const getAvailableToolPromptText = () => buildToolPromptWithSkillLoader(
+      toolRunner.getPromptText({ skill: getRuntimeActiveSkill(), mcpToolPrefixes: activeMcpToolPrefixes }),
+      skillCatalogPrompt
+    )
 
     if (normalizedRagCollectionIds.length && ragStore && typeof ragStore.search === 'function') {
       try {
@@ -1899,28 +2002,130 @@ export function createAgentRunner({
       const toolStartedAt = Date.now()
 
       try {
-        toolExecution = await toolRunner.executeToolCall(normalizedRequest, {
-          skill: activeSkill,
-          mcpToolPrefixes: activeMcpToolPrefixes,
-          signal: abortSignal,
-          sessionId,
-          onProgress: (progress) => {
-            if (normalizedRequest.name !== 'run_command') {
-              return
-            }
+        if (normalizedRequest.name === SKILL_TOOL_NAME) {
+          const skillId = normalizeTrimmedString(normalizedRequest.args?.skillId)
+          const mode = normalizeTrimmedString(normalizedRequest.args?.mode).toLowerCase()
+          const command = normalizeTrimmedString(normalizedRequest.args?.command)
+          const skill = resolveRuntimeSkill(skillId)
 
-            const liveOutput = buildRunCommandLiveOutput(progress)
-
-            if (!liveOutput) {
-              return
-            }
-
-            pushSessionEvent(sessionId, 'tool.output', {
-              executionId: toolExecutionId,
-              content: createRunningToolMessageContent(normalizedRequest, liveOutput)
-            })
+          if (!skill) {
+            throw new Error(`Unknown skill: ${skillId || '(empty)'}.`)
           }
-        })
+
+          if (!['help', 'run'].includes(mode)) {
+            throw new Error('Skill tool requires mode to be either "help" or "run".')
+          }
+
+          const previousState = skillRuntimeState.get(skill.skillId) || {
+            helped: false,
+            running: false,
+            instructionLength: 0
+          }
+
+          if (mode === 'run' && !previousState.helped) {
+            toolExecution = {
+              tool: SKILL_TOOL_NAME,
+              args: {
+                skillId,
+                mode,
+                ...(command ? { command } : {})
+              },
+              result: {
+                skillId: skill.skillId,
+                name: skill.name,
+                description: skill.description,
+                mode,
+                command,
+                instruction: '',
+                instructionLength: 0,
+                helped: false,
+                running: false,
+                blocked: true,
+                reason: 'help_required'
+              },
+              summary: `Skill ${skill.name || skill.skillId} requires mode="help" before mode="run".`,
+              message: `Skill ${skill.name || skill.skillId} run was not activated because help has not been read yet.`,
+              status: 'success',
+              durationMs: Date.now() - toolStartedAt
+            }
+          } else {
+            const instruction = mode === 'help'
+              ? normalizeTrimmedString(
+                typeof skillRegistry?.loadSkillInstruction === 'function'
+                  ? skillRegistry.loadSkillInstruction(skill.skillId)
+                  : ''
+              )
+              : ''
+
+            if (mode === 'help' && !instruction) {
+              throw new Error(`Skill "${skillId}" has no loadable instruction.`)
+            }
+
+            const helpInstruction = mode === 'help' ? buildSkillHelpText(instruction) : ''
+            const instructionLength = mode === 'help'
+              ? instruction.length
+              : Number(previousState.instructionLength || 0)
+            const nextState = {
+              helped: previousState.helped || mode === 'help',
+              running: previousState.running || mode === 'run',
+              instructionLength
+            }
+            skillRuntimeState.set(skill.skillId, nextState)
+
+            toolExecution = {
+              tool: SKILL_TOOL_NAME,
+              args: {
+                skillId,
+                mode,
+                ...(command ? { command } : {})
+              },
+              result: {
+                skillId: skill.skillId,
+                name: skill.name,
+                description: skill.description,
+                mode,
+                command,
+                instruction: mode === 'help' ? helpInstruction : '',
+                instructionLength,
+                helpLength: mode === 'help' ? helpInstruction.length : 0,
+                truncated: mode === 'help' ? helpInstruction.length < instruction.length : false,
+                helped: nextState.helped,
+                running: nextState.running
+              },
+              summary: mode === 'help'
+                ? `Loaded Skill help for ${skill.name || skill.skillId}.`
+                : `Skill ${skill.name || skill.skillId} is now running for this task.`,
+              message: mode === 'help'
+                ? `Skill ${skill.name || skill.skillId} help loaded.`
+                : `Skill ${skill.name || skill.skillId} run mode activated.`,
+              status: 'success',
+              durationMs: Date.now() - toolStartedAt
+            }
+          }
+        } else {
+          toolExecution = await toolRunner.executeToolCall(normalizedRequest, {
+            skill: getRuntimeActiveSkill(),
+            mcpToolPrefixes: activeMcpToolPrefixes,
+            signal: abortSignal,
+            sessionId,
+            onProgress: (progress) => {
+              if (normalizedRequest.name !== 'run_command') {
+                return
+              }
+
+              const liveOutput = buildRunCommandLiveOutput(progress)
+
+              if (!liveOutput) {
+                return
+              }
+
+              pushSessionEvent(sessionId, 'tool.output', {
+                executionId: toolExecutionId,
+                content: createRunningToolMessageContent(normalizedRequest, liveOutput)
+              })
+            }
+          })
+        }
         toolExecution = {
           ...toolExecution,
           status: 'success',
@@ -1996,6 +2201,21 @@ export function createAgentRunner({
         summary: toolExecution.summary,
         result: toolExecution.result
       })
+      if (toolExecution.tool === SKILL_TOOL_NAME) {
+        audit(sessionId, 'system_action', {
+          action: toolExecution.result?.blocked
+            ? 'skill_run_blocked'
+            : toolExecution.result?.mode === 'run'
+              ? 'skill_run'
+              : 'skill_help',
+          executionId: toolExecutionId,
+          skillId: toolExecution.result?.skillId,
+          skillName: toolExecution.result?.name,
+          mode: toolExecution.result?.mode,
+          instructionLength: toolExecution.result?.instructionLength,
+          running: toolExecution.result?.running
+        })
+      }
 
       await sessionRepository.appendToolMessage(sessionId, {
         content: createNormalizedToolMessageContent(toolExecution)
@@ -2185,7 +2405,7 @@ export function createAgentRunner({
           conversationHistory,
           requireFileChanges: fileChangesRequired,
           toolMessages,
-          toolPromptText: toolRunner.getPromptText({ skill: activeSkill, mcpToolPrefixes: activeMcpToolPrefixes }),
+          toolPromptText: getAvailableToolPromptText(),
           systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
           remainingIterations: runtimeConfig.maxToolIterations - iteration,
           workspaceContextText,
@@ -2292,6 +2512,26 @@ export function createAgentRunner({
         }
 
         if (autoVerification.ranVerification) {
+          await sleep(runtimeConfig.stepDelayMs)
+          continue
+        }
+
+        const manualSkillsNeedingRun = manualSkillIds.filter((skillId) => (
+          !skillRuntimeState.get(skillId)?.running
+        ))
+
+        if (manualSkillsNeedingRun.length) {
+          toolMessages.push({
+            role: 'user',
+            content: [
+              `The user manually selected Skill(s): ${manualSkillsNeedingRun.join(', ')}.`,
+              'A manually selected Skill is not active until the two-phase Skill protocol completes.',
+              'Do not finish yet.',
+              'For each needed selected Skill, first call tool "skill" with mode="help", then call tool "skill" with mode="run".',
+              'After run succeeds, continue the task or provide the final answer.'
+            ].join('\n')
+          })
+
           await sleep(runtimeConfig.stepDelayMs)
           continue
         }
