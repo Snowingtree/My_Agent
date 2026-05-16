@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { createStructuredCompletion } from './llmClient.js'
+import { createStructuredCompletion, createTextCompletion } from './llmClient.js'
 import {
   createId,
   createTaskStep,
@@ -756,7 +756,7 @@ function buildAgentLoopMessages({
   ]
 }
 
-function buildForcedFinalMessages({
+function buildFinalTextMessages({
   latestGoal,
   conversationHistory,
   fileChangesRequired = false,
@@ -771,13 +771,12 @@ function buildForcedFinalMessages({
 }) {
   const promptSections = [
     'You are a coding agent running inside a server workspace.',
-    'The current session workspace is the only source of truth for this task.',
-    'The user may be asking for a normal conversational reply or a task result.',
-    'Return strict JSON only.',
+    'You are now in the final answer phase.',
+    'Do not output JSON.',
+    'Do not output a ReAct transcript, Thought, Action, or Observation.',
     'Do not expose hidden chain-of-thought.',
-    'Use structured ReAct finalization: include only a brief safe thought_summary if useful, never private reasoning.',
     'Use the same language as the user.',
-    'For ordinary conversation, answer naturally and directly instead of refusing unnecessarily.',
+    'Answer naturally and directly.',
     ...(ragContextText
       ? [
           'A knowledge base is selected for this request.',
@@ -785,16 +784,15 @@ function buildForcedFinalMessages({
           'Do not search Lark/Feishu chat history just because a chat is selected, unless the user explicitly asks to search chat history or send a message.'
         ]
       : []),
-    'You must now finish without calling more tools.',
-    'Base the answer on the gathered workspace evidence.',
-    'If the request never needed workspace tools, answer naturally and directly.',
+    'Base the answer on the gathered evidence and the current session workspace.',
+    'If the request never needed workspace tools, answer as a normal conversation.',
     'If ephemeral uploaded files were provided, treat them as reference material for the final answer.',
     'When the user asks for the current date, weekday, or time, use the provided current date context directly.',
-    'If file changes were verified, mention the verification result clearly.',
     ...(modifiedWorkspace
       ? [
+          'Files were changed in the workspace.',
           'Keep the final reply concise.',
-          'If files were changed, summarize what changed and which files were affected.',
+          'Summarize what changed and which files were affected.',
           'Do not paste full file contents or long code blocks unless the user explicitly asked to see them.'
         ]
       : []),
@@ -804,13 +802,7 @@ function buildForcedFinalMessages({
           'Explain briefly that the requested file change was not applied and state the blocking reason.',
           'Do not fabricate code changes and do not paste large code blocks.'
         ]
-      : []),
-    'JSON schema:',
-    '{',
-    '  "thought_summary": "optional brief safe completion rationale; no hidden reasoning",',
-    '  "summary": "short public completion update",',
-    '  "reply": "the final user-facing answer"',
-    '}'
+      : [])
   ]
 
   if (systemPrompt) {
@@ -858,7 +850,7 @@ function buildForcedFinalMessages({
       role: 'user',
       content: [
         `Latest user message: ${latestGoal}`,
-        'Produce the best final user-facing reply now.'
+        'Produce the final user-facing answer now as plain natural language.'
       ].join('\n')
     }
   ]
@@ -1403,6 +1395,81 @@ export function createAgentRunner({
     })
 
     return message
+  }
+
+  async function appendAssistantReplyFromTextCompletion(sessionId, {
+    aiConfig,
+    model = '',
+    messages,
+    signal,
+    fileChangesRequired = false,
+    modifiedWorkspace = false,
+    changedFiles = [],
+    verifiedAfterModification = false
+  } = {}) {
+    let latestStreamedContent = ''
+    let emittedAnyChunk = false
+
+    const completion = await createTextCompletion({
+      aiConfig,
+      model,
+      messages,
+      requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+      idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
+      streamResponses: aiRuntimeConfig.streamResponses,
+      timeoutRetries: aiRuntimeConfig.timeoutRetries,
+      timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
+      signal,
+      onTextChunk: (deltaText, fullText) => {
+        const nextContent = String(fullText || '')
+
+        if (!nextContent) {
+          return
+        }
+
+        emittedAnyChunk = true
+        latestStreamedContent = nextContent
+        pushSessionEvent(sessionId, 'assistant.partial', {
+          content: nextContent,
+          model
+        })
+      }
+    })
+    const rawReply = normalizeTrimmedString(completion.text || completion.rawText || latestStreamedContent)
+    const safeReply = buildSafeAssistantReply({
+      reply: rawReply,
+      fileChangesRequired,
+      modifiedWorkspace,
+      changedFiles,
+      verifiedAfterModification
+    })
+
+    if (!safeReply) {
+      throw new Error('Model returned an empty final answer.')
+    }
+
+    if (!emittedAnyChunk || safeReply !== latestStreamedContent) {
+      pushSessionEvent(sessionId, 'assistant.partial', {
+        content: safeReply,
+        model
+      })
+    }
+
+    const message = await sessionRepository.appendAssistantMessage(sessionId, {
+      content: safeReply,
+      model,
+      usage: completion.usage
+    })
+
+    pushSessionEvent(sessionId, 'assistant.finalized', {
+      model
+    })
+
+    return {
+      message,
+      reply: safeReply,
+      usage: completion.usage
+    }
   }
 
   async function appendFailureAssistantMessage(sessionId, summary, model = '') {
@@ -2116,46 +2183,6 @@ export function createAgentRunner({
           continue
         }
 
-        const finalReply = normalizeTrimmedString(decision.json?.reply)
-
-        if (
-          fileChangesRequired
-          && !executionState.modifiedWorkspace
-          && finalReply
-          && looksLikeCodeHeavyContent(finalReply)
-        ) {
-          const persisted = await maybePersistReplyAsWorkspaceFile(finalReply)
-
-          if (persisted) {
-            await sleep(runtimeConfig.stepDelayMs)
-            continue
-          }
-        }
-
-        if (
-          fileChangesRequired
-          && !executionState.modifiedWorkspace
-          && finalReply
-          && (looksLikeCompletedFileChangeClaimSafe(finalReply) || extractExplicitFilePaths(finalReply).length)
-        ) {
-          toolMessages.push({
-            role: 'user',
-            content: [
-              'The previous final reply claimed that files were created or modified.',
-              'However, no workspace write tool has succeeded yet.',
-              'Do not claim success until write_file or apply_patch actually succeeds.',
-              'Continue editing the existing workspace files now.'
-            ].join('\n')
-          })
-
-          await sleep(runtimeConfig.stepDelayMs)
-          continue
-        }
-
-        if (!finalReply && !executionState.modifiedWorkspace) {
-          throw new Error('Model returned a final action without a reply.')
-        }
-
         const completionSummary = decisionSummary || '任务已完成。'
         const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
         finalizedSteps.push(createFinalReplyStep(completionSummary))
@@ -2174,20 +2201,29 @@ export function createAgentRunner({
           return draftSession
         })
 
-        const userFacingReply = buildSafeAssistantReply({
-          reply: finalReply,
+        publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
+
+        await appendAssistantReplyFromTextCompletion(sessionId, {
+          aiConfig,
+          model: selectedModel,
+          signal: abortSignal,
+          messages: buildFinalTextMessages({
+            latestGoal,
+            conversationHistory,
+            fileChangesRequired,
+            modifiedWorkspace: executionState.modifiedWorkspace,
+            toolMessages,
+            systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+            workspaceContextText,
+            attachmentContextText,
+            ragContextText,
+            conversationMemoryText,
+            currentDateContextText
+          }),
           fileChangesRequired,
           modifiedWorkspace: executionState.modifiedWorkspace,
           changedFiles: executionState.changedFiles,
           verifiedAfterModification: executionState.verifiedAfterModification
-        })
-
-        publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
-
-        await appendAssistantReplyWithStreaming(sessionId, {
-          content: userFacingReply,
-          model: selectedModel,
-          usage: decision.usage
         })
         return
       }
@@ -2206,123 +2242,6 @@ export function createAgentRunner({
         sessionWorkspaces
       })
 
-      const forcedFinal = await createStructuredCompletion({
-        aiConfig,
-        model: selectedModel,
-        requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
-        idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
-        streamResponses: aiRuntimeConfig.streamResponses,
-        timeoutRetries: aiRuntimeConfig.timeoutRetries,
-        timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
-        signal: abortSignal,
-        messages: buildForcedFinalMessages({
-          latestGoal,
-          conversationHistory,
-          fileChangesRequired,
-          modifiedWorkspace: executionState.modifiedWorkspace,
-              toolMessages,
-              systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-              workspaceContextText,
-              attachmentContextText,
-              ragContextText,
-              conversationMemoryText,
-              currentDateContextText
-            })
-          })
-      const finalReply = normalizeTrimmedString(forcedFinal.json?.reply)
-
-      if (
-        fileChangesRequired
-        && !executionState.modifiedWorkspace
-        && finalReply
-        && looksLikeCodeHeavyContent(finalReply)
-      ) {
-        const persisted = await maybePersistReplyAsWorkspaceFile(finalReply)
-
-        if (persisted) {
-          const refreshedWorkspaceContextText = await buildWorkspaceSnapshotText({
-            sessionId,
-            latestGoal,
-            changedFiles: executionState.changedFiles,
-            sessionRepository,
-            sessionWorkspaces
-          })
-          const recoveryFinal = await createStructuredCompletion({
-            aiConfig,
-            model: selectedModel,
-            requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
-            idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
-            streamResponses: aiRuntimeConfig.streamResponses,
-            timeoutRetries: aiRuntimeConfig.timeoutRetries,
-            timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
-            signal: abortSignal,
-            messages: buildForcedFinalMessages({
-              latestGoal,
-              conversationHistory,
-              fileChangesRequired,
-              modifiedWorkspace: executionState.modifiedWorkspace,
-              toolMessages,
-              systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-              workspaceContextText: refreshedWorkspaceContextText,
-              attachmentContextText,
-              ragContextText,
-              conversationMemoryText,
-              currentDateContextText
-            })
-          })
-
-          const recoveredReply = normalizeTrimmedString(recoveryFinal.json?.reply)
-          const recoveredSummary = getDecisionProgressSummary(recoveryFinal.json) || '已基于最新工作区结果完成答复。'
-          const refreshedSteps = finalizeRunningSteps(taskSteps, recoveredSummary)
-          refreshedSteps.push(createFinalReplyStep(recoveredSummary))
-
-          await sessionRepository.updateSession(sessionId, (draftSession) => {
-            draftSession.task = {
-              ...draftSession.task,
-              taskId,
-              status: 'completed',
-              summary: recoveredSummary,
-              steps: refreshedSteps,
-              completedAt: nowIso(),
-              updatedAt: nowIso()
-            }
-
-            return draftSession
-          })
-
-          const recoveredUserFacingReply = buildSafeAssistantReply({
-            reply: recoveredReply,
-            fileChangesRequired,
-            modifiedWorkspace: executionState.modifiedWorkspace,
-            changedFiles: executionState.changedFiles,
-            verifiedAfterModification: executionState.verifiedAfterModification
-          })
-
-          publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
-
-          await appendAssistantReplyWithStreaming(sessionId, {
-            content: recoveredUserFacingReply,
-            model: selectedModel,
-            usage: recoveryFinal.usage
-          })
-          return
-        }
-      }
-
-      if (
-        fileChangesRequired
-        && !executionState.modifiedWorkspace
-        && finalReply
-        && (looksLikeCompletedFileChangeClaimSafe(finalReply) || extractExplicitFilePaths(finalReply).length)
-      ) {
-        throw new Error('The model claimed that file changes were completed, but no workspace write tool actually succeeded.')
-      }
-
-      if (!finalReply && !executionState.modifiedWorkspace) {
-        throw new Error('Model reached the tool iteration limit without producing a final answer.')
-      }
-
-      const completionSummary = getDecisionProgressSummary(forcedFinal.json) || '已基于已收集的信息完成答复。'
       if (
         executionState.modifiedWorkspace
         && requiredCompanionExtensions.length
@@ -2331,6 +2250,9 @@ export function createAgentRunner({
         throw new Error(`The requested file split is incomplete. Missing companion file update for: ${requiredCompanionExtensions.join(', ')}`)
       }
 
+      const completionSummary = executionState.modifiedWorkspace
+        ? '已基于当前工作区结果完成答复。'
+        : '已基于已收集的信息完成答复。'
       const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
       finalizedSteps.push(createFinalReplyStep(completionSummary))
 
@@ -2348,21 +2270,31 @@ export function createAgentRunner({
         return draftSession
       })
 
-      const userFacingReply = buildSafeAssistantReply({
-        reply: finalReply,
+      publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
+
+      await appendAssistantReplyFromTextCompletion(sessionId, {
+        aiConfig,
+        model: selectedModel,
+        signal: abortSignal,
+        messages: buildFinalTextMessages({
+          latestGoal,
+          conversationHistory,
+          fileChangesRequired,
+          modifiedWorkspace: executionState.modifiedWorkspace,
+          toolMessages,
+          systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+          workspaceContextText,
+          attachmentContextText,
+          ragContextText,
+          conversationMemoryText,
+          currentDateContextText
+        }),
         fileChangesRequired,
         modifiedWorkspace: executionState.modifiedWorkspace,
         changedFiles: executionState.changedFiles,
         verifiedAfterModification: executionState.verifiedAfterModification
       })
-
-      publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
-
-      await appendAssistantReplyWithStreaming(sessionId, {
-        content: userFacingReply,
-        model: selectedModel,
-        usage: forcedFinal.usage
-      })
+      return
     } catch (error) {
       if (isCancellationError(error) || abortSignal?.aborted) {
         const cancelledSummary = '已停止当前处理。'

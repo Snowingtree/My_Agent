@@ -97,6 +97,20 @@ function buildRequestBodies({ aiConfig, model, messages, streamResponses } = {})
   ]
 }
 
+function buildTextRequestBody({ model, messages, streamResponses } = {}) {
+  const body = {
+    model,
+    temperature: 0.4,
+    messages
+  }
+
+  if (streamResponses) {
+    body.stream = true
+  }
+
+  return body
+}
+
 function isResponseFormatCompatibilityError(payload, responseText) {
   const joinedText = [
     payload?.error?.message,
@@ -821,6 +835,150 @@ export async function createStructuredCompletion({
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       return await runStructuredCompletionAttempt({
+        aiConfig,
+        model,
+        messages,
+        requestTimeoutMs,
+        idleTimeoutMs,
+        streamResponses,
+        onTextChunk,
+        signal
+      })
+    } catch (error) {
+      if (error?.code === 'TASK_CANCELLED') {
+        throw error
+      }
+
+      lastError = error
+      const shouldRetry = isTimeoutError(error) && attempt < maxAttempts - 1
+
+      if (!shouldRetry) {
+        throw error
+      }
+
+      if (retryDelayMs > 0) {
+        await delay(retryDelayMs * (attempt + 1), null, { signal })
+      }
+    }
+  }
+
+  throw lastError || new Error('Model request failed.')
+}
+
+async function runTextCompletionAttempt({
+  aiConfig,
+  model,
+  messages,
+  requestTimeoutMs,
+  idleTimeoutMs = 0,
+  streamResponses = false,
+  onTextChunk,
+  signal
+} = {}) {
+  const controller = new AbortController()
+  const abortFromCaller = () => {
+    controller.abort()
+  }
+  const timeout = delay(requestTimeoutMs, null, { signal: controller.signal })
+    .then(() => {
+      controller.abort()
+    })
+    .catch(() => {})
+
+  if (signal) {
+    if (signal.aborted) {
+      const cancelledError = new Error('Task was cancelled.')
+      cancelledError.code = 'TASK_CANCELLED'
+      throw cancelledError
+    }
+
+    signal.addEventListener('abort', abortFromCaller, { once: true })
+  }
+
+  try {
+    const response = await fetch(resolveEndpoint(aiConfig.baseURL), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: streamResponses ? 'text/event-stream, application/json' : 'application/json',
+        Authorization: `Bearer ${aiConfig.apiKey}`
+      },
+      body: JSON.stringify(buildTextRequestBody({
+        model,
+        messages,
+        streamResponses
+      })),
+      signal: controller.signal
+    })
+
+    const streamedResult = await readStreamedResponseBody(response, {
+      controller,
+      idleTimeoutMs,
+      onTextChunk
+    })
+    const { rawText, usage, responseText, payload, idleTimedOut } = streamedResult
+
+    if (idleTimedOut) {
+      throw new Error('Model response became idle for too long.')
+    }
+
+    if (!response.ok) {
+      const htmlErrorMessage = createHtmlErrorPageMessage(aiConfig, responseText, response.status)
+
+      if (htmlErrorMessage) {
+        throw new Error(htmlErrorMessage)
+      }
+
+      const errorMessage = payload?.error?.message || responseText || `Model request failed with ${response.status}.`
+      throw new Error(errorMessage)
+    }
+
+    return {
+      rawText,
+      text: rawText,
+      usage
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      if (signal?.aborted) {
+        const cancelledError = new Error('Task was cancelled.')
+        cancelledError.code = 'TASK_CANCELLED'
+        throw cancelledError
+      }
+
+      throw new Error('Model request timed out.')
+    }
+
+    throw error
+  } finally {
+    if (signal) {
+      signal.removeEventListener('abort', abortFromCaller)
+    }
+
+    controller.abort()
+    await timeout
+  }
+}
+
+export async function createTextCompletion({
+  aiConfig,
+  model,
+  messages,
+  requestTimeoutMs,
+  idleTimeoutMs = 0,
+  streamResponses = false,
+  timeoutRetries = 0,
+  timeoutRetryDelayMs = 0,
+  onTextChunk,
+  signal
+} = {}) {
+  let lastError = null
+  const maxAttempts = Math.max(1, Number(timeoutRetries || 0) + 1)
+  const retryDelayMs = Math.max(0, Number(timeoutRetryDelayMs || 0))
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await runTextCompletionAttempt({
         aiConfig,
         model,
         messages,
