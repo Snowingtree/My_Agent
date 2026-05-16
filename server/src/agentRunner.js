@@ -1325,9 +1325,22 @@ export function createAgentRunner({
   runtimeConfig,
   workspaceConfig,
   toolRunner,
-  ragStore
+  ragStore,
+  auditLogger
 } = {}) {
   const activeRuns = new Map()
+
+  function audit(sessionId, event, payload = {}) {
+    if (!auditLogger || typeof auditLogger.logEvent !== 'function') {
+      return
+    }
+
+    auditLogger.logEvent({
+      sessionId,
+      event,
+      ...payload
+    })
+  }
 
   function pushSessionEvent(sessionId, type, payload = {}) {
     if (typeof publishSessionEvent !== 'function') {
@@ -1390,6 +1403,14 @@ export function createAgentRunner({
       usage
     })
 
+    audit(sessionId, 'ai_message', {
+      source: 'buffered',
+      model,
+      contentPreview: normalizedContent.slice(0, 500),
+      contentLength: normalizedContent.length,
+      usage
+    })
+
     pushSessionEvent(sessionId, 'assistant.finalized', {
       model
     })
@@ -1409,6 +1430,12 @@ export function createAgentRunner({
   } = {}) {
     let latestStreamedContent = ''
     let emittedAnyChunk = false
+
+    audit(sessionId, 'llm_input', {
+      stage: 'final_text',
+      model,
+      messageCount: Array.isArray(messages) ? messages.length : 0
+    })
 
     const completion = await createTextCompletion({
       aiConfig,
@@ -1458,6 +1485,20 @@ export function createAgentRunner({
     const message = await sessionRepository.appendAssistantMessage(sessionId, {
       content: safeReply,
       model,
+      usage: completion.usage
+    })
+
+    audit(sessionId, 'llm_final_text', {
+      model,
+      contentPreview: safeReply.slice(0, 500),
+      contentLength: safeReply.length,
+      usage: completion.usage
+    })
+    audit(sessionId, 'ai_message', {
+      source: 'final_text_completion',
+      model,
+      contentPreview: safeReply.slice(0, 500),
+      contentLength: safeReply.length,
       usage: completion.usage
     })
 
@@ -1546,8 +1587,20 @@ export function createAgentRunner({
         return draftSession
       })
 
+      audit(sessionId, 'system_action', {
+        action: 'memory_compacted',
+        compressedMessageCount: messagesToCompress.length,
+        keptMessageCount: messages.length - cutoffIndex,
+        summaryLength: nextSummary.length,
+        model: selectedModel
+      })
+
       return nextSummary
     } catch (error) {
+      audit(sessionId, 'error', {
+        scope: 'memory_compaction',
+        message: error instanceof Error ? error.message : String(error || '')
+      })
       console.warn('[agent-runner] failed to compress conversation memory:', error instanceof Error ? error.message : error)
       return existingSummary
     }
@@ -1669,6 +1722,18 @@ export function createAgentRunner({
 
     const selectedModel = resolveModel(aiConfig, requestedModel)
     const taskId = session.task?.taskId || createId('task')
+    audit(sessionId, 'system_action', {
+      action: 'task_started',
+      taskId,
+      aiId: aiConfig.aiId,
+      model: selectedModel,
+      skillIds: activeSkills.map((item) => item.skillId),
+      mcpServerIds: requestedMcpServerIds,
+      mcpToolPrefixes: activeMcpToolPrefixes,
+      ragCollectionIds: requestedRagCollectionIds,
+      embeddingAiId: requestedEmbeddingAiId,
+      attachmentCount: requestedAttachments.length
+    })
     const conversationMemoryText = await ensureConversationMemory({
       sessionId,
       session,
@@ -1696,6 +1761,12 @@ export function createAgentRunner({
 
     if (normalizedRagCollectionIds.length && ragStore && typeof ragStore.search === 'function') {
       try {
+        audit(sessionId, 'rag_search', {
+          status: 'started',
+          collectionIds: normalizedRagCollectionIds,
+          embeddingAiId: normalizedEmbeddingAiId,
+          queryPreview: latestGoal.slice(0, 500)
+        })
         publishTaskProgress(sessionId, '正在检索当前知识库...', selectedModel)
         const ragItemGroups = await Promise.all(
           normalizedRagCollectionIds.map((collectionId) => ragStore.search({
@@ -1709,8 +1780,20 @@ export function createAgentRunner({
           collectionIds: normalizedRagCollectionIds,
           items: ragItems
         })
+        audit(sessionId, 'rag_search', {
+          status: 'success',
+          collectionIds: normalizedRagCollectionIds,
+          embeddingAiId: normalizedEmbeddingAiId,
+          hitCount: ragItems.length
+        })
         publishTaskProgress(sessionId, `知识库检索完成，命中 ${ragItems.length} 条内容。`, selectedModel)
       } catch (error) {
+        audit(sessionId, 'rag_search', {
+          status: 'failed',
+          collectionIds: normalizedRagCollectionIds,
+          embeddingAiId: normalizedEmbeddingAiId,
+          message: error instanceof Error ? error.message : String(error || '')
+        })
         console.warn('[agent-runner] failed to retrieve RAG context:', error instanceof Error ? error.message : error)
       }
     }
@@ -1773,6 +1856,14 @@ export function createAgentRunner({
 
       const normalizedRequest = normalizeToolRequest(toolRequest)
       const toolExecutionId = createId('tool')
+      const isMcpTool = normalizedRequest.name.startsWith('mcp.')
+      audit(sessionId, isMcpTool ? 'mcp_call' : 'tool_call', {
+        executionId: toolExecutionId,
+        tool: normalizedRequest.name,
+        args: normalizedRequest.args,
+        thoughtSummary,
+        status: 'started'
+      })
       publishTaskProgress(
         sessionId,
         summary || `正在执行工具 ${normalizedRequest.name}。`,
@@ -1841,6 +1932,19 @@ export function createAgentRunner({
           throw createCancellationError()
         }
         const errorMessage = normalizeTrimmedString(error?.message) || `工具 ${normalizedRequest.name} 执行失败。`
+        audit(sessionId, isMcpTool ? 'mcp_result' : 'tool_result', {
+          executionId: toolExecutionId,
+          tool: normalizedRequest.name,
+          status: 'failed',
+          durationMs: Date.now() - toolStartedAt,
+          message: errorMessage
+        })
+        audit(sessionId, 'error', {
+          scope: isMcpTool ? 'mcp_tool' : 'tool',
+          executionId: toolExecutionId,
+          tool: normalizedRequest.name,
+          message: errorMessage
+        })
         taskSteps[taskSteps.length - 1] = failStep(toolStep, errorMessage)
 
         await sessionRepository.appendToolMessage(sessionId, {
@@ -1884,6 +1988,14 @@ export function createAgentRunner({
       taskSteps[taskSteps.length - 1] = completeStep(toolStep, toolExecution.summary)
       toolMessages.push(...createToolTranscriptMessages(toolExecution, { thoughtSummary }))
       publishTaskProgress(sessionId, toolExecution.summary, selectedModel)
+      audit(sessionId, isMcpTool ? 'mcp_result' : 'tool_result', {
+        executionId: toolExecutionId,
+        tool: toolExecution.tool,
+        status: 'success',
+        durationMs: toolExecution.durationMs,
+        summary: toolExecution.summary,
+        result: toolExecution.result
+      })
 
       await sessionRepository.appendToolMessage(sessionId, {
         content: createNormalizedToolMessageContent(toolExecution)
@@ -1903,6 +2015,14 @@ export function createAgentRunner({
         if (writtenPath) {
           executionState.changedFiles.push(writtenPath)
         }
+
+        audit(sessionId, 'workspace_write', {
+          executionId: toolExecutionId,
+          tool: toolExecution.tool,
+          path: writtenPath,
+          changed: toolExecution.result?.changed !== false,
+          sizeBytes: toolExecution.result?.sizeBytes ?? null
+        })
 
         if (sessionWorkspaces && writtenPath) {
           try {
@@ -2060,20 +2180,11 @@ export function createAgentRunner({
           sessionWorkspaces
         })
 
-        const decision = await createStructuredCompletion({
-          aiConfig,
-          model: selectedModel,
-          requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
-          idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
-          streamResponses: aiRuntimeConfig.streamResponses,
-          timeoutRetries: aiRuntimeConfig.timeoutRetries,
-          timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
-          signal: abortSignal,
-          messages: buildAgentLoopMessages({
-            latestGoal,
-            conversationHistory,
-            requireFileChanges: fileChangesRequired,
-            toolMessages,
+        const loopMessages = buildAgentLoopMessages({
+          latestGoal,
+          conversationHistory,
+          requireFileChanges: fileChangesRequired,
+          toolMessages,
           toolPromptText: toolRunner.getPromptText({ skill: activeSkill, mcpToolPrefixes: activeMcpToolPrefixes }),
           systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
           remainingIterations: runtimeConfig.maxToolIterations - iteration,
@@ -2083,6 +2194,26 @@ export function createAgentRunner({
           conversationMemoryText,
           currentDateContextText
         })
+        audit(sessionId, 'llm_input', {
+          stage: 'decision',
+          iteration,
+          model: selectedModel,
+          messageCount: loopMessages.length,
+          toolMessageCount: toolMessages.length,
+          ragContext: Boolean(ragContextText),
+          memoryContext: Boolean(conversationMemoryText)
+        })
+
+        const decision = await createStructuredCompletion({
+          aiConfig,
+          model: selectedModel,
+          requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+          idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
+          streamResponses: aiRuntimeConfig.streamResponses,
+          timeoutRetries: aiRuntimeConfig.timeoutRetries,
+          timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
+          signal: abortSignal,
+          messages: loopMessages
         })
         throwIfCancelled()
         throwIfTaskTimedOut()
@@ -2090,6 +2221,21 @@ export function createAgentRunner({
         const action = normalizeAction(decision.json?.action)
         const thoughtSummary = getDecisionThoughtSummary(decision.json)
         const decisionSummary = getDecisionProgressSummary(decision.json)
+        audit(sessionId, 'llm_decision', {
+          stage: 'decision',
+          iteration,
+          model: selectedModel,
+          action,
+          thoughtSummary,
+          summary: decisionSummary,
+          tool: decision.json?.tool
+            ? {
+                name: decision.json.tool.name,
+                args: decision.json.tool.args
+              }
+            : null,
+          usage: decision.usage
+        })
 
         if (action === 'tool') {
           taskSteps[0] = completeStep(
@@ -2200,6 +2346,13 @@ export function createAgentRunner({
 
           return draftSession
         })
+        audit(sessionId, 'system_action', {
+          action: 'task_completed',
+          taskId,
+          summary: completionSummary,
+          changedFiles: executionState.changedFiles,
+          verifiedAfterModification: executionState.verifiedAfterModification
+        })
 
         publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
 
@@ -2269,6 +2422,13 @@ export function createAgentRunner({
 
         return draftSession
       })
+      audit(sessionId, 'system_action', {
+        action: 'task_completed',
+        taskId,
+        summary: completionSummary,
+        changedFiles: executionState.changedFiles,
+        verifiedAfterModification: executionState.verifiedAfterModification
+      })
 
       publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
 
@@ -2313,6 +2473,11 @@ export function createAgentRunner({
 
           return draftSession
         })
+        audit(sessionId, 'system_action', {
+          action: 'task_cancelled',
+          taskId,
+          summary: cancelledSummary
+        })
         return
       }
       const failureSummary = normalizeTrimmedString(error?.message) || '任务执行失败。'
@@ -2334,6 +2499,16 @@ export function createAgentRunner({
         }
 
         return draftSession
+      })
+      audit(sessionId, 'error', {
+        scope: 'task',
+        taskId,
+        message: failureSummary
+      })
+      audit(sessionId, 'system_action', {
+        action: 'task_failed',
+        taskId,
+        summary: failureSummary
       })
       await appendFailureAssistantMessage(sessionId, failureSummary, selectedModel)
     }

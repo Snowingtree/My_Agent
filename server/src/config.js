@@ -171,7 +171,10 @@ export function createConfig() {
         ? resolveServerPath(process.env.AGENT_TOKEN_USAGE_FILE, 'data/token-usage.jsonl')
         : resolve(defaultAgentStorageDir, 'token-usage.jsonl'),
       sessionArtifactsDir: resolveServerPath(process.env.AGENT_SESSION_ARTIFACTS_DIR, 'data/session-files'),
-      sessionWorkspacesDir
+      sessionWorkspacesDir,
+      auditDir: process.env.AGENT_AUDIT_DIR
+        ? resolveServerPath(process.env.AGENT_AUDIT_DIR, 'data/audit')
+        : resolve(defaultAgentStorageDir, 'audit')
     },
     ai: {
       configPath: resolveServerPath(process.env.AGENT_AI_CONFIG_PATH, 'config/ai-configs.json'),

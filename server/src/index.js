@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { extname } from 'node:path'
 import mammoth from 'mammoth'
+import { createAuditLogger } from './auditLogger.js'
 import { createConfig } from './config.js'
 import { createEmbeddingClient } from './embeddingClient.js'
 import { loadEnvFiles } from './env.js'
@@ -25,6 +26,9 @@ const config = createConfig()
 let sessionWorkspaces = null
 const sessionStreamSubscribers = new Map()
 const tokenUsageStore = createTokenUsageStore(config.storage.tokenUsageFile)
+const auditLogger = createAuditLogger({
+  auditDir: config.storage.auditDir
+})
 
 function subscribeToSessionStream(sessionId, listener) {
   const normalizedSessionId = normalizeTrimmedString(sessionId)
@@ -253,7 +257,8 @@ const agentRunner = createAgentRunner({
   runtimeConfig: config.runtime,
   workspaceConfig: config.workspace,
   toolRunner,
-  ragStore
+  ragStore,
+  auditLogger
 })
 
 function setBaseHeaders(response) {
@@ -1397,6 +1402,7 @@ async function handleChat(request, response) {
 
   let sessionId = normalizeTrimmedString(payload?.sessionId)
   let session = sessionId ? await sessionRepository.getSession(sessionId) : null
+  let createdNewSession = false
 
   if (session && agentRunner.isTaskActive(session.sessionId)) {
     sendJson(response, 409, {
@@ -1415,6 +1421,12 @@ async function handleChat(request, response) {
   if (!session) {
     session = await sessionRepository.createSession()
     sessionId = session.sessionId
+    createdNewSession = true
+    auditLogger.logEvent({
+      sessionId,
+      event: 'system_action',
+      action: 'session_created'
+    })
   }
 
   await sessionWorkspaces.ensureSessionWorkspace(sessionId)
@@ -1438,6 +1450,19 @@ async function handleChat(request, response) {
     })
     return
   }
+
+  auditLogger.logUserMessage({
+    sessionId,
+    content: message,
+    aiId: aiConfig.aiId,
+    model: selectedModel,
+    skillIds: activeSkills.map((item) => item.skillId),
+    mcpServerIds: requestedMcpServerIds,
+    ragCollectionIds: requestedRagCollectionIds,
+    embeddingAiId: requestedEmbeddingAiId,
+    attachmentCount: requestedAttachments.length,
+    createdNewSession
+  })
 
   if (looksLikeLarkChatInfoRequest(message)) {
     try {
@@ -1534,6 +1559,7 @@ async function handleRequest(request, response) {
       now: new Date().toISOString(),
       sessionStore: config.storage.sessionsDir,
       legacySessionStore: config.storage.legacySessionsFile,
+      auditStore: config.storage.auditDir,
       workspaceRoot: config.workspace.rootDir,
       allowedCommands: config.workspace.allowedCommands,
       enableWriteTools: config.workspace.enableWriteTools,
@@ -1741,8 +1767,41 @@ const server = createServer(async (request, response) => {
     await handleRequest(request, response)
   } catch (error) {
     const message = normalizeTrimmedString(error?.message) || 'Internal server error.'
+    auditLogger.logEvent({
+      event: 'error',
+      scope: 'http_request',
+      method: request.method,
+      url: request.url,
+      message
+    })
     sendJson(response, 500, { message })
   }
+})
+
+async function shutdown(signal) {
+  console.log(`[agent-api] received ${signal}, flushing audit logs...`)
+
+  try {
+    await auditLogger.shutdown()
+  } catch (error) {
+    console.warn('[agent-api] failed to flush audit logs:', error instanceof Error ? error.message : error)
+  }
+
+  server.close(() => {
+    process.exit(0)
+  })
+
+  setTimeout(() => {
+    process.exit(0)
+  }, 3000).unref()
+}
+
+process.once('SIGINT', () => {
+  void shutdown('SIGINT')
+})
+
+process.once('SIGTERM', () => {
+  void shutdown('SIGTERM')
 })
 
 try {
