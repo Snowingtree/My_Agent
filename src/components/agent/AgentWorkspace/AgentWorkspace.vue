@@ -147,7 +147,11 @@
         </p>
         <p v-else-if="isLoadingSession" class="agent-conversation__status">正在读取会话内容...</p>
 
-        <div ref="messagesRef" class="agent-conversation__messages">
+        <div
+          ref="messagesRef"
+          class="agent-conversation__messages"
+          @click="handleMarkdownCodeBlockClick"
+        >
           <div v-if="!messages.length && !isLoadingSession" class="agent-conversation__welcome">
             <div class="agent-conversation__welcome-copy">
               <p class="agent-conversation__welcome-tag">Agent 工作台</p>
@@ -1842,7 +1846,21 @@ function formatMessageContentForDisplay(content, role) {
 
   const lineCount = normalizedContent.split(/\r?\n/).length
   const isLongEnough = normalizedContent.length >= 220 || lineCount >= 8
-  const looksLikeCodeHeavyMessage = hasMultipleCodeBlocks || hasStyleOrScriptBlock || (hasHighConfidenceMarker && isLongEnough)
+  const isLargeCodePayload = normalizedContent.length >= 1600 || lineCount >= 40
+  const startsLikeRawCode = /^(<!doctype html|<html\b|<template\b|<script\b|<style\b|import\s|export\s+default\b|function\s|const\s|let\s|var\s)/i.test(normalizedContent)
+  const hasMarkdownExplanationStructure = /(^|\n)\s{0,3}(#{1,6}\s+|\d+\.\s+|[-*+]\s+)/.test(normalizedContent)
+  const hasExplanatoryLanguage = /布局|结构|区域|页面|从上到下|代码结构|组成|说明|解释|分析|使用了|包含|负责|layout|structure|section|explains?|contains?/i.test(normalizedContent)
+  const looksLikeExplanatoryDiscussion = hasMarkdownExplanationStructure || (hasExplanatoryLanguage && !startsLikeRawCode)
+  const looksLikeRawCodeMessage = (
+    (startsLikeRawCode && isLongEnough)
+    || (hasStyleOrScriptBlock && startsLikeRawCode)
+    || (hasMultipleCodeBlocks && isLargeCodePayload && !looksLikeExplanatoryDiscussion)
+  )
+  const looksLikeCodeHeavyMessage = looksLikeRawCodeMessage || (
+    hasHighConfidenceMarker
+    && !looksLikeExplanatoryDiscussion
+    && (startsLikeRawCode ? isLongEnough : isLargeCodePayload)
+  )
 
   if (lowerContent.includes('tool summary:') && !lowerContent.includes('status: failed')) {
     return '本轮主要执行了文件或工具操作，代码正文已省略，请查看右侧会话文件。'
@@ -1945,6 +1963,40 @@ async function copyConversationMessage(message) {
   }
 }
 
+async function handleMarkdownCodeBlockClick(event) {
+  const target = event?.target
+  const clickedElement = target && typeof target.closest === 'function'
+    ? target
+    : null
+  const copyButton = clickedElement?.closest('[data-agent-code-copy]')
+
+  if (!copyButton || !messagesRef.value?.contains(copyButton)) {
+    return
+  }
+
+  const codeBlock = copyButton.closest('.agent-markdown-code-block')
+  const codeElement = codeBlock?.querySelector('pre code')
+  const code = String(codeElement?.textContent || '')
+
+  if (!code.trim()) {
+    return
+  }
+
+  event.preventDefault()
+  event.stopPropagation()
+
+  try {
+    await writeTextToClipboard(code)
+    showConversationCopyToast()
+    copyButton.classList.add('is-copied')
+    window.setTimeout(() => {
+      copyButton.classList.remove('is-copied')
+    }, 900)
+  } catch {
+    // The main conversation copy path uses the same clipboard fallback.
+  }
+}
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -1973,12 +2025,103 @@ function flushMarkdownParagraph(paragraphLines, htmlBlocks) {
   paragraphLines.length = 0
 }
 
+function renderCodeBlockHtml(language, codeLines) {
+  const normalizedLanguage = String(language || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+  const className = normalizedLanguage ? ` class="language-${normalizedLanguage}"` : ''
+  const languageLabel = normalizedLanguage ? normalizedLanguage.toUpperCase() : 'CODE'
+  const escapedCode = escapeHtml(codeLines.join('\n').replace(/\n+$/g, ''))
+
+  return [
+    '<div class="agent-markdown-code-block">',
+    '<div class="agent-markdown-code-block__head">',
+    '<span class="agent-markdown-code-block__label">',
+    '<span class="agent-markdown-code-block__icon" aria-hidden="true">&lt;/&gt;</span>',
+    `<span>${escapeHtml(languageLabel)}</span>`,
+    '</span>',
+    '<button type="button" class="agent-markdown-code-block__copy" data-agent-code-copy aria-label="复制代码" title="复制代码">',
+    '<svg viewBox="0 0 24 24" aria-hidden="true">',
+    '<rect x="9" y="9" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"></rect>',
+    '<rect x="5" y="5" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"></rect>',
+    '</svg>',
+    '</button>',
+    '</div>',
+    `<pre><code${className}>${escapedCode}</code></pre>`,
+    '</div>'
+  ].join('')
+}
+
+function isMarkdownTableRow(value) {
+  const trimmed = String(value || '').trim()
+
+  if (!trimmed || !trimmed.includes('|')) {
+    return false
+  }
+
+  return splitMarkdownTableRow(trimmed).length >= 2
+}
+
+function isMarkdownTableDelimiter(value) {
+  const cells = splitMarkdownTableRow(value)
+
+  return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()))
+}
+
+function splitMarkdownTableRow(value) {
+  const trimmed = String(value || '').trim()
+
+  if (!trimmed.includes('|')) {
+    return []
+  }
+
+  return trimmed
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim())
+}
+
+function normalizeMarkdownTableCells(cells, columnCount) {
+  const normalizedCells = Array.isArray(cells) ? [...cells] : []
+
+  while (normalizedCells.length < columnCount) {
+    normalizedCells.push('')
+  }
+
+  return normalizedCells.slice(0, columnCount)
+}
+
+function renderMarkdownTableHtml(headerCells, bodyRows) {
+  const columnCount = Math.max(1, headerCells.length)
+  const normalizedHeaders = normalizeMarkdownTableCells(headerCells, columnCount)
+  const normalizedRows = bodyRows.map((row) => normalizeMarkdownTableCells(row, columnCount))
+  const headHtml = normalizedHeaders
+    .map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`)
+    .join('')
+  const bodyHtml = normalizedRows
+    .map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join('')}</tr>`)
+    .join('')
+
+  return [
+    '<div class="agent-markdown-table-wrap">',
+    '<table>',
+    `<thead><tr>${headHtml}</tr></thead>`,
+    bodyHtml ? `<tbody>${bodyHtml}</tbody>` : '',
+    '</table>',
+    '</div>'
+  ].join('')
+}
+
 function renderMarkdownHtml(content) {
   const lines = String(content || '').replace(/\r\n/g, '\n').split('\n')
   const htmlBlocks = []
   const paragraphLines = []
   let activeListType = ''
   let activeListItems = []
+  let activeCodeFenceLanguage = null
+  let activeCodeFenceLines = []
 
   const flushList = () => {
     if (!activeListType || !activeListItems.length) {
@@ -1993,9 +2136,60 @@ function renderMarkdownHtml(content) {
     activeListItems = []
   }
 
-  for (const rawLine of lines) {
+  const flushCodeFence = () => {
+    if (activeCodeFenceLanguage === null) {
+      return
+    }
+
+    htmlBlocks.push(renderCodeBlockHtml(activeCodeFenceLanguage, activeCodeFenceLines))
+    activeCodeFenceLanguage = null
+    activeCodeFenceLines = []
+  }
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const rawLine = lines[lineIndex]
     const line = String(rawLine || '')
     const trimmed = line.trim()
+    const codeFenceMatch = trimmed.match(/^```([a-zA-Z0-9_-]*)\s*$/)
+
+    if (activeCodeFenceLanguage !== null) {
+      if (codeFenceMatch) {
+        flushCodeFence()
+      } else {
+        activeCodeFenceLines.push(line)
+      }
+
+      continue
+    }
+
+    if (codeFenceMatch) {
+      flushMarkdownParagraph(paragraphLines, htmlBlocks)
+      flushList()
+      activeCodeFenceLanguage = codeFenceMatch[1] || ''
+      activeCodeFenceLines = []
+      continue
+    }
+
+    if (
+      isMarkdownTableRow(trimmed)
+      && isMarkdownTableDelimiter(lines[lineIndex + 1])
+    ) {
+      flushMarkdownParagraph(paragraphLines, htmlBlocks)
+      flushList()
+
+      const headerCells = splitMarkdownTableRow(trimmed)
+      const bodyRows = []
+      lineIndex += 2
+
+      while (lineIndex < lines.length && isMarkdownTableRow(lines[lineIndex])) {
+        bodyRows.push(splitMarkdownTableRow(lines[lineIndex]))
+        lineIndex += 1
+      }
+
+      lineIndex -= 1
+      htmlBlocks.push(renderMarkdownTableHtml(headerCells, bodyRows))
+      continue
+    }
 
     if (!trimmed) {
       flushMarkdownParagraph(paragraphLines, htmlBlocks)
@@ -2046,6 +2240,7 @@ function renderMarkdownHtml(content) {
 
   flushMarkdownParagraph(paragraphLines, htmlBlocks)
   flushList()
+  flushCodeFence()
 
   return htmlBlocks.join('')
 }
@@ -2057,7 +2252,14 @@ function looksLikeMarkdownMessage(value) {
     return false
   }
 
-  return /(^|\n)#{1,6}\s+.+|(^|\n)\d+\.\s+.+|(^|\n)[-*+]\s+.+|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/m.test(normalized)
+  return /(^|\n)```[a-zA-Z0-9_-]*\s*(\n|$)|(^|\n)\|.+\|\s*\n\|[\s:-]+\||(^|\n)#{1,6}\s+.+|(^|\n)\d+\.\s+.+|(^|\n)[-*+]\s+.+|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/m.test(normalized)
+}
+
+function isOmittedConversationDisplay(value) {
+  const normalized = String(value || '').trim()
+
+  return normalized === '本轮主要执行了文件或工具操作，代码正文已省略，请查看右侧会话文件。'
+    || normalized === '本轮返回的是代码或文件内容，对话区已省略，请查看右侧会话文件。'
 }
 
 function shouldRenderMarkdownMessage(message) {
@@ -2075,11 +2277,24 @@ function shouldRenderMarkdownMessage(message) {
     return false
   }
 
-  return looksLikeMarkdownMessage(formatMessageContentForDisplay(message.content, message.role))
+  const rawContent = String(message.content || '').trim()
+  const displayContent = formatMessageContentForDisplay(message.content, message.role)
+
+  if (isOmittedConversationDisplay(displayContent)) {
+    return false
+  }
+
+  return looksLikeMarkdownMessage(displayContent) || looksLikeMarkdownMessage(rawContent)
 }
 
 function renderMessageMarkdown(content, role) {
-  return renderMarkdownHtml(formatMessageContentForDisplay(content, role))
+  const rawContent = String(content || '').trim()
+  const displayContent = formatMessageContentForDisplay(content, role)
+  const contentToRender = looksLikeMarkdownMessage(rawContent) && !isOmittedConversationDisplay(displayContent)
+    ? rawContent
+    : displayContent
+
+  return renderMarkdownHtml(contentToRender)
 }
 
 function parseToolMessage(content) {
@@ -3845,62 +4060,62 @@ onBeforeUnmount(() => {
   line-height: 1.75;
 }
 
-.agent-markdown-content > :first-child {
+.agent-markdown-content :deep(> :first-child) {
   margin-top: 0;
 }
 
-.agent-markdown-content > :last-child {
+.agent-markdown-content :deep(> :last-child) {
   margin-bottom: 0;
 }
 
-.agent-markdown-content h1,
-.agent-markdown-content h2,
-.agent-markdown-content h3,
-.agent-markdown-content h4,
-.agent-markdown-content h5,
-.agent-markdown-content h6 {
+.agent-markdown-content :deep(h1),
+.agent-markdown-content :deep(h2),
+.agent-markdown-content :deep(h3),
+.agent-markdown-content :deep(h4),
+.agent-markdown-content :deep(h5),
+.agent-markdown-content :deep(h6) {
   margin: 0 0 0.8rem;
   color: #121926;
   font-weight: 800;
   line-height: 1.35;
 }
 
-.agent-markdown-content h1 {
+.agent-markdown-content :deep(h1) {
   font-size: 1.75rem;
 }
 
-.agent-markdown-content h2 {
+.agent-markdown-content :deep(h2) {
   font-size: 1.45rem;
 }
 
-.agent-markdown-content h3 {
+.agent-markdown-content :deep(h3) {
   font-size: 1.2rem;
 }
 
-.agent-markdown-content p {
+.agent-markdown-content :deep(p) {
   margin: 0 0 0.9rem;
   white-space: normal;
 }
 
-.agent-markdown-content strong {
+.agent-markdown-content :deep(strong) {
   font-weight: 800;
 }
 
-.agent-markdown-content em {
+.agent-markdown-content :deep(em) {
   font-style: italic;
 }
 
-.agent-markdown-content ul,
-.agent-markdown-content ol {
+.agent-markdown-content :deep(ul),
+.agent-markdown-content :deep(ol) {
   margin: 0 0 1rem;
   padding-left: 1.45rem;
 }
 
-.agent-markdown-content li + li {
+.agent-markdown-content :deep(li + li) {
   margin-top: 0.4rem;
 }
 
-.agent-markdown-content code {
+.agent-markdown-content :deep(code) {
   display: inline;
   padding: 0.12rem 0.38rem;
   border-radius: 0.45rem;
@@ -3910,12 +4125,127 @@ onBeforeUnmount(() => {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
 }
 
-.agent-markdown-content a {
+.agent-markdown-content :deep(.agent-markdown-code-block) {
+  overflow: hidden;
+  margin: 0.7rem 0 1.15rem;
+  border: 1px solid #edf0f4;
+  border-radius: 22px;
+  background: #f8f8f8;
+}
+
+.agent-markdown-content :deep(.agent-markdown-code-block__head) {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 18px 4px 28px;
+}
+
+.agent-markdown-content :deep(.agent-markdown-code-block__label) {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  color: #111827;
+  font-size: 0.94rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.agent-markdown-content :deep(.agent-markdown-code-block__icon) {
+  color: #111827;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.agent-markdown-content :deep(.agent-markdown-code-block__copy) {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #111827;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.agent-markdown-content :deep(.agent-markdown-code-block__copy:hover),
+.agent-markdown-content :deep(.agent-markdown-code-block__copy.is-copied) {
+  border-color: #d9dde5;
+  background: #ffffff;
+}
+
+.agent-markdown-content :deep(.agent-markdown-code-block__copy svg) {
+  width: 20px;
+  height: 20px;
+}
+
+.agent-markdown-content :deep(pre) {
+  overflow: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 28px 20px;
+}
+
+.agent-markdown-content :deep(pre code) {
+  display: block;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #111827;
+  font-size: 0.9rem;
+  line-height: 1.65;
+  white-space: pre;
+}
+
+.agent-markdown-content :deep(.agent-markdown-table-wrap) {
+  overflow-x: auto;
+  margin: 0.7rem 0 1.15rem;
+  border: 1px solid #e6e9ef;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.agent-markdown-content :deep(table) {
+  width: 100%;
+  min-width: 420px;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  line-height: 1.65;
+}
+
+.agent-markdown-content :deep(th),
+.agent-markdown-content :deep(td) {
+  border-bottom: 1px solid #edf0f4;
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.agent-markdown-content :deep(th) {
+  background: #f8fafc;
+  color: #111827;
+  font-weight: 800;
+}
+
+.agent-markdown-content :deep(tr:last-child td) {
+  border-bottom: 0;
+}
+
+.agent-markdown-content :deep(a) {
   color: #315ddb;
   text-decoration: none;
 }
 
-.agent-markdown-content a:hover {
+.agent-markdown-content :deep(a:hover) {
   text-decoration: underline;
 }
 

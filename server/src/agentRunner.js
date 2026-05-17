@@ -31,9 +31,25 @@ const SAFE_FILE_MUTATION_HINT_PATTERNS = [
   /\b(edit|modify|delete|remove|replace|split|extract|separate|create|generate|save|write|update|rewrite|link|import|add)\b/i
 ]
 
+const EXPLICIT_FILE_MUTATION_REQUEST_PATTERNS = [
+  /(?:\u4fee\u6539|\u6539\u4e00\u4e0b|\u8c03\u6574|\u4f18\u5316|\u4fee\u590d|\u91cd\u65b0|\u91cd\u505a|\u5220\u9664|\u66ff\u6362|\u589e\u52a0|\u6dfb\u52a0|\u66f4\u65b0|\u91cd\u5199|\u5199\u5165|\u4fdd\u5b58|\u521b\u5efa|\u65b0\u5efa|\u751f\u6210)/i,
+  /\b(change|edit|modify|adjust|optimize|fix|repair|redo|rework|delete|remove|replace|add|update|rewrite|write|save|create|generate)\b/i
+]
+
 const SAFE_FILE_CHANGE_CONFIRMATION_PATTERNS = [
   /\b(created|generated|saved|updated|modified|rewritten|split|extracted|separated|added|imported|linked)\b/i,
   /(?:\u5df2\u7ecf|\u5df2|\u6211\u5df2\u7ecf|\u6211\u5df2|\u6587\u4ef6\u5df2)(?:[^\n\u3002\uff1b]{0,32})?(?:\u521b\u5efa|\u751f\u6210|\u4fdd\u5b58|\u5199\u5165|\u4fee\u6539|\u66f4\u65b0|\u5206\u79bb|\u62c6\u5206|\u62bd\u79bb|\u5b8c\u6210|\u5f15\u5165|\u5f15\u7528|\u5220\u9664|\u6dfb\u52a0)/
+]
+
+const READ_ONLY_FILE_INSPECTION_PATTERNS = [
+  /(?:\u9605\u8bfb|\u8bfb\u53d6|\u67e5\u770b|\u770b\u4e00\u4e0b|\u5206\u6790|\u89e3\u91ca|\u8bf4\u660e|\u544a\u8bc9\u6211|\u8bb2\u89e3|\u68b3\u7406|\u603b\u7ed3|\u63cf\u8ff0|\u7406\u89e3)[\s\S]{0,80}(?:\u5e03\u5c40|\u7ed3\u6784|\u4ee3\u7801|\u6587\u4ef6|\u9875\u9762|\u7f51\u9875|\u754c\u9762|html|css|javascript|js|vue|react|index[\s,，.]*html)/i,
+  /(?:\u5e03\u5c40|\u9875\u9762\u7ed3\u6784|\u4ee3\u7801\u7ed3\u6784|\u6587\u4ef6\u7ed3\u6784|\u600e\u4e48\u5e03\u5c40|\u5982\u4f55\u5e03\u5c40|\u600e\u4e48\u8fdb\u884c\u5e03\u5c40|\u4e3a\u4ec0\u4e48)[\s\S]{0,80}(?:\u5e03\u5c40|\u7ed3\u6784|\u4ee3\u7801|\u6587\u4ef6|\u9875\u9762|\u7f51\u9875|\u754c\u9762|html|css|javascript|js|vue|react|index[\s,，.]*html)?/i,
+  /\b(read|review|inspect|analyze|explain|describe|summarize|tell me|walk me through)\b[\s\S]{0,80}\b(file|code|layout|structure|html|css|javascript|js|vue|react|index\.html)\b/i
+]
+
+const DESCRIPTIVE_PRIOR_WRITE_PATTERNS = [
+  /(?:\u4f60|\u52a9\u624b|agent|Agent|\u4e4b\u524d|\u521a\u624d|\u4e0a\u6b21|\u5df2\u7ecf|\u5df2)(?:[\s\S]{0,10})(?:\u5199|\u521b\u5efa|\u751f\u6210|\u505a|\u4fdd\u5b58)(?:\u7684|\u8fc7|\u51fa\u6765|\u597d)?/gi,
+  /\b(?:you|assistant|agent|previously|already|just)\s+(?:wrote|created|generated|built|made|saved)\b/gi
 ]
 
 const SAFE_SPLIT_MARKERS = [
@@ -153,10 +169,45 @@ function createMemorySummaryMessages({ existingSummary = '', messagesToCompress 
   ]
 }
 
+function removeDescriptivePriorWritePhrases(value) {
+  return DESCRIPTIVE_PRIOR_WRITE_PATTERNS.reduce(
+    (current, pattern) => current.replace(pattern, ''),
+    String(value || '')
+  )
+}
+
+function looksLikeReadOnlyFileInspectionRequest(value) {
+  const normalized = normalizeTrimmedString(value)
+
+  if (!normalized) {
+    return false
+  }
+
+  const withoutDescriptivePriorWrite = removeDescriptivePriorWritePhrases(normalized)
+  const hasReadOnlyIntent = READ_ONLY_FILE_INSPECTION_PATTERNS.some((pattern) => pattern.test(normalized))
+
+  if (!hasReadOnlyIntent) {
+    return false
+  }
+
+  const hasActualMutationIntent = (
+    SAFE_FILE_MUTATION_HINT_PATTERNS.some((pattern) => pattern.test(withoutDescriptivePriorWrite))
+    || EXPLICIT_FILE_MUTATION_REQUEST_PATTERNS.some((pattern) => pattern.test(withoutDescriptivePriorWrite))
+    || SAFE_FILE_CHANGE_REQUEST_PATTERNS.some((pattern) => pattern.test(withoutDescriptivePriorWrite))
+    || getRequiredCompanionExtensionsSafe(withoutDescriptivePriorWrite).length > 0
+  )
+
+  return !hasActualMutationIntent
+}
+
 function looksLikeFileChangeRequestSafe(value) {
   const normalized = normalizeTrimmedString(value)
 
   if (!normalized) {
+    return false
+  }
+
+  if (looksLikeReadOnlyFileInspectionRequest(normalized)) {
     return false
   }
 
@@ -681,6 +732,40 @@ function looksLikeInternalReactDecisionContent(value) {
   }
 }
 
+function looksLikeInternalProtocolText(value) {
+  const text = String(value || '').trim()
+
+  if (!text) {
+    return false
+  }
+
+  return (
+    looksLikeInternalReactDecisionContent(text)
+    || /"type"\s*:\s*"react_decision"/i.test(text)
+    || /"action"\s*:\s*\{\s*"type"\s*:\s*"tool"/i.test(text)
+    || /"action"\s*:\s*"tool"/i.test(text)
+    || /"tool"\s*:\s*\{\s*"name"/i.test(text)
+    || /\bThought\s*:|\bAction\s*:|\bObservation\s*:/i.test(text)
+  )
+}
+
+function createFinalTextRetryMessages(messages = [], rawReply = '') {
+  return [
+    ...(Array.isArray(messages) ? messages : []),
+    {
+      role: 'user',
+      content: [
+        'The previous final answer used an internal Agent protocol or JSON tool-call format.',
+        'Rewrite the final answer now as plain natural language only.',
+        'Do not include JSON, code fences, ReAct transcript, tool calls, Thought, Action, or Observation.',
+        'Keep it concise and user-facing.',
+        '',
+        `Blocked internal output preview:\n${truncateText(rawReply, 1200)}`
+      ].join('\n')
+    }
+  ]
+}
+
 function buildSafeAssistantReply({
   reply = '',
   fileChangesRequired = false,
@@ -842,6 +927,9 @@ function buildAgentLoopMessages({
     'Do not emit plain-text "Thought:", "Action:", or "Observation:" sections.',
     'Use the exact decision schema below. The top-level "action" field must be a string, not an object.',
     'Do not return {"type":"react_decision","action":{"type":"tool",...}}; return {"action":"tool","tool":{"name":"...","args":{}}} instead.',
+    'Decision phase is only for choosing the next action. Do not put the full final answer in JSON.',
+    'When action is "final", keep "reply" empty. The server will ask for the full natural-language answer in a separate final_text phase.',
+    'Only action "ask_user" may use "reply", and it must be one concise clarification question.',
     'Each turn must include a brief "thought_summary" that explains the next action at a safe, user-visible level.',
     'Never output private reasoning, hidden chain-of-thought, or step-by-step internal deliberation.',
     'Use the same language as the user.',
@@ -886,7 +974,7 @@ function buildAgentLoopMessages({
     '  "thought_summary": "brief safe ReAct thought summary; no hidden reasoning",',
     '  "action": "tool" | "final" | "ask_user",',
     '  "summary": "short public progress update",',
-    '  "reply": "required for final or ask_user, otherwise empty",',
+    '  "reply": "only for ask_user; must be empty when action is final or tool",',
     '  "tool": {',
     '    "name": "tool name when action is tool",',
     '    "args": {}',
@@ -1651,6 +1739,8 @@ export function createAgentRunner({
   } = {}) {
     let latestStreamedContent = ''
     let emittedAnyChunk = false
+    const allowRawFinalStreaming = !fileChangesRequired && !modifiedWorkspace
+    let suppressRawStreaming = !allowRawFinalStreaming
 
     audit(sessionId, 'llm_input', {
       stage: 'final_text',
@@ -1658,10 +1748,10 @@ export function createAgentRunner({
       messageCount: Array.isArray(messages) ? messages.length : 0
     })
 
-    const completion = await createTextCompletion({
+    const requestFinalTextCompletion = async (requestMessages) => createTextCompletion({
       aiConfig,
       model,
-      messages,
+      messages: requestMessages,
       requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
       idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
       streamResponses: aiRuntimeConfig.streamResponses,
@@ -1675,6 +1765,15 @@ export function createAgentRunner({
           return
         }
 
+        if (looksLikeInternalProtocolText(nextContent)) {
+          suppressRawStreaming = true
+          return
+        }
+
+        if (suppressRawStreaming) {
+          return
+        }
+
         emittedAnyChunk = true
         latestStreamedContent = nextContent
         pushSessionEvent(sessionId, 'assistant.partial', {
@@ -1683,7 +1782,29 @@ export function createAgentRunner({
         })
       }
     })
-    const rawReply = normalizeTrimmedString(completion.text || completion.rawText || latestStreamedContent)
+
+    let completion = await requestFinalTextCompletion(messages)
+    let rawReply = normalizeTrimmedString(completion.text || completion.rawText || latestStreamedContent)
+
+    if (looksLikeInternalProtocolText(rawReply)) {
+      audit(sessionId, 'system_action', {
+        action: 'final_text_protocol_retry',
+        model,
+        rawPreview: rawReply.slice(0, 500)
+      })
+
+      latestStreamedContent = ''
+      emittedAnyChunk = false
+      suppressRawStreaming = !allowRawFinalStreaming
+      audit(sessionId, 'llm_input', {
+        stage: 'final_text_retry',
+        model,
+        messageCount: Array.isArray(messages) ? messages.length + 1 : 1
+      })
+      completion = await requestFinalTextCompletion(createFinalTextRetryMessages(messages, rawReply))
+      rawReply = normalizeTrimmedString(completion.text || completion.rawText || latestStreamedContent)
+    }
+
     const safeReply = buildSafeAssistantReply({
       reply: rawReply,
       fileChangesRequired,
@@ -2667,6 +2788,9 @@ export function createAgentRunner({
 
         const decisionJson = normalizeDecisionJson(decision.json)
         const action = normalizeAction(decisionJson.action)
+        if (action === 'final') {
+          decisionJson.reply = ''
+        }
         const thoughtSummary = getDecisionThoughtSummary(decisionJson)
         const decisionSummary = getDecisionProgressSummary(decisionJson)
         audit(sessionId, 'llm_decision', {
