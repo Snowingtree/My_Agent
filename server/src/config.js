@@ -188,9 +188,12 @@ export function createConfig() {
       streamResponses: normalizeBooleanEnv(process.env.AGENT_AI_STREAM_RESPONSES, true),
       recentMessages,
       contextMemoryEnabled: normalizeBooleanEnv(process.env.AGENT_CONTEXT_MEMORY_ENABLED, true),
-      contextMemoryThreshold: readNumberEnv('AGENT_CONTEXT_MEMORY_THRESHOLD', Math.max(24, recentMessages * 2)),
-      contextMemoryKeepMessages: readNumberEnv('AGENT_CONTEXT_MEMORY_KEEP_MESSAGES', recentMessages),
-      contextMemoryMinBatchMessages: readNumberEnv('AGENT_CONTEXT_MEMORY_MIN_BATCH_MESSAGES', 4),
+      contextMemoryThreshold: readNumberEnv('AGENT_CONTEXT_MEMORY_THRESHOLD', 20),
+      contextMemoryKeepMessages: readNumberEnv('AGENT_CONTEXT_MEMORY_KEEP_MESSAGES', 10),
+      contextMemoryMinBatchMessages: readNumberEnv(
+        'AGENT_CONTEXT_MEMORY_MIN_BATCH_TURNS',
+        readNumberEnv('AGENT_CONTEXT_MEMORY_MIN_BATCH_MESSAGES', 4)
+      ),
       contextMemoryMaxChars: readNumberEnv('AGENT_CONTEXT_MEMORY_MAX_CHARS', 6000),
       userProfileMemoryEnabled: normalizeBooleanEnv(process.env.AGENT_USER_PROFILE_MEMORY_ENABLED, true),
       userProfileMemoryMaxChars: readNumberEnv('AGENT_USER_PROFILE_MEMORY_MAX_CHARS', 8000),

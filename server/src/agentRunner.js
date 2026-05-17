@@ -91,17 +91,6 @@ function toChatHistorySafe(messages) {
   })
 }
 
-function normalizeMemoryMessageCount(value, maxValue) {
-  const parsedValue = Number.parseInt(value, 10)
-  const safeMaxValue = Math.max(0, Number.parseInt(maxValue, 10) || 0)
-
-  if (!Number.isFinite(parsedValue) || parsedValue < 0) {
-    return 0
-  }
-
-  return Math.min(parsedValue, safeMaxValue)
-}
-
 function serializeMessagesForMemory(messages = [], maxCharsPerMessage = 1200) {
   return messages
     .map((message, index) => {
@@ -122,6 +111,49 @@ function normalizeMemorySummary(value, maxChars = 6000) {
   }
 
   return normalizedValue.length > maxChars ? normalizedValue.slice(0, maxChars).trim() : normalizedValue
+}
+
+function groupMessagesIntoConversationTurns(messages = []) {
+  const turns = []
+  let currentTurn = null
+
+  ;(Array.isArray(messages) ? messages : []).forEach((message, index) => {
+    const role = normalizeTrimmedString(message?.role).toLowerCase()
+
+    if (role === 'user' || !currentTurn) {
+      currentTurn = {
+        startIndex: index,
+        endIndex: index,
+        messages: [message]
+      }
+      turns.push(currentTurn)
+      return
+    }
+
+    currentTurn.endIndex = index
+    currentTurn.messages.push(message)
+  })
+
+  return turns
+}
+
+function findConversationTurnIndexByMessageId(turns = [], messageId = '') {
+  const normalizedMessageId = normalizeTrimmedString(messageId)
+
+  if (!normalizedMessageId) {
+    return -1
+  }
+
+  return turns.findIndex((turn) => (
+    Array.isArray(turn?.messages)
+    && turn.messages.some((message) => normalizeTrimmedString(message?.messageId) === normalizedMessageId)
+  ))
+}
+
+function flattenConversationTurns(turns = []) {
+  return (Array.isArray(turns) ? turns : []).flatMap((turn) => (
+    Array.isArray(turn?.messages) ? turn.messages : []
+  ))
 }
 
 function looksLikeUserProfileMemoryRequest(value) {
@@ -1864,6 +1896,66 @@ export function createAgentRunner({
     })
   }
 
+  async function readConversationMemoryState(sessionId, session, maxChars) {
+    const fallbackState = {
+      summary: normalizeMemorySummary(session?.memorySummary, maxChars),
+      updatedAt: session?.memoryUpdatedAt || null,
+      compressedThroughMessageId: normalizeTrimmedString(session?.memoryCompressedThroughMessageId),
+      compressedMessageCount: 0,
+      keptMessageCount: 0
+    }
+
+    if (!memoryStore || typeof memoryStore.readConversationMemory !== 'function') {
+      return fallbackState
+    }
+
+    try {
+      const storedState = await memoryStore.readConversationMemory(sessionId, { maxChars })
+      const storedSummary = normalizeMemorySummary(storedState?.summary, maxChars)
+
+      if (!storedSummary && !storedState?.updatedAt) {
+        return fallbackState
+      }
+
+      return {
+        summary: storedSummary || fallbackState.summary,
+        updatedAt: storedState?.updatedAt || fallbackState.updatedAt,
+        compressedThroughMessageId: normalizeTrimmedString(storedState?.compressedThroughMessageId)
+          || fallbackState.compressedThroughMessageId,
+        compressedMessageCount: Number.isFinite(Number(storedState?.compressedMessageCount))
+          ? Number(storedState.compressedMessageCount)
+          : fallbackState.compressedMessageCount,
+        keptMessageCount: Number.isFinite(Number(storedState?.keptMessageCount))
+          ? Number(storedState.keptMessageCount)
+          : fallbackState.keptMessageCount
+      }
+    } catch (error) {
+      audit(sessionId, 'error', {
+        scope: 'conversation_memory_read',
+        message: error instanceof Error ? error.message : String(error || '')
+      })
+      console.warn('[agent-runner] failed to read conversation memory:', error instanceof Error ? error.message : error)
+      return fallbackState
+    }
+  }
+
+  async function writeConversationMemoryState(sessionId, state = {}) {
+    if (!memoryStore || typeof memoryStore.writeConversationMemory !== 'function') {
+      return null
+    }
+
+    return memoryStore.writeConversationMemory({
+      sessionId,
+      summary: state.summary,
+      compressedThroughMessageId: state.compressedThroughMessageId,
+      compressedMessageCount: state.compressedMessageCount,
+      keptMessageCount: state.keptMessageCount,
+      compressedTurnCount: state.compressedTurnCount,
+      keptTurnCount: state.keptTurnCount,
+      reason: state.reason
+    })
+  }
+
   async function ensureConversationMemory({
     sessionId,
     session,
@@ -1871,24 +1963,37 @@ export function createAgentRunner({
     selectedModel,
     signal
   } = {}) {
+    const maxChars = Math.max(1000, Number(aiRuntimeConfig?.contextMemoryMaxChars || 6000))
+    const existingMemoryState = await readConversationMemoryState(sessionId, session, maxChars)
+
     if (!aiRuntimeConfig?.contextMemoryEnabled) {
-      return normalizeMemorySummary(session?.memorySummary, aiRuntimeConfig?.contextMemoryMaxChars)
+      return existingMemoryState.summary
     }
 
     const messages = Array.isArray(session?.messages) ? session.messages : []
-    const threshold = Math.max(1, Number(aiRuntimeConfig.contextMemoryThreshold || 24))
-    const keepMessages = Math.max(1, Number(aiRuntimeConfig.contextMemoryKeepMessages || aiRuntimeConfig.recentMessages || 12))
-    const minBatchMessages = Math.max(1, Number(aiRuntimeConfig.contextMemoryMinBatchMessages || 4))
-    const maxChars = Math.max(1000, Number(aiRuntimeConfig.contextMemoryMaxChars || 6000))
-    const currentMemoryCount = normalizeMemoryMessageCount(session?.memoryMessageCount, messages.length)
-    const cutoffIndex = Math.max(0, messages.length - keepMessages)
-    const messagesToCompress = messages.slice(currentMemoryCount, cutoffIndex)
-    const existingSummary = normalizeMemorySummary(session?.memorySummary, maxChars)
+    const turns = groupMessagesIntoConversationTurns(messages)
+    const thresholdTurns = Math.max(1, Number(aiRuntimeConfig.contextMemoryThreshold || 20))
+    const keepTurns = Math.max(1, Number(aiRuntimeConfig.contextMemoryKeepMessages || 10))
+    const minBatchTurns = Math.max(1, Number(aiRuntimeConfig.contextMemoryMinBatchMessages || 4))
+    const compressedThroughTurnIndex = findConversationTurnIndexByMessageId(
+      turns,
+      existingMemoryState.compressedThroughMessageId
+    )
+    const currentTurnIndex = compressedThroughTurnIndex >= 0
+      ? compressedThroughTurnIndex + 1
+      : 0
+    const cutoffTurnIndex = Math.max(0, turns.length - keepTurns)
+    const turnsToCompress = turns.slice(currentTurnIndex, cutoffTurnIndex)
+    const keptTurns = turns.slice(cutoffTurnIndex)
+    const messagesToCompress = flattenConversationTurns(turnsToCompress)
+    const keptMessages = flattenConversationTurns(keptTurns)
+    const existingSummary = existingMemoryState.summary
 
     if (
-      messages.length <= threshold
-      || cutoffIndex <= currentMemoryCount
-      || messagesToCompress.length < minBatchMessages
+      turns.length <= thresholdTurns
+      || cutoffTurnIndex <= currentTurnIndex
+      || turnsToCompress.length < minBatchTurns
+      || !messagesToCompress.length
     ) {
       return existingSummary
     }
@@ -1918,22 +2023,43 @@ export function createAgentRunner({
         return existingSummary
       }
 
+      const lastCompressedMessage = messagesToCompress[messagesToCompress.length - 1]
+      const compressedThroughMessageId = normalizeTrimmedString(lastCompressedMessage?.messageId)
+      const keptMessageCount = keptMessages.length
+      const savedMemoryState = await writeConversationMemoryState(sessionId, {
+        summary: nextSummary,
+        compressedThroughMessageId,
+        compressedMessageCount: messagesToCompress.length,
+        keptMessageCount,
+        compressedTurnCount: turnsToCompress.length,
+        keptTurnCount: keptTurns.length,
+        reason: 'context_memory_threshold'
+      })
+      const memoryUpdatedAt = savedMemoryState?.updatedAt || nowIso()
+
       await sessionRepository.updateSession(sessionId, (draftSession) => {
-        const keptMessages = messages.slice(cutoffIndex)
-        draftSession.memorySummary = nextSummary
-        draftSession.memoryUpdatedAt = nowIso()
+        draftSession.memorySummary = memoryStore && typeof memoryStore.readConversationMemory === 'function'
+          ? ''
+          : nextSummary
+        draftSession.memoryUpdatedAt = memoryUpdatedAt
         draftSession.memoryMessageCount = 0
-        draftSession.memoryCompressedThroughMessageId = normalizeTrimmedString(messages[cutoffIndex - 1]?.messageId)
+        draftSession.memoryCompressedThroughMessageId = compressedThroughMessageId
         draftSession.messages = keptMessages
-        draftSession.updatedAt = nowIso()
+        draftSession.updatedAt = memoryUpdatedAt
         return draftSession
       })
 
       audit(sessionId, 'system_action', {
         action: 'memory_compacted',
         compressedMessageCount: messagesToCompress.length,
-        keptMessageCount: messages.length - cutoffIndex,
+        compressedTurnCount: turnsToCompress.length,
+        keptMessageCount,
+        keptTurnCount: keptTurns.length,
+        thresholdTurns,
+        keepTurns,
+        countUnit: 'turn',
         summaryLength: nextSummary.length,
+        storageType: savedMemoryState?.storageType || 'session',
         model: selectedModel
       })
 

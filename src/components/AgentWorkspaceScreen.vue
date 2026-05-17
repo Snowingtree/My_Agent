@@ -247,7 +247,7 @@
           :active-session-title="activeSession?.title || '新对话'"
           :context-memory-summary="activeSession?.memorySummary || ''"
           :context-memory-config="contextMemoryConfig"
-          :context-message-count="activeSession?.messages?.length || 0"
+          :context-message-count="activeSessionTurnCount"
           :active-workspace-files="activeWorkspaceFiles"
           :active-workspace-folder="activeWorkspaceFolder"
           :ai-configs="aiConfigs"
@@ -519,6 +519,18 @@ function parseUserProfileMarkdown(value) {
     .filter((section) => section.blocks.length)
 }
 
+function countConversationTurns(messages = []) {
+  return (Array.isArray(messages) ? messages : []).reduce((count, message, index) => {
+    const role = String(message?.role || '').trim().toLowerCase()
+
+    if (role === 'user' || index === 0) {
+      return count + 1
+    }
+
+    return count
+  }, 0)
+}
+
 function notify({ message, type = 'success', duration = 3000 }) {
   createMessage({
     message,
@@ -688,6 +700,8 @@ const {
   notify,
   confirmDelete: () => window.confirm('确认删除这个 Agent 会话吗？')
 })
+
+const activeSessionTurnCount = computed(() => countConversationTurns(activeSession.value?.messages || []))
 </script>
 
 <style scoped>

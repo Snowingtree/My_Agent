@@ -315,16 +315,23 @@ function normalizeMcpServerOption(item) {
 }
 
 function normalizeContextMemoryConfig(item) {
-  const thresholdMessages = Number(item?.thresholdMessages)
-  const keepMessages = Number(item?.keepMessages)
-  const minBatchMessages = Number(item?.minBatchMessages)
+  const thresholdTurns = Number(item?.thresholdTurns ?? item?.thresholdMessages)
+  const keepTurns = Number(item?.keepTurns ?? item?.keepMessages)
+  const minBatchTurns = Number(item?.minBatchTurns ?? item?.minBatchMessages)
   const maxSummaryChars = Number(item?.maxSummaryChars)
+  const normalizedThresholdTurns = Number.isFinite(thresholdTurns) && thresholdTurns > 0 ? thresholdTurns : 20
+  const normalizedKeepTurns = Number.isFinite(keepTurns) && keepTurns > 0 ? keepTurns : 10
+  const normalizedMinBatchTurns = Number.isFinite(minBatchTurns) && minBatchTurns > 0 ? minBatchTurns : 4
 
   return {
     enabled: item?.enabled !== false,
-    thresholdMessages: Number.isFinite(thresholdMessages) && thresholdMessages > 0 ? thresholdMessages : 24,
-    keepMessages: Number.isFinite(keepMessages) && keepMessages > 0 ? keepMessages : 12,
-    minBatchMessages: Number.isFinite(minBatchMessages) && minBatchMessages > 0 ? minBatchMessages : 4,
+    countUnit: String(item?.countUnit || 'turn').trim() || 'turn',
+    thresholdTurns: normalizedThresholdTurns,
+    keepTurns: normalizedKeepTurns,
+    minBatchTurns: normalizedMinBatchTurns,
+    thresholdMessages: normalizedThresholdTurns,
+    keepMessages: normalizedKeepTurns,
+    minBatchMessages: normalizedMinBatchTurns,
     maxSummaryChars: Number.isFinite(maxSummaryChars) && maxSummaryChars > 0 ? maxSummaryChars : 6000
   }
 }

@@ -1658,8 +1658,8 @@ const formattedTotalTokens = computed(() => {
 })
 
 const contextMemoryThreshold = computed(() => {
-  const value = Number(props.contextMemoryConfig?.thresholdMessages)
-  return Number.isFinite(value) && value > 0 ? Math.round(value) : 24
+  const value = Number(props.contextMemoryConfig?.thresholdTurns ?? props.contextMemoryConfig?.thresholdMessages)
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : 20
 })
 
 const contextMessageCount = computed(() => {

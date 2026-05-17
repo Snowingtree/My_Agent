@@ -10,7 +10,7 @@ import { createAuthToken, readBearerToken, safeCompare, verifyAuthToken } from '
 import { getAiConfigById, insertAiConfig, loadAiConfigs, resolveModel, toPublicAiConfig, updateAiConfig } from './aiConfigs.js'
 import { createAgentRunner } from './agentRunner.js'
 import { createMcpRegistry } from './mcpRegistry.js'
-import { createMemoryStore } from './memoryStore.js'
+import { createSqliteMemoryStore } from './sqliteMemoryStore.js'
 import { createRagStore } from './ragStore.js'
 import { createSessionWorkspacesRepository } from './sessionWorkspaces.js'
 import { createSkillLibrary } from './skillLibrary.js'
@@ -33,9 +33,10 @@ const tokenUsageStore = createTokenUsageStore(config.storage.tokenUsageFile)
 const auditLogger = createAuditLogger({
   auditDir: config.storage.auditDir
 })
-const memoryStore = createMemoryStore({
+const memoryStore = createSqliteMemoryStore({
   memoryDir: config.storage.memoryDir,
-  maxProfileChars: config.ai.userProfileMemoryMaxChars
+  maxProfileChars: config.ai.userProfileMemoryMaxChars,
+  maxSummaryChars: config.ai.contextMemoryMaxChars
 })
 
 function subscribeToSessionStream(sessionId, listener) {
@@ -84,6 +85,7 @@ function publishSessionStreamEvent(sessionId, event) {
 const sessionRepository = new SessionRepository({
   sessionsDir: config.storage.sessionsDir,
   legacyFilePath: config.storage.legacySessionsFile,
+  messageStore: memoryStore,
   onSessionUpdated: async (session) => {
     if (!session?.sessionId || !sessionWorkspaces) {
       return
@@ -813,22 +815,54 @@ async function handleUpdateAiConfig(request, response, aiId) {
   }
 }
 
+async function attachConversationMemoryState(item) {
+  if (!item?.sessionId) {
+    return item
+  }
+
+  if (!memoryStore || typeof memoryStore.readConversationMemory !== 'function') {
+    return item
+  }
+
+  try {
+    const memoryState = await memoryStore.readConversationMemory(item.sessionId, {
+      maxChars: config.ai.contextMemoryMaxChars
+    })
+
+    if (!memoryState?.summary && !memoryState?.updatedAt) {
+      return item
+    }
+
+    return {
+      ...item,
+      memorySummary: memoryState.summary || item.memorySummary || '',
+      memoryUpdatedAt: memoryState.updatedAt || item.memoryUpdatedAt || null,
+      memoryCompressedThroughMessageId: memoryState.compressedThroughMessageId || item.memoryCompressedThroughMessageId || '',
+      memoryMessageCount: 0
+    }
+  } catch (error) {
+    console.warn('[agent-api] failed to attach conversation memory:', error instanceof Error ? error.message : error)
+    return item
+  }
+}
+
 async function attachWorkspaceState(item) {
   if (!item?.sessionId) {
     return item
   }
 
-  const trackedWorkspaceFiles = Array.isArray(item.workspaceFiles) ? item.workspaceFiles : []
+  const itemWithMemory = await attachConversationMemoryState(item)
+  const trackedWorkspaceFiles = Array.isArray(itemWithMemory.workspaceFiles) ? itemWithMemory.workspaceFiles : []
 
   return {
-    ...item,
+    ...itemWithMemory,
     workspaceFolder: sessionWorkspaces.getWorkspaceFolderLabel(item.sessionId),
     workspaceFiles: await sessionWorkspaces.listWorkspaceFiles(item.sessionId, trackedWorkspaceFiles)
   }
 }
 
 async function handleListSessions(response) {
-  const items = await sessionRepository.listSummaries()
+  const items = await Promise.all((await sessionRepository.listSummaries()).map((item) => attachConversationMemoryState(item)))
   sendJson(response, 200, { items })
 }
 
@@ -1047,6 +1081,10 @@ async function handleGetCapabilities(response) {
     rag: await ragStore.getStatus(),
     contextMemory: {
       enabled: Boolean(config.ai.contextMemoryEnabled),
+      countUnit: 'turn',
+      thresholdTurns: config.ai.contextMemoryThreshold,
+      keepTurns: config.ai.contextMemoryKeepMessages,
+      minBatchTurns: config.ai.contextMemoryMinBatchMessages,
       thresholdMessages: config.ai.contextMemoryThreshold,
       keepMessages: config.ai.contextMemoryKeepMessages,
       minBatchMessages: config.ai.contextMemoryMinBatchMessages,
@@ -1748,13 +1786,15 @@ async function handleRequest(request, response) {
   }
 
   if (pathname === '/api/health' && request.method === 'GET') {
+    const memoryStatus = await memoryStore.getStatus()
+
     sendJson(response, 200, {
       status: 'ok',
       now: new Date().toISOString(),
       sessionStore: config.storage.sessionsDir,
       legacySessionStore: config.storage.legacySessionsFile,
       auditStore: config.storage.auditDir,
-      memoryStore: config.storage.memoryDir,
+      memoryStore: memoryStatus.databasePath || config.storage.memoryDir,
       workspaceRoot: config.workspace.rootDir,
       allowedCommands: config.workspace.allowedCommands,
       enableWriteTools: config.workspace.enableWriteTools,
@@ -1764,12 +1804,16 @@ async function handleRequest(request, response) {
       mcpServers: mcpRegistry.getServerSummaries(),
       contextMemory: {
         enabled: Boolean(config.ai.contextMemoryEnabled),
+        countUnit: 'turn',
+        thresholdTurns: config.ai.contextMemoryThreshold,
+        keepTurns: config.ai.contextMemoryKeepMessages,
+        minBatchTurns: config.ai.contextMemoryMinBatchMessages,
         thresholdMessages: config.ai.contextMemoryThreshold,
         keepMessages: config.ai.contextMemoryKeepMessages,
         minBatchMessages: config.ai.contextMemoryMinBatchMessages,
         maxSummaryChars: config.ai.contextMemoryMaxChars,
         userProfileEnabled: Boolean(config.ai.userProfileMemoryEnabled),
-        userProfile: await memoryStore.getStatus()
+        userProfile: memoryStatus
       },
       rag: await ragStore.getStatus(),
       toolCount: toolRunner.getToolCatalog().length,
@@ -2015,6 +2059,16 @@ process.once('SIGINT', () => {
 process.once('SIGTERM', () => {
   void shutdown('SIGTERM')
 })
+
+try {
+  const migratedMessageCount = await sessionRepository.migrateMessagesToStoreIfNeeded()
+
+  if (migratedMessageCount) {
+    console.log(`[agent-api] conversation messages migrated to SQLite: ${migratedMessageCount}`)
+  }
+} catch (error) {
+  console.warn('[agent-api] failed to migrate conversation messages:', error instanceof Error ? error.message : error)
+}
 
 try {
   const importedTokenUsageCount = await tokenUsageStore.backfillFromSessions(await sessionRepository.readAll())

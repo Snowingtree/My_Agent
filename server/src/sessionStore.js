@@ -8,6 +8,7 @@ import {
   createSessionRecord,
   createSessionTitle,
   isRunningTaskStatus,
+  normalizeTrimmedString,
   nowIso,
   sortSessionsByUpdatedAt
 } from './utils.js'
@@ -70,7 +71,8 @@ function normalizeRepositoryOptions(options) {
       legacyFilePath: options,
       onSessionUpdated: null,
       onSessionDeleted: null,
-      onMessageAppended: null
+      onMessageAppended: null,
+      messageStore: null
     }
   }
 
@@ -79,7 +81,8 @@ function normalizeRepositoryOptions(options) {
     legacyFilePath: String(options?.legacyFilePath || '').trim(),
     onSessionUpdated: typeof options?.onSessionUpdated === 'function' ? options.onSessionUpdated : null,
     onSessionDeleted: typeof options?.onSessionDeleted === 'function' ? options.onSessionDeleted : null,
-    onMessageAppended: typeof options?.onMessageAppended === 'function' ? options.onMessageAppended : null
+    onMessageAppended: typeof options?.onMessageAppended === 'function' ? options.onMessageAppended : null,
+    messageStore: options?.messageStore || null
   }
 }
 
@@ -91,6 +94,7 @@ export class SessionRepository {
     this.onSessionUpdated = normalizedOptions.onSessionUpdated
     this.onSessionDeleted = normalizedOptions.onSessionDeleted
     this.onMessageAppended = normalizedOptions.onMessageAppended
+    this.messageStore = normalizedOptions.messageStore
     this.pendingWrite = Promise.resolve()
     this.didAttemptLegacyMigration = false
   }
@@ -101,6 +105,72 @@ export class SessionRepository {
 
   getSessionFilePath(sessionId) {
     return join(this.sessionsDir, `${sessionId}.json`)
+  }
+
+  hasExternalMessageStore() {
+    return Boolean(
+      this.messageStore
+      && typeof this.messageStore.appendConversationMessage === 'function'
+      && typeof this.messageStore.listConversationMessages === 'function'
+    )
+  }
+
+  stripMessagesForPersistence(session) {
+    if (!this.hasExternalMessageStore()) {
+      return session
+    }
+
+    const nextSession = cloneValue(session)
+    delete nextSession.messages
+    return nextSession
+  }
+
+  async importLegacySessionMessages(session) {
+    if (!this.hasExternalMessageStore()) {
+      return 0
+    }
+
+    const sessionId = normalizeTrimmedString(session?.sessionId)
+    const legacyMessages = Array.isArray(session?.messages) ? session.messages : []
+
+    if (!sessionId || !legacyMessages.length || typeof this.messageStore.replaceConversationMessages !== 'function') {
+      return 0
+    }
+
+    const existingCount = typeof this.messageStore.getConversationMessageCount === 'function'
+      ? await this.messageStore.getConversationMessageCount(sessionId)
+      : 0
+
+    if (existingCount > 0) {
+      return 0
+    }
+
+    const result = await this.messageStore.replaceConversationMessages(sessionId, legacyMessages)
+    return Number.isFinite(Number(result?.messageCount)) ? Number(result.messageCount) : legacyMessages.length
+  }
+
+  async hydrateSessionMessages(session) {
+    if (!session || typeof session !== 'object') {
+      return session
+    }
+
+    if (!this.hasExternalMessageStore()) {
+      return {
+        ...session,
+        messages: Array.isArray(session.messages) ? session.messages : []
+      }
+    }
+
+    await this.importLegacySessionMessages(session)
+
+    const sessionId = normalizeTrimmedString(session.sessionId)
+    const messages = sessionId
+      ? await this.messageStore.listConversationMessages(sessionId)
+      : []
+    const nextSession = cloneValue(session)
+    nextSession.messages = messages
+
+    return nextSession
   }
 
   async listSessionFilePaths() {
@@ -121,9 +191,20 @@ export class SessionRepository {
     return Array.isArray(parsedValue) ? parsedValue : []
   }
 
-  async readSessionFile(filePath) {
+  async readSessionFile(filePath, { hydrateMessages = true } = {}) {
     const parsedValue = await readJsonFile(filePath, null)
-    return parsedValue && typeof parsedValue === 'object' ? parsedValue : null
+
+    if (!parsedValue || typeof parsedValue !== 'object') {
+      return null
+    }
+
+    if (this.hasExternalMessageStore()) {
+      await this.importLegacySessionMessages(parsedValue)
+    }
+
+    return hydrateMessages
+      ? this.hydrateSessionMessages(parsedValue)
+      : this.stripMessagesForPersistence(parsedValue)
   }
 
   async writeSessionFile(session) {
@@ -135,7 +216,7 @@ export class SessionRepository {
 
     const filePath = this.getSessionFilePath(sessionId)
     await ensureDirectory(dirname(filePath))
-    await writeFile(filePath, `${JSON.stringify(session, null, 2)}\n`, 'utf8')
+    await writeFile(filePath, `${JSON.stringify(this.stripMessagesForPersistence(session), null, 2)}\n`, 'utf8')
   }
 
   async migrateLegacySessionsIfNeeded() {
@@ -165,14 +246,14 @@ export class SessionRepository {
     this.didAttemptLegacyMigration = true
   }
 
-  async readAll() {
+  async readAll({ hydrateMessages = true } = {}) {
     await this.migrateLegacySessionsIfNeeded()
 
     const filePaths = await this.listSessionFilePaths()
     const sessions = []
 
     for (const filePath of filePaths) {
-      const session = await this.readSessionFile(filePath)
+      const session = await this.readSessionFile(filePath, { hydrateMessages })
 
       if (session) {
         sessions.push(session)
@@ -200,11 +281,42 @@ export class SessionRepository {
     }
   }
 
+  async migrateMessagesToStoreIfNeeded() {
+    if (!this.hasExternalMessageStore()) {
+      return 0
+    }
+
+    await this.migrateLegacySessionsIfNeeded()
+
+    const filePaths = await this.listSessionFilePaths()
+    let migratedCount = 0
+
+    for (const filePath of filePaths) {
+      const session = await readJsonFile(filePath, null)
+
+      if (!session || typeof session !== 'object') {
+        continue
+      }
+
+      const legacyMessages = Array.isArray(session.messages) ? session.messages : []
+
+      if (!legacyMessages.length) {
+        continue
+      }
+
+      migratedCount += await this.importLegacySessionMessages(session)
+      delete session.messages
+      await this.writeSessionFile(session)
+    }
+
+    return migratedCount
+  }
+
   async transact(mutator) {
     let result
 
     this.pendingWrite = this.pendingWrite.then(async () => {
-      const currentSessions = await this.readAll()
+      const currentSessions = await this.readAll({ hydrateMessages: false })
       const draftSessions = cloneValue(currentSessions)
       result = await mutator(draftSessions)
       await this.writeAll(draftSessions)
@@ -215,7 +327,7 @@ export class SessionRepository {
   }
 
   async listSummaries() {
-    const sessions = await this.readAll()
+    const sessions = await this.readAll({ hydrateMessages: false })
     return sortSessionsByUpdatedAt(sessions.map((item) => createSessionSummary(item)))
   }
 
@@ -253,7 +365,7 @@ export class SessionRepository {
       return null
     }
 
-    return this.updateSession(sessionId, (session) => {
+    const updatedSession = await this.updateSession(sessionId, async (session) => {
       const nextFile = {
         path: normalizedPath,
         artifactPath: String(fileInfo.artifactPath || '').trim(),
@@ -276,12 +388,14 @@ export class SessionRepository {
 
       return session
     })
+
+    return updatedSession
   }
 
   async deleteSession(sessionId) {
     let removed = false
 
-    await this.transact((sessions) => {
+    await this.transact(async (sessions) => {
       const targetIndex = sessions.findIndex((item) => item.sessionId === sessionId)
 
       if (targetIndex === -1) {
@@ -291,6 +405,10 @@ export class SessionRepository {
       sessions.splice(targetIndex, 1)
       removed = true
     })
+
+    if (removed && this.hasExternalMessageStore() && typeof this.messageStore.deleteConversationMessages === 'function') {
+      await this.messageStore.deleteConversationMessages(sessionId)
+    }
 
     if (removed && this.onSessionDeleted) {
       await this.onSessionDeleted(sessionId)
@@ -302,7 +420,7 @@ export class SessionRepository {
   async updateSession(sessionId, updater) {
     let updatedSession = null
 
-    await this.transact((sessions) => {
+    await this.transact(async (sessions) => {
       const targetIndex = sessions.findIndex((item) => item.sessionId === sessionId)
 
       if (targetIndex === -1) {
@@ -310,7 +428,7 @@ export class SessionRepository {
       }
 
       const currentSession = cloneValue(sessions[targetIndex])
-      const nextSession = updater(currentSession)
+      const nextSession = await updater(currentSession)
 
       if (!nextSession) {
         return
@@ -320,17 +438,25 @@ export class SessionRepository {
       updatedSession = cloneValue(nextSession)
     })
 
-    if (updatedSession && this.onSessionUpdated) {
-      await this.onSessionUpdated(cloneValue(updatedSession))
+    const hydratedSession = updatedSession
+      ? await this.hydrateSessionMessages(updatedSession)
+      : updatedSession
+
+    if (hydratedSession && this.onSessionUpdated) {
+      await this.onSessionUpdated(cloneValue(hydratedSession))
     }
 
-    return updatedSession
+    return hydratedSession
   }
 
   async prepareSessionForTask({ sessionId, message, aiId, model, skillId = '', skillIds = [] }) {
     const normalizedMessage = String(message ?? '')
     const timestamp = nowIso()
     const nextTaskId = createId('task')
+    const userMessage = createMessage({
+      role: 'user',
+      content: normalizedMessage
+    })
     const normalizedSkillIds = Array.isArray(skillIds)
       ? [...new Set(
         skillIds
@@ -339,7 +465,7 @@ export class SessionRepository {
       )]
       : []
 
-    return this.updateSession(sessionId, (session) => {
+    const updatedSession = await this.updateSession(sessionId, async (session) => {
       const nextTitle = session.title === '新对话'
         ? createSessionTitle(normalizedMessage)
         : session.title
@@ -351,11 +477,12 @@ export class SessionRepository {
       session.lastModel = model
       session.lastSkillId = String(skillId || '').trim()
       session.lastSkillIds = normalizedSkillIds
-      session.messages = Array.isArray(session.messages) ? session.messages : []
-      session.messages.push(createMessage({
-        role: 'user',
-        content: normalizedMessage
-      }))
+      if (this.hasExternalMessageStore()) {
+        await this.messageStore.appendConversationMessage(sessionId, userMessage)
+      } else {
+        session.messages = Array.isArray(session.messages) ? session.messages : []
+        session.messages.push(userMessage)
+      }
       session.task = {
         ...createEmptyTask(nextTitle),
         taskId: nextTaskId,
@@ -370,6 +497,8 @@ export class SessionRepository {
 
       return session
     })
+
+    return updatedSession ? this.hydrateSessionMessages(updatedSession) : updatedSession
   }
 
   async appendAssistantMessage(sessionId, { content, model = '', usage } = {}) {
@@ -402,20 +531,26 @@ export class SessionRepository {
       usage
     })
 
-    const updatedSession = await this.updateSession(sessionId, (session) => {
+    const updatedSession = await this.updateSession(sessionId, async (session) => {
       session.updatedAt = timestamp
       session.lastMessageAt = timestamp
-      session.messages = Array.isArray(session.messages) ? session.messages : []
-      session.messages.push(message)
+
+      if (this.hasExternalMessageStore()) {
+        await this.messageStore.appendConversationMessage(sessionId, message)
+      } else {
+        session.messages = Array.isArray(session.messages) ? session.messages : []
+        session.messages.push(message)
+      }
 
       return session
     })
+    const hydratedSession = updatedSession ? await this.hydrateSessionMessages(updatedSession) : updatedSession
 
-    if (updatedSession && this.onMessageAppended) {
+    if (hydratedSession && this.onMessageAppended) {
       try {
         await this.onMessageAppended({
           sessionId,
-          session: cloneValue(updatedSession),
+          session: cloneValue(hydratedSession),
           message: cloneValue(message)
         })
       } catch (error) {
@@ -423,7 +558,7 @@ export class SessionRepository {
       }
     }
 
-    return updatedSession
+    return hydratedSession
   }
 
   async recoverInterruptedTasks() {
