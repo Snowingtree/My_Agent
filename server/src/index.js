@@ -1747,9 +1747,20 @@ async function handleDeleteSession(request, response, sessionId) {
 
   await sessionWorkspaces.deleteSessionWorkspace(sessionId)
 
-  auditSystemAction(sessionId, 'session_deleted', {
+  const auditDeletion = typeof auditLogger.deleteSessionAuditRecords === 'function'
+    ? await auditLogger.deleteSessionAuditRecords(sessionId)
+    : {
+        ok: await deleteAuditSessionFile(sessionId),
+        deletedQueuedCount: 0,
+        deletedFile: true
+      }
+
+  setRequestAuditSession(request, '')
+  auditSystemAction('', 'session_deleted', {
     requestId: request.auditContext?.requestId,
-    auditPreserved: true
+    deletedSessionId: sessionId,
+    auditDeleted: Boolean(auditDeletion?.ok),
+    deletedAuditQueuedCount: Number(auditDeletion?.deletedQueuedCount || 0)
   })
 
   sendEmpty(response, 204)

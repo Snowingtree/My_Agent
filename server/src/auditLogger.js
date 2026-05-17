@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { appendFile, mkdir, readFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { normalizeTrimmedString, nowIso } from './utils.js'
 
@@ -283,6 +283,45 @@ export class AuditLogger {
       if (this.queue.length) {
         this.scheduleFlush()
       }
+    }
+  }
+
+  async deleteSessionAuditRecords(sessionId) {
+    const normalizedSessionId = normalizeTrimmedString(sessionId)
+
+    if (!normalizedSessionId || !this.auditDir) {
+      return {
+        ok: false,
+        deletedQueuedCount: 0,
+        deletedFile: false,
+        reason: normalizedSessionId ? 'audit_dir_required' : 'session_id_required'
+      }
+    }
+
+    while (this.flushing) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+
+    const filePath = join(this.auditDir, `${toSafeFileName(normalizedSessionId)}.jsonl`)
+    const beforeQueueLength = this.queue.length
+    this.queue = this.queue.filter((record) => (
+      normalizeTrimmedString(record?.sessionId) !== normalizedSessionId
+    ))
+    const deletedQueuedCount = beforeQueueLength - this.queue.length
+    this.lastHashes.delete(filePath)
+
+    try {
+      await rm(filePath, { force: true })
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw error
+      }
+    }
+
+    return {
+      ok: true,
+      deletedQueuedCount,
+      deletedFile: true
     }
   }
 
