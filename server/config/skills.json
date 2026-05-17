@@ -35,6 +35,32 @@
       "disabledTools": []
     },
     {
+      "skillId": "code_quality",
+      "name": "代码质量检查",
+      "description": "用于在代码修改前后检查项目结构、变更范围、错误处理、边界条件、验证结果和潜在回归风险。",
+      "instructionPath": "../../skills/code_quality.md",
+      "preferredTools": [
+        "list_files",
+        "search_text",
+        "read_file",
+        "run_command"
+      ],
+      "disabledTools": []
+    },
+    {
+      "skillId": "frontend_quality",
+      "name": "前端质量检查",
+      "description": "用于检查页面、组件和样式的可用性、响应式布局、视觉一致性、溢出遮挡和构建验证。",
+      "instructionPath": "../../skills/frontend_quality.md",
+      "preferredTools": [
+        "list_files",
+        "search_text",
+        "read_file",
+        "run_command"
+      ],
+      "disabledTools": []
+    },
+    {
       "skillId": "task_planner",
       "name": "任务规划",
       "description": "用于在实施前拆解目标、规划步骤、识别风险和梳理依赖。",

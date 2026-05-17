@@ -865,7 +865,10 @@ async function runStructuredCompletionAttempt({
         if (
           usedStructuredMode
           && index < requestBodies.length - 1
-          && isResponseFormatCompatibilityError(payload, responseText)
+          && (
+            isResponseFormatCompatibilityError(payload, responseText)
+            || response.status >= 500
+          )
         ) {
           continue
         }

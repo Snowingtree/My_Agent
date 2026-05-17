@@ -900,6 +900,9 @@ function looksLikeInternalProtocolText(value) {
 
   return (
     looksLikeInternalReactDecisionContent(text)
+    || /<\s*tool_call\b/i.test(text)
+    || /<\s*function\s*=\s*["']?[\w.-]+["']?\s*>/i.test(text)
+    || /<\s*parameter\s*=\s*["']?[\w.-]+["']?\s*>/i.test(text)
     || /"type"\s*:\s*"react_decision"/i.test(text)
     || /"action"\s*:\s*\{\s*"type"\s*:\s*"tool"/i.test(text)
     || /"action"\s*:\s*"tool"/i.test(text)
@@ -916,7 +919,7 @@ function createFinalTextRetryMessages(messages = [], rawReply = '') {
       content: [
         'The previous final answer used an internal Agent protocol or JSON tool-call format.',
         'Rewrite the final answer now as plain natural language only.',
-        'Do not include JSON, code fences, ReAct transcript, tool calls, Thought, Action, or Observation.',
+        'Do not include JSON, XML tags, code fences, ReAct transcript, tool calls, Thought, Action, Observation, <tool_call>, <function=...>, or <parameter=...>.',
         'Keep it concise and user-facing.',
         '',
         `Blocked internal output preview:\n${truncateText(rawReply, 1200)}`
@@ -943,6 +946,10 @@ function buildSafeAssistantReply({
 
   if (looksLikeInternalReactDecisionContent(normalizedReply)) {
     return '模型返回了内部工具调用 JSON，本轮已拦截，未展示为正常回复。请重新发送任务；如果是写文件任务，Agent 会继续通过工具真实写入工作区。'
+  }
+
+  if (looksLikeInternalProtocolText(normalizedReply)) {
+    return '模型返回了内部工具调用格式，本轮已拦截，未展示为正常回复。请重新发送任务；如果需要查看文件内容，Agent 会通过工具读取后再用自然语言说明。'
   }
 
   if (fileChangesRequired && (looksLikeToolSummaryContent(normalizedReply) || looksLikeCodeHeavyContent(normalizedReply))) {
@@ -1111,15 +1118,17 @@ function buildAgentLoopMessages({
     'Do not store temporary task details, secrets, API keys, passwords, tokens, or file contents in long-term memory.',
     'When the user asks for the current date, weekday, or time, use the provided current date context directly.',
     'When the request is about the codebase or file changes, prefer inspecting the workspace before making code claims.',
+    'Coding quality rule: before calling write_file or apply_patch for code changes, inspect the workspace with list_files, search_text, or read_file in this task. Understand the existing structure before editing.',
     'If ephemeral uploaded files are provided, treat them as conversation-scoped reference material for this run.',
     'Use apply_patch for targeted edits and write_file for new files or full rewrites.',
     'Never claim that a file changed unless a write tool actually succeeded.',
-    'When you modify files and a verification command is available, expect a follow-up verification step before the final answer.',
+    'When you modify files and a verification command is available, expect a follow-up verification step before the final answer. If verification fails, inspect the error, make the smallest fix, and verify again.',
     ...(requireFileChanges
       ? [
           'This request appears to ask for real file changes.',
           'You must use workspace tools and actually create, modify, or delete files before choosing "final", unless the task is blocked by missing information.',
           'Do not place the intended code only in reply text when a file change is required.',
+          'Do not start with a write tool. First gather project context with list_files, search_text, or read_file.',
           'When the user asks for a page, UI, component, script, or HTML/CSS/JS implementation without giving an explicit path, choose a sensible default filename in the current workspace and write the file directly.',
           'If the current session workspace already contains related files, inspect and continue modifying those existing files instead of starting over.',
           'If the user asks to split CSS or JS into separate files, do not finish until the companion file is actually written and the original file references it correctly.'
@@ -2494,6 +2503,8 @@ export function createAgentRunner({
       changedFiles: Array.isArray(approvedExecutionState.changedFiles) ? [...approvedExecutionState.changedFiles] : [],
       verifiedAfterModification: Boolean(approvedExecutionState.verifiedAfterModification),
       autoVerificationAttempted: Boolean(approvedExecutionState.autoVerificationAttempted),
+      verificationFailed: Boolean(approvedExecutionState.verificationFailed),
+      inspectedWorkspace: Boolean(approvedExecutionState.inspectedWorkspace),
       updatedUserProfileMemory: Boolean(approvedExecutionState.updatedUserProfileMemory)
     }
     const analysisStep = createTaskStep({
@@ -2559,6 +2570,8 @@ export function createAgentRunner({
           changedFiles: Array.isArray(executionState.changedFiles) ? [...executionState.changedFiles] : [],
           verifiedAfterModification: Boolean(executionState.verifiedAfterModification),
           autoVerificationAttempted: Boolean(executionState.autoVerificationAttempted),
+          verificationFailed: Boolean(executionState.verificationFailed),
+          inspectedWorkspace: Boolean(executionState.inspectedWorkspace),
           updatedUserProfileMemory: Boolean(executionState.updatedUserProfileMemory)
         },
         context: {
@@ -2726,6 +2739,19 @@ export function createAgentRunner({
           args: normalizedRequest.args,
           reason: 'mcp_skill_required',
           message: 'mcp_gateway is available only after loading the mcp_connector Skill with mode="help" and activating it with mode="run".'
+        })
+      }
+
+      if (
+        !virtualProtectedToolExecution
+        && isWriteToolName(normalizedRequest.name)
+        && !executionState.inspectedWorkspace
+      ) {
+        virtualProtectedToolExecution = createBlockedToolExecution({
+          tool: normalizedRequest.name,
+          args: normalizedRequest.args,
+          reason: 'workspace_context_required',
+          message: '写代码前需要先读取项目上下文。请先使用 list_files、search_text 或 read_file 了解现有结构，再进行文件修改。'
         })
       }
 
@@ -3113,6 +3139,7 @@ export function createAgentRunner({
       })
 
       if (isReadToolName(toolExecution.tool)) {
+        executionState.inspectedWorkspace = true
         audit(sessionId, 'workspace_read', {
           executionId: toolExecutionId,
           tool: toolExecution.tool,
@@ -3128,6 +3155,8 @@ export function createAgentRunner({
       if (isWriteToolName(toolExecution.tool) && toolExecution.result?.changed === true) {
         executionState.modifiedWorkspace = true
         executionState.verifiedAfterModification = false
+        executionState.autoVerificationAttempted = false
+        executionState.verificationFailed = false
 
         const writtenPath = normalizeTrimmedString(toolExecution.result?.path)
 
@@ -3166,8 +3195,10 @@ export function createAgentRunner({
       ) {
         if (!verificationCommands.length) {
           executionState.verifiedAfterModification = true
+          executionState.verificationFailed = false
         } else if (verificationCommands.some((spec) => commandResultMatchesSpec(toolExecution.result, spec))) {
           executionState.verifiedAfterModification = true
+          executionState.verificationFailed = false
         }
       }
 
@@ -3285,6 +3316,7 @@ export function createAgentRunner({
 
         if (result.toolExecution.result?.exitCode !== 0) {
           executionState.verifiedAfterModification = false
+          executionState.verificationFailed = true
           return {
             ranVerification: true,
             failedTask: false
@@ -3505,6 +3537,26 @@ export function createAgentRunner({
           continue
         }
 
+        if (
+          executionState.modifiedWorkspace
+          && verificationCommands.length
+          && executionState.verificationFailed
+          && !executionState.verifiedAfterModification
+        ) {
+          toolMessages.push({
+            role: 'user',
+            content: [
+              'The latest verification command failed after the workspace change.',
+              'Do not finish yet.',
+              'Inspect the verification output in the previous tool result, make the smallest necessary fix, and then allow verification to run again.',
+              'If the failure is impossible to fix from the available information, ask one concise clarification question instead of claiming success.'
+            ].join('\n')
+          })
+
+          await sleep(runtimeConfig.stepDelayMs)
+          continue
+        }
+
         if (fileChangesRequired && !executionState.modifiedWorkspace) {
           toolMessages.push({
             role: 'user',
@@ -3611,6 +3663,15 @@ export function createAgentRunner({
         && !hasRequiredCompanionChanges(requiredCompanionExtensions, executionState.changedFiles)
       ) {
         throw new Error(`The requested file split is incomplete. Missing companion file update for: ${requiredCompanionExtensions.join(', ')}`)
+      }
+
+      if (
+        executionState.modifiedWorkspace
+        && verificationCommands.length
+        && executionState.verificationFailed
+        && !executionState.verifiedAfterModification
+      ) {
+        throw new Error('The workspace was modified, but the available verification command failed and the issue was not fixed before the iteration limit.')
       }
 
       const completionSummary = executionState.modifiedWorkspace

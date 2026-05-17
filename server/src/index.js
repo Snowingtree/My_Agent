@@ -693,7 +693,54 @@ function looksLikeCodingSkillRequest(message) {
     return false
   }
 
+  if (
+    /写代码|改代码|生成代码|创建代码|写一个页面|写个页面|写一个网页|写个网页|新建页面|创建页面|做一个页面|做个页面|做一个界面|做个界面|写一个界面|写个界面|创建界面|生成页面|生成界面|创建组件|新建组件|写一个组件|写个组件|写一个脚本|写个脚本|仿真时钟|时钟界面|前端|后端|项目|工作区|代码库|样式|脚本|组件|修复|调试|构建|接口|页面|界面/.test(normalizedMessage)
+    || /(?:写|创建|生成|做|实现|修改|修复|调试|优化|重构)[\s\S]{0,40}(?:页面|网页|界面|组件|脚本|文件|代码|html|css|javascript|js|vue|react|python|py|时钟|表单|按钮|样式)/i.test(normalizedMessage)
+  ) {
+    return true
+  }
+
   return CODING_SKILL_HINT_PATTERNS.some((pattern) => pattern.test(normalizedMessage))
+}
+
+function looksLikeFrontendSkillRequest(message) {
+  const normalizedMessage = normalizeTrimmedString(message)
+
+  if (!normalizedMessage) {
+    return false
+  }
+
+  return (
+    /页面|界面|组件|样式|布局|按钮|表单|弹窗|代码块|响应式|移动端|桌面端|前端|导航|侧边栏|会话区|卡片|溢出|遮挡|错位/.test(normalizedMessage)
+    || /\b(ui|ux|frontend|front-end|page|webpage|component|layout|style|css|html|vue|react|button|modal|form|responsive|mobile|desktop|overflow)\b/i.test(normalizedMessage)
+  )
+}
+
+function looksLikeFrontendQualityRequest(message) {
+  const normalizedMessage = normalizeTrimmedString(message)
+
+  return Boolean(
+    normalizedMessage
+    && /页面|界面|组件|样式|布局|按钮|表单|弹窗|代码块|响应式|移动端|桌面端|前端|导航|侧边栏|会话区|卡片|溢出|遮挡|错位|时钟/.test(normalizedMessage)
+  )
+}
+
+function compactSkillList(skills = []) {
+  const seen = new Set()
+  const normalizedSkills = []
+
+  for (const skill of Array.isArray(skills) ? skills : []) {
+    const skillId = normalizeTrimmedString(skill?.skillId)
+
+    if (!skill || !skillId || seen.has(skillId)) {
+      continue
+    }
+
+    seen.add(skillId)
+    normalizedSkills.push(skill)
+  }
+
+  return normalizedSkills
 }
 
 function looksLikeLarkChatInfoRequest(message) {
@@ -753,14 +800,30 @@ function resolveSkillsForMessage(requestedSkillIds, message) {
     .filter(Boolean)
 
   if (explicitSkills.length) {
+    const explicitSkillIds = new Set(explicitSkills.map((item) => normalizeTrimmedString(item?.skillId)))
+
+    if (explicitSkillIds.has('coding_agent')) {
+      return compactSkillList([
+        ...explicitSkills,
+        skillRegistry.getSkillById('code_quality'),
+        (looksLikeFrontendSkillRequest(message) || looksLikeFrontendQualityRequest(message))
+          ? skillRegistry.getSkillById('frontend_quality')
+          : null
+      ].filter(Boolean))
+    }
+
     return explicitSkills
   }
 
   if (looksLikeCodingSkillRequest(message)) {
-    return [
+    return compactSkillList([
       skillRegistry.getSkillById('coding_agent')
-      || skillRegistry.resolveSkill('')
-    ].filter(Boolean)
+      || skillRegistry.resolveSkill(''),
+      skillRegistry.getSkillById('code_quality'),
+      (looksLikeFrontendSkillRequest(message) || looksLikeFrontendQualityRequest(message))
+        ? skillRegistry.getSkillById('frontend_quality')
+        : null
+    ].filter(Boolean))
   }
 
   return [

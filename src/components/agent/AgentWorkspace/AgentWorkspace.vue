@@ -2114,6 +2114,10 @@ function renderMarkdownTableHtml(headerCells, bodyRows) {
   ].join('')
 }
 
+function isMarkdownHorizontalRule(value) {
+  return /^([-*_])(?:\s*\1){2,}\s*$/.test(String(value || '').trim())
+}
+
 function renderMarkdownHtml(content) {
   const lines = String(content || '').replace(/\r\n/g, '\n').split('\n')
   const htmlBlocks = []
@@ -2197,6 +2201,13 @@ function renderMarkdownHtml(content) {
       continue
     }
 
+    if (isMarkdownHorizontalRule(trimmed)) {
+      flushMarkdownParagraph(paragraphLines, htmlBlocks)
+      flushList()
+      htmlBlocks.push('<hr class="agent-markdown-hr">')
+      continue
+    }
+
     const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/)
 
     if (headingMatch) {
@@ -2252,7 +2263,7 @@ function looksLikeMarkdownMessage(value) {
     return false
   }
 
-  return /(^|\n)```[a-zA-Z0-9_-]*\s*(\n|$)|(^|\n)\|.+\|\s*\n\|[\s:-]+\||(^|\n)#{1,6}\s+.+|(^|\n)\d+\.\s+.+|(^|\n)[-*+]\s+.+|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/m.test(normalized)
+  return /(^|\n)```[a-zA-Z0-9_-]*\s*(\n|$)|(^|\n)\|.+\|\s*\n\|[\s:-]+\||(^|\n)\s*[-*_](?:\s*[-*_]){2,}\s*(\n|$)|(^|\n)#{1,6}\s+.+|(^|\n)\d+\.\s+.+|(^|\n)[-*+]\s+.+|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/m.test(normalized)
 }
 
 function isOmittedConversationDisplay(value) {
@@ -4101,6 +4112,13 @@ onBeforeUnmount(() => {
 .agent-markdown-content :deep(p) {
   margin: 0 0 0.9rem;
   white-space: normal;
+}
+
+.agent-markdown-content :deep(hr),
+.agent-markdown-content :deep(.agent-markdown-hr) {
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.38);
+  margin: 1rem 0;
 }
 
 .agent-markdown-content :deep(strong) {
