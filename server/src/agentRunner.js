@@ -12,6 +12,7 @@ import {
 } from './utils.js'
 
 const WRITE_TOOL_NAMES = new Set(['write_file', 'apply_patch'])
+const READ_TOOL_NAMES = new Set(['read_file', 'list_files', 'search_text'])
 const TASK_CANCELLED_CODE = 'TASK_CANCELLED'
 const UI_FILE_CHANGE_REQUEST_PATTERNS = [
   /\u5199\u4ee3\u7801|\u6539\u4ee3\u7801|\u751f\u6210\u4ee3\u7801|\u521b\u5efa\u4ee3\u7801|\u5199\u4e00\u4e2a\u9875\u9762|\u5199\u4e2a\u9875\u9762|\u5199\u4e00\u4e2a\u7f51\u9875|\u5199\u4e2a\u7f51\u9875|\u65b0\u5efa\u9875\u9762|\u521b\u5efa\u9875\u9762|\u505a\u4e00\u4e2a\u9875\u9762|\u505a\u4e2a\u9875\u9762|\u505a\u4e00\u4e2a\u754c\u9762|\u505a\u4e2a\u754c\u9762|\u5199\u4e00\u4e2a\u754c\u9762|\u5199\u4e2a\u754c\u9762|\u521b\u5efa\u754c\u9762|\u751f\u6210\u9875\u9762|\u751f\u6210\u754c\u9762|\u521b\u5efa\u7ec4\u4ef6|\u65b0\u5efa\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u7ec4\u4ef6|\u5199\u4e2a\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u811a\u672c|\u5199\u4e2a\u811a\u672c|\u5199\u4e00\u4e2a html|\u5199\u4e00\u4e2a vue|\u5199\u4e00\u4e2a python|\u5199\u4e00\u4e2a py/i,
@@ -1474,6 +1475,10 @@ function isWriteToolName(toolName) {
   return WRITE_TOOL_NAMES.has(String(toolName || '').trim().toLowerCase())
 }
 
+function isReadToolName(toolName) {
+  return READ_TOOL_NAMES.has(String(toolName || '').trim().toLowerCase())
+}
+
 function normalizeCommandSpec(item) {
   const command = normalizeTrimmedString(item?.command)
   const args = Array.isArray(item?.args)
@@ -2697,6 +2702,19 @@ export function createAgentRunner({
         executionId: toolExecutionId,
         status: 'success'
       })
+
+      if (isReadToolName(toolExecution.tool)) {
+        audit(sessionId, 'workspace_read', {
+          executionId: toolExecutionId,
+          tool: toolExecution.tool,
+          path: normalizeTrimmedString(toolExecution.result?.path || normalizedRequest.args?.path),
+          query: normalizeTrimmedString(toolExecution.result?.query || normalizedRequest.args?.query),
+          sizeBytes: toolExecution.result?.sizeBytes ?? null,
+          entryCount: Array.isArray(toolExecution.result?.entries) ? toolExecution.result.entries.length : null,
+          matchCount: Array.isArray(toolExecution.result?.matches) ? toolExecution.result.matches.length : null,
+          truncated: Boolean(toolExecution.result?.truncated)
+        })
+      }
 
       if (isWriteToolName(toolExecution.tool) && toolExecution.result?.changed !== false) {
         executionState.modifiedWorkspace = true

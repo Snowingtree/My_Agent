@@ -1,4 +1,5 @@
-import { appendFile, mkdir } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { normalizeTrimmedString, nowIso } from './utils.js'
 
@@ -98,6 +99,59 @@ function normalizeRecord(input = {}) {
   }
 }
 
+function sortValue(value) {
+  if (value == null || typeof value !== 'object') {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sortValue(item))
+  }
+
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort((left, right) => left.localeCompare(right))
+      .map((key) => [key, sortValue(value[key])])
+  )
+}
+
+function canonicalizeRecord(record = {}) {
+  const { hash, ...recordWithoutHash } = record
+  return JSON.stringify(sortValue(recordWithoutHash))
+}
+
+function hashRecord(record = {}) {
+  return createHash('sha256')
+    .update(canonicalizeRecord(record))
+    .digest('hex')
+}
+
+async function readLastAuditHash(filePath) {
+  try {
+    const content = await readFile(filePath, 'utf8')
+    const lines = content.split(/\r?\n/).filter(Boolean)
+
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      try {
+        const parsed = JSON.parse(lines[index])
+        const hash = normalizeTrimmedString(parsed?.hash)
+
+        if (hash) {
+          return hash
+        }
+      } catch {
+        // Ignore malformed legacy audit lines when bootstrapping the chain.
+      }
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error
+    }
+  }
+
+  return ''
+}
+
 export class AuditLogger {
   constructor({
     auditDir,
@@ -114,6 +168,7 @@ export class AuditLogger {
     this.flushScheduled = false
     this.closed = false
     this.dropCount = 0
+    this.lastHashes = new Map()
 
     this.timer = setInterval(() => {
       this.scheduleFlush()
@@ -180,12 +235,27 @@ export class AuditLogger {
     try {
       await mkdir(this.auditDir, { recursive: true })
       const groupedLines = new Map()
+      const pendingLastHashes = new Map()
 
       for (const record of batch) {
         const sessionId = normalizeTrimmedString(record.sessionId) || 'system'
         const filePath = join(this.auditDir, `${toSafeFileName(sessionId)}.jsonl`)
         const lines = groupedLines.get(filePath) || []
-        lines.push(`${JSON.stringify(record)}\n`)
+        let previousHash = pendingLastHashes.has(filePath)
+          ? pendingLastHashes.get(filePath)
+          : this.lastHashes.get(filePath)
+
+        if (previousHash == null) {
+          previousHash = await readLastAuditHash(filePath)
+        }
+
+        const chainedRecord = {
+          ...record,
+          prevHash: previousHash
+        }
+        chainedRecord.hash = hashRecord(chainedRecord)
+        pendingLastHashes.set(filePath, chainedRecord.hash)
+        lines.push(`${JSON.stringify(chainedRecord)}\n`)
         groupedLines.set(filePath, lines)
       }
 
@@ -194,6 +264,10 @@ export class AuditLogger {
           appendFile(filePath, lines.join(''), 'utf8')
         ))
       )
+
+      for (const [filePath, hash] of pendingLastHashes) {
+        this.lastHashes.set(filePath, hash)
+      }
     } catch (error) {
       this.queue.unshift(...batch)
 

@@ -26,7 +26,7 @@
         >
           <strong>{{ item.sessionId }}</strong>
           <span>{{ item.eventCount || 0 }} 条事件 · {{ formatDateTime(item.updatedAt) }}</span>
-          <small>{{ item.lastEvent || 'event' }}</small>
+          <small>{{ eventTypeOptionLabel(item.lastEvent) }}</small>
         </button>
       </div>
     </aside>
@@ -45,7 +45,7 @@
           <select v-model="selectedEventType" :disabled="!selectedSessionId || isLoadingEvents" @change="loadAuditEvents">
             <option value="">全部事件</option>
             <option v-for="eventType in eventTypes" :key="eventType" :value="eventType">
-              {{ eventType }}
+              {{ eventTypeOptionLabel(eventType) }}
             </option>
           </select>
           <button type="button" :disabled="!selectedSessionId || isLoadingEvents" @click="loadAuditEvents">
@@ -143,6 +143,86 @@ const isLoadingEvents = ref(false)
 const sessionError = ref('')
 const eventError = ref('')
 
+const EVENT_LABELS = {
+  api_request: '接口请求',
+  api_response: '接口响应',
+  auth_success: '登录成功',
+  auth_failure: '登录失败',
+  user_message: '用户消息',
+  ai_message: '回复入库',
+  llm_input: '模型输入',
+  llm_decision: '模型决策',
+  llm_final_text: '最终回答',
+  tool_call: '工具调用',
+  tool_result: '工具结果',
+  mcp_call: 'MCP 调用',
+  mcp_result: 'MCP 结果',
+  workspace_read: '读取文件',
+  workspace_write: '写入文件',
+  rag_search: '知识库检索',
+  error: '错误',
+  system_action: '系统动作'
+}
+
+const ACTION_LABELS = {
+  ask_user: '询问用户',
+  final: '准备最终回复',
+  tool: '调用工具',
+  session_created: '创建会话',
+  session_deleted: '删除会话',
+  task_started: '任务开始',
+  task_completed: '任务完成',
+  task_failed: '任务失败',
+  task_cancelled: '任务取消',
+  task_cancel_requested: '请求停止任务',
+  skill_help: '读取 Skill 说明',
+  skill_run: '激活 Skill',
+  skill_run_blocked: 'Skill 激活被阻止',
+  memory_compacted: '压缩短期记忆',
+  user_profile_memory_updated: '更新长期记忆',
+  ai_config_created: '创建 AI 配置',
+  ai_config_updated: '更新 AI 配置',
+  rag_collection_created: '创建知识库集合',
+  rag_initialized: '初始化知识库',
+  rag_document_created: '创建知识库文档',
+  rag_document_uploaded: '上传知识库文档',
+  rag_document_deleted: '删除知识库文档',
+  rag_embeddings_rebuilt: '重建知识库向量',
+  mcp_registry_initialized: '初始化 MCP 工具',
+  conversation_messages_migrated: '迁移会话消息',
+  token_usage_backfilled: '回填 token 统计',
+  server_started: '服务启动',
+  server_shutdown_requested: '服务准备关闭'
+}
+
+const ACTION_EXPLANATIONS = {
+  session_created: '系统创建了一个新的会话记录，并为它准备工作区。',
+  session_deleted: '这个会话被删除；审计日志会保留，方便之后追溯。',
+  task_started: 'Agent 已经开始处理用户这轮请求。',
+  task_completed: 'Agent 已经完成这轮任务并准备或保存了最终回复。',
+  task_failed: '这轮任务执行失败，错误原因会记录在事件详情里。',
+  task_cancelled: '任务被取消，后续工具和模型调用不会继续执行。',
+  task_cancel_requested: '用户或前端发出了停止当前任务的请求。',
+  skill_help: 'Agent 读取了 Skill 的详细说明，但这一步还没有正式启用该 Skill。',
+  skill_run: 'Agent 正式启用了这个 Skill，后续会按它的规则执行。',
+  skill_run_blocked: 'Agent 想启用 Skill，但还没有先读取说明，所以被系统拦截。',
+  memory_compacted: '当前会话超过双水位阈值，旧轮次被压缩成摘要，最近轮次继续保留。',
+  user_profile_memory_updated: '长期用户画像被更新，后续会话会读取这部分记忆。',
+  ai_config_created: '管理员新增了一个 AI 配置。',
+  ai_config_updated: '管理员修改了一个已有 AI 配置。',
+  rag_collection_created: '创建了一个新的知识库集合。',
+  rag_initialized: '知识库模块完成初始化或重新初始化。',
+  rag_document_created: '手动新增了一篇知识库文档。',
+  rag_document_uploaded: '通过上传文件新增了知识库文档。',
+  rag_document_deleted: '删除了一篇知识库文档。',
+  rag_embeddings_rebuilt: '重新生成知识库向量，用于后续检索。',
+  mcp_registry_initialized: 'MCP 工具注册表已经初始化。',
+  conversation_messages_migrated: '旧 JSON 会话消息已迁移到 SQLite 记忆库。',
+  token_usage_backfilled: '系统从历史消息补齐 token 使用统计。',
+  server_started: 'Agent 后端服务已经启动。',
+  server_shutdown_requested: '服务收到退出信号，正在刷写审计日志并关闭。'
+}
+
 function formatDateTime(value) {
   const timestamp = Date.parse(String(value || ''))
 
@@ -185,44 +265,31 @@ function eventClass(event) {
   return 'is-system'
 }
 
+function eventTypeOptionLabel(value) {
+  const type = String(value || '').toLowerCase()
+  return EVENT_LABELS[type] || value || 'event'
+}
+
 function eventLabel(event) {
   const type = String(event?.event || '').toLowerCase()
   const action = String(event?.action || '').toLowerCase()
   const status = String(event?.status || '').toLowerCase()
   const mode = skillMode(event)
 
-  if (type === 'user_message') return '用户消息'
-  if (type === 'ai_message') return '回复入库'
-  if (type === 'llm_input') return event?.stage === 'final_text' ? '最终输入' : '模型输入'
-  if (type === 'llm_decision') return '模型决策'
-  if (type === 'llm_final_text') return '最终回答'
   if (isSkillToolEvent(event) && mode === 'help') return '读取 Skill'
   if (isSkillToolEvent(event) && mode === 'run') return '激活 Skill'
-  if (type === 'tool_call') return '工具调用'
-  if (type === 'tool_result') return '工具结果'
+  if (type === 'llm_input') return event?.stage === 'final_text' ? '最终输入' : '模型输入'
   if (type === 'rag_search') return status === 'started' ? '开始检索' : '检索结果'
-  if (type.includes('mcp')) return 'MCP'
-  if (type === 'system_action' && action === 'task_started') return '任务开始'
-  if (type === 'system_action' && action === 'task_completed') return '任务完成'
-  if (type === 'system_action' && action === 'task_failed') return '任务失败'
-  if (type === 'system_action' && action === 'skill_help') return '读取 Skill'
-  if (type === 'system_action' && action === 'skill_run') return '激活 Skill'
+  if (type === 'system_action' && ACTION_LABELS[action]) return ACTION_LABELS[action]
   if (type.includes('error')) return '错误'
 
-  return event?.event || '事件'
+  return EVENT_LABELS[type] || event?.event || '事件'
 }
 
 function actionLabel(value) {
   const action = String(value || '').toLowerCase()
 
-  if (action === 'tool') return '调用工具'
-  if (action === 'final') return '准备最终回复'
-  if (action === 'ask_user') return '询问用户'
-  if (action === 'task_started') return '任务开始'
-  if (action === 'task_completed') return '任务完成'
-  if (action === 'task_failed') return '任务失败'
-
-  return String(value || '')
+  return ACTION_LABELS[action] || String(value || '')
 }
 
 function statusLabel(value) {
@@ -232,6 +299,10 @@ function statusLabel(value) {
   if (status === 'success') return '成功'
   if (status === 'failed' || status === 'error') return '失败'
   if (status === 'completed') return '完成'
+  if (status === 'running' || status === 'in_progress') return '运行中'
+  if (status === 'queued' || status === 'pending') return '排队中'
+  if (status === 'cancelled' || status === 'canceled') return '已取消'
+  if (status === 'waiting_for_user') return '等待用户'
 
   return String(value || '')
 }
@@ -294,12 +365,22 @@ function createReadableEventTitle(event) {
   const status = String(event?.status || '').toLowerCase()
   const mode = skillMode(event)
   const skillName = skillDisplayName(event)
+  const requestPath = event?.path || event?.url || ''
+  const actionLabelText = actionLabel(action)
 
+  if (type === 'api_request') return `收到接口请求：${event?.method || 'GET'} ${requestPath}`
+  if (type === 'api_response') return `接口响应完成：${event?.method || 'GET'} ${requestPath}，状态 ${event?.statusCode ?? '未知'}`
+  if (type === 'auth_success') return `登录成功：${event?.username || '未知用户'}`
+  if (type === 'auth_failure') return `登录失败：${event?.username || '未知用户'}`
   if (type === 'user_message') return `用户发送：${event?.contentPreview || '(空消息)'}`
+  if (type === 'workspace_read') return `读取工作区内容：${event?.path || event?.query || '(未记录路径)'}`
+  if (type === 'workspace_write') return `写入工作区文件：${event?.path || '(未记录路径)'}`
   if (type === 'rag_search' && status === 'started') return `开始检索知识库：${formatList(event?.collectionIds) || '默认'}`
   if (type === 'rag_search') return `知识库检索完成，命中 ${event?.hitCount ?? 0} 条`
   if (type === 'llm_input') return event?.stage === 'final_text' ? '把上下文发送给模型生成最终回复' : '把上下文发送给模型判断下一步'
   if (type === 'llm_decision') return `模型决定：${actionLabel(event?.action)}`
+  if (type === 'mcp_call') return `开始调用 MCP 工具：${event?.tool || '(未知工具)'}`
+  if (type === 'mcp_result') return `${statusLabel(event?.status) || '完成'} MCP 工具：${event?.tool || '(未知工具)'}`
   if (isSkillToolEvent(event) && type === 'tool_call' && mode === 'help') return `开始读取 Skill 说明：${skillName}`
   if (isSkillToolEvent(event) && type === 'tool_result' && mode === 'help') return `Skill 说明读取成功：${skillName}`
   if (isSkillToolEvent(event) && type === 'tool_call' && mode === 'run') return `开始激活 Skill：${skillName}`
@@ -308,11 +389,12 @@ function createReadableEventTitle(event) {
   if (type === 'tool_result') return `${statusLabel(event?.status) || '完成'}工具：${formatToolName(event?.tool)}`
   if (type === 'llm_final_text') return '模型生成最终自然语言回复'
   if (type === 'ai_message') return '回复已保存到会话'
-  if (type === 'system_action' && action === 'task_started') return '任务已开始'
-  if (type === 'system_action' && action === 'task_completed') return '任务已完成'
-  if (type === 'system_action' && action === 'task_failed') return '任务执行失败'
   if (type === 'system_action' && action === 'skill_help') return `Skill 说明已读取：${skillName}`
   if (type === 'system_action' && action === 'skill_run') return `Skill 已激活：${skillName}`
+  if (type === 'system_action' && action === 'memory_compacted') return `短期记忆已压缩：压缩 ${event?.compressedTurnCount ?? event?.compressedMessageCount ?? 0} 轮，保留 ${event?.keptTurnCount ?? event?.keptMessageCount ?? 0} 轮`
+  if (type === 'system_action' && action === 'user_profile_memory_updated') return '长期记忆已更新'
+  if (type === 'system_action' && ACTION_LABELS[action]) return actionLabelText
+  if (type === 'error') return `发生错误：${event?.scope || '系统'}`
 
   return ''
 }
@@ -337,10 +419,65 @@ function eventTitle(event) {
 
 function createReadableEventSummary(event) {
   const type = String(event?.event || '').toLowerCase()
+  const action = String(event?.action || '').toLowerCase()
   const mode = skillMode(event)
+
+  if (type === 'api_request') {
+    return '前端或外部客户端访问了一个后端接口。这条记录用于追踪谁在什么时候触发了哪个入口。'
+  }
+
+  if (type === 'api_response') {
+    return `后端接口处理完成，耗时 ${event?.durationMs ?? 0}ms。`
+  }
+
+  if (type === 'auth_success') {
+    return `认证通过，来源：${event?.provider || 'local'}。`
+  }
+
+  if (type === 'auth_failure') {
+    return '认证失败，没有发放访问 token。'
+  }
 
   if (type === 'llm_decision') {
     return event?.thoughtSummary || event?.summary || ''
+  }
+
+  if (type === 'llm_input') {
+    return event?.stage === 'final_text'
+      ? '这表示 Agent 已经收集好上下文，正在请求模型生成最终自然语言回复。'
+      : '这表示 Agent 把当前目标、记忆、工具结果等上下文发给模型，让模型判断下一步动作。'
+  }
+
+  if (type === 'llm_final_text') {
+    return `最终回复长度：${event?.contentLength ?? 0} 字符。`
+  }
+
+  if (type === 'ai_message') {
+    return `这条助手回复已经写入会话消息库。${event?.contentLength != null ? `长度 ${event.contentLength} 字符。` : ''}`
+  }
+
+  if (type === 'workspace_read') {
+    return [
+      event?.tool ? `来源工具：${event.tool}` : '',
+      event?.sizeBytes != null ? `读取大小：${event.sizeBytes} 字节` : '',
+      event?.matchCount != null ? `匹配数量：${event.matchCount}` : '',
+      event?.entryCount != null ? `条目数量：${event.entryCount}` : '',
+      event?.truncated ? '内容因为大小限制被截断。' : ''
+    ].filter(Boolean).join('；')
+  }
+
+  if (type === 'workspace_write') {
+    return `文件变更已记录。${event?.sizeBytes != null ? `当前大小 ${event.sizeBytes} 字节。` : ''}`
+  }
+
+  if (type === 'rag_search') {
+    return event?.queryPreview
+      ? `检索问题：${event.queryPreview}`
+      : ''
+  }
+
+  if (type === 'mcp_call' || type === 'mcp_result') {
+    return event?.summary || event?.message || ''
   }
 
   if (isSkillToolEvent(event) && mode === 'help') {
@@ -359,8 +496,16 @@ function createReadableEventSummary(event) {
     return event?.summary || event?.result?.summary || event?.resultPreview || ''
   }
 
+  if (type === 'system_action' && ACTION_EXPLANATIONS[action]) {
+    return ACTION_EXPLANATIONS[action]
+  }
+
   if (type === 'system_action' && Array.isArray(event?.changedFiles) && event.changedFiles.length) {
     return `涉及文件：${event.changedFiles.join('、')}`
+  }
+
+  if (type === 'error') {
+    return event?.message || event?.error || ''
   }
 
   return ''

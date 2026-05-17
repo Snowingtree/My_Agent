@@ -223,13 +223,29 @@ const ragStore = createRagStore(config.rag, {
 })
 try {
   await mcpRegistry.initialize()
+  auditSystemAction('', 'mcp_registry_initialized', {
+    serverCount: mcpRegistry.getServerSummaries().length
+  })
 } catch (error) {
+  auditLogger.logEvent({
+    event: 'error',
+    scope: 'mcp_registry_initialize',
+    message: error instanceof Error ? error.message : String(error || '')
+  })
   console.warn('[agent-api] failed to initialize MCP registry:', error instanceof Error ? error.message : error)
 }
 if (config.rag.enabled) {
   try {
     await ragStore.initialize()
+    auditSystemAction('', 'rag_initialized', {
+      source: 'startup'
+    })
   } catch (error) {
+    auditLogger.logEvent({
+      event: 'error',
+      scope: 'rag_initialize_startup',
+      message: error instanceof Error ? error.message : String(error || '')
+    })
     console.warn('[agent-api] failed to initialize RAG store:', error instanceof Error ? error.message : error)
   }
 }
@@ -315,6 +331,95 @@ function sendSseEvent(response, eventName, payload) {
   }
 
   response.write(`${lines.join('\n')}\n\n`)
+}
+
+function normalizeAuditQuery(requestUrl) {
+  return Object.fromEntries(
+    [...requestUrl.searchParams.entries()].map(([key, value]) => [
+      key,
+      String(value || '').slice(0, 500)
+    ])
+  )
+}
+
+function resolveRequestSessionId(requestUrl) {
+  const directSessionId = normalizeTrimmedString(requestUrl.searchParams.get('sessionId'))
+
+  if (directSessionId) {
+    return directSessionId
+  }
+
+  const pathname = normalizeTrimmedString(requestUrl.pathname)
+  const sessionPathMatch = pathname.match(/^\/api\/agent\/sessions\/([^/]+)/)
+
+  return sessionPathMatch ? decodeURIComponent(sessionPathMatch[1]) : ''
+}
+
+function getClientIp(request) {
+  const forwardedFor = normalizeTrimmedString(request.headers['x-forwarded-for'])
+
+  if (forwardedFor) {
+    return normalizeTrimmedString(forwardedFor.split(',')[0])
+  }
+
+  return normalizeTrimmedString(request.socket?.remoteAddress)
+}
+
+function attachApiAudit(request, response, requestUrl) {
+  const method = normalizeTrimmedString(request.method).toUpperCase()
+
+  if (method === 'OPTIONS') {
+    return
+  }
+
+  const requestId = createId('req')
+  const startedAtMs = Date.now()
+  const auditContext = {
+    requestId,
+    sessionId: resolveRequestSessionId(requestUrl)
+  }
+  request.auditContext = auditContext
+  response.setHeader('X-Request-Id', requestId)
+
+  auditLogger.logEvent({
+    sessionId: auditContext.sessionId,
+    event: 'api_request',
+    requestId,
+    method,
+    path: requestUrl.pathname,
+    query: normalizeAuditQuery(requestUrl),
+    clientIp: getClientIp(request),
+    userAgent: normalizeTrimmedString(request.headers['user-agent'])
+  })
+
+  response.once('finish', () => {
+    auditLogger.logEvent({
+      sessionId: auditContext.sessionId,
+      event: 'api_response',
+      requestId,
+      method,
+      path: requestUrl.pathname,
+      statusCode: response.statusCode,
+      durationMs: Date.now() - startedAtMs
+    })
+  })
+}
+
+function setRequestAuditSession(request, sessionId) {
+  if (!request?.auditContext) {
+    return
+  }
+
+  request.auditContext.sessionId = normalizeTrimmedString(sessionId)
+}
+
+function auditSystemAction(sessionId, action, payload = {}) {
+  auditLogger.logEvent({
+    sessionId,
+    event: 'system_action',
+    action,
+    ...payload
+  })
 }
 
 async function readJsonBody(request) {
@@ -731,6 +836,11 @@ async function handleLogin(request, response) {
   const validation = validateLoginPayload(payload)
 
   if (!validation.ok) {
+    auditLogger.logEvent({
+      event: 'auth_failure',
+      requestId: request.auditContext?.requestId,
+      reason: 'invalid_payload'
+    })
     sendJson(response, 401, {
       message: validation.message
     })
@@ -741,10 +851,23 @@ async function handleLogin(request, response) {
     const sharedLogin = await trySharedAuthLogin(payload)
 
     if (sharedLogin?.ok) {
+      auditLogger.logEvent({
+        event: 'auth_success',
+        requestId: request.auditContext?.requestId,
+        provider: 'shared',
+        username: normalizeTrimmedString(sharedLogin.body?.user?.username || payload?.username)
+      })
       sendJson(response, 200, sharedLogin.body)
       return
     }
 
+    auditLogger.logEvent({
+      event: 'auth_failure',
+      requestId: request.auditContext?.requestId,
+      provider: 'local_or_shared',
+      username: normalizeTrimmedString(payload?.username),
+      statusCode: sharedLogin?.statusCode || 401
+    })
     sendJson(response, sharedLogin?.statusCode === 401 ? 401 : 502, {
       message: sharedLogin?.message || 'Invalid username or password.'
     })
@@ -755,6 +878,13 @@ async function handleLogin(request, response) {
     username: validation.username,
     secret: config.auth.secret,
     ttlMs: config.auth.tokenTtlMs
+  })
+
+  auditLogger.logEvent({
+    event: 'auth_success',
+    requestId: request.auditContext?.requestId,
+    provider: 'local',
+    username: validation.username
   })
 
   sendJson(response, 200, {
@@ -787,8 +917,21 @@ async function handleCreateAiConfig(request, response) {
       type: body?.type
     })
 
+    auditSystemAction('', 'ai_config_created', {
+      requestId: request.auditContext?.requestId,
+      aiId: result?.aiId,
+      name: result?.name,
+      type: result?.type || 'ai',
+      hasApiKey: Boolean(body?.apiKey)
+    })
     sendJson(response, 201, { item: result })
   } catch (error) {
+    auditLogger.logEvent({
+      event: 'error',
+      requestId: request.auditContext?.requestId,
+      scope: 'ai_config_create',
+      message: error instanceof Error ? error.message : String(error || '')
+    })
     sendJson(response, 400, {
       message: error instanceof Error ? error.message : 'Create AI config failed.'
     })
@@ -807,8 +950,21 @@ async function handleUpdateAiConfig(request, response, aiId) {
     })
 
     embeddingClientCache.clear()
+    auditSystemAction('', 'ai_config_updated', {
+      requestId: request.auditContext?.requestId,
+      aiId,
+      name: result?.name,
+      type: result?.type || 'ai'
+    })
     sendJson(response, 200, { item: result })
   } catch (error) {
+    auditLogger.logEvent({
+      event: 'error',
+      requestId: request.auditContext?.requestId,
+      scope: 'ai_config_update',
+      aiId,
+      message: error instanceof Error ? error.message : String(error || '')
+    })
     sendJson(response, 400, {
       message: error instanceof Error ? error.message : 'Update AI config failed.'
     })
@@ -1111,13 +1267,29 @@ async function handleCreateRagCollection(request, response) {
     metadata: payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {}
   })
 
+  auditSystemAction('', 'rag_collection_created', {
+    requestId: request.auditContext?.requestId,
+    collectionId: item?.collectionId,
+    name: item?.name
+  })
   sendJson(response, 201, { item })
 }
 
-async function handleInitializeRag(response) {
+async function handleInitializeRag(request, response) {
   try {
-    sendJson(response, 200, await ragStore.initialize())
+    const result = await ragStore.initialize()
+    auditSystemAction('', 'rag_initialized', {
+      requestId: request.auditContext?.requestId,
+      ready: Boolean(result?.ready)
+    })
+    sendJson(response, 200, result)
   } catch (error) {
+    auditLogger.logEvent({
+      event: 'error',
+      requestId: request.auditContext?.requestId,
+      scope: 'rag_initialize',
+      message: error instanceof Error ? error.message : String(error || '')
+    })
     sendJson(response, 500, {
       enabled: config.rag.enabled,
       ready: false,
@@ -1157,6 +1329,14 @@ async function handleCreateRagDocument(request, response) {
     embeddingAiId: normalizeTrimmedString(payload?.embeddingAiId)
   })
 
+  auditSystemAction('', 'rag_document_created', {
+    requestId: request.auditContext?.requestId,
+    documentId: item?.documentId,
+    collectionId: item?.collectionId,
+    title: item?.title,
+    contentLength: content.length,
+    sourceType: item?.sourceType || normalizeTrimmedString(payload?.sourceType) || 'manual'
+  })
   sendJson(response, 201, { item })
 }
 
@@ -1209,10 +1389,18 @@ async function handleUploadRagDocument(request, response) {
     items.push(item)
   }
 
+  auditSystemAction('', 'rag_document_uploaded', {
+    requestId: request.auditContext?.requestId,
+    collectionId,
+    embeddingAiId,
+    fileCount: uploadFiles.length,
+    documentIds: items.map((item) => item?.documentId).filter(Boolean),
+    totalSizeBytes: uploadFiles.reduce((sum, file) => sum + file.buffer.length, 0)
+  })
   sendJson(response, 201, { items })
 }
 
-async function handleSearchRag(response, requestUrl) {
+async function handleSearchRag(request, response, requestUrl) {
   const query = normalizeTrimmedString(requestUrl.searchParams.get('q'))
   const collectionId = normalizeTrimmedString(requestUrl.searchParams.get('collectionId'))
   const embeddingAiId = normalizeTrimmedString(requestUrl.searchParams.get('embeddingAiId'))
@@ -1225,8 +1413,18 @@ async function handleSearchRag(response, requestUrl) {
     return
   }
 
+  const items = await ragStore.search({ query, collectionId, limit, embeddingAiId })
+  auditLogger.logEvent({
+    event: 'rag_search',
+    requestId: request.auditContext?.requestId,
+    source: 'api',
+    collectionId,
+    embeddingAiId,
+    queryPreview: query.slice(0, 500),
+    hitCount: items.length
+  })
   sendJson(response, 200, {
-    items: await ragStore.search({ query, collectionId, limit, embeddingAiId })
+    items
   })
 }
 
@@ -1238,11 +1436,24 @@ async function handleRebuildRagEmbeddings(request, response) {
     embeddingAiId: normalizeTrimmedString(payload?.embeddingAiId)
   })
 
+  auditSystemAction('', 'rag_embeddings_rebuilt', {
+    requestId: request.auditContext?.requestId,
+    collectionId: normalizeTrimmedString(payload?.collectionId),
+    embeddingAiId: normalizeTrimmedString(payload?.embeddingAiId),
+    limit: Number.parseInt(payload?.limit || '', 10),
+    result
+  })
   sendJson(response, 200, result)
 }
 
-async function handleDeleteRagDocument(response, documentId) {
-  sendJson(response, 200, await ragStore.deleteDocument(documentId))
+async function handleDeleteRagDocument(request, response, documentId) {
+  const result = await ragStore.deleteDocument(documentId)
+  auditSystemAction('', 'rag_document_deleted', {
+    requestId: request.auditContext?.requestId,
+    documentId,
+    result
+  })
+  sendJson(response, 200, result)
 }
 
 function parseJsonMaybe(value) {
@@ -1448,12 +1659,17 @@ async function handleGetAgentToolDetail(response, requestUrl) {
   sendJson(response, 200, { item })
 }
 
-async function handleCreateSession(response) {
+async function handleCreateSession(request, response) {
   const item = await sessionRepository.createSession()
+  setRequestAuditSession(request, item.sessionId)
   await sessionWorkspaces.ensureSessionWorkspace(item.sessionId)
   const updatedItem = await sessionRepository.updateSession(item.sessionId, (session) => {
     session.workspaceFolder = sessionWorkspaces.getWorkspaceFolderLabel(item.sessionId)
     return session
+  })
+  auditSystemAction(item.sessionId, 'session_created', {
+    requestId: request.auditContext?.requestId,
+    workspaceFolder: updatedItem?.workspaceFolder || item.workspaceFolder
   })
   sendJson(response, 201, { item: await attachWorkspaceState(updatedItem || item) })
 }
@@ -1471,7 +1687,7 @@ async function handleGetSession(response, sessionId) {
   sendJson(response, 200, { item: await attachWorkspaceState(item) })
 }
 
-async function handleGetSessionFileContent(response, requestUrl, sessionId) {
+async function handleGetSessionFileContent(request, response, requestUrl, sessionId) {
   const filePath = normalizeTrimmedString(requestUrl.searchParams.get('path'))
 
   if (!filePath) {
@@ -1496,10 +1712,19 @@ async function handleGetSessionFileContent(response, requestUrl, sessionId) {
     config.workspace.maxFileSizeBytes
   )
 
+  auditLogger.logEvent({
+    sessionId,
+    event: 'workspace_read',
+    requestId: request.auditContext?.requestId,
+    source: 'api',
+    path: item?.path || filePath,
+    sizeBytes: item?.sizeBytes ?? null,
+    truncated: Boolean(item?.truncated)
+  })
   sendJson(response, 200, { item })
 }
 
-async function handleDeleteSession(response, sessionId) {
+async function handleDeleteSession(request, response, sessionId) {
   const removed = await sessionRepository.deleteSession(sessionId)
 
   if (!removed) {
@@ -1511,17 +1736,15 @@ async function handleDeleteSession(response, sessionId) {
 
   await sessionWorkspaces.deleteSessionWorkspace(sessionId)
 
-  try {
-    await auditLogger.flush()
-    await deleteAuditSessionFile(sessionId)
-  } catch (error) {
-    console.warn('[agent-api] failed to delete audit log for session:', error instanceof Error ? error.message : error)
-  }
+  auditSystemAction(sessionId, 'session_deleted', {
+    requestId: request.auditContext?.requestId,
+    auditPreserved: true
+  })
 
   sendEmpty(response, 204)
 }
 
-async function handleCancelTask(response, sessionId) {
+async function handleCancelTask(request, response, sessionId) {
   const item = await agentRunner.cancelTask(sessionId)
 
   if (!item) {
@@ -1531,6 +1754,11 @@ async function handleCancelTask(response, sessionId) {
     return
   }
 
+  auditSystemAction(sessionId, 'task_cancel_requested', {
+    requestId: request.auditContext?.requestId,
+    taskId: item?.task?.taskId,
+    status: item?.task?.status
+  })
   sendJson(response, 202, { item: await attachWorkspaceState(item) })
 }
 
@@ -1635,6 +1863,10 @@ async function handleChat(request, response) {
   let session = sessionId ? await sessionRepository.getSession(sessionId) : null
   let createdNewSession = false
 
+  if (sessionId) {
+    setRequestAuditSession(request, sessionId)
+  }
+
   if (session && agentRunner.isTaskActive(session.sessionId)) {
     sendJson(response, 409, {
       message: 'The current session already has a running task.'
@@ -1652,11 +1884,11 @@ async function handleChat(request, response) {
   if (!session) {
     session = await sessionRepository.createSession()
     sessionId = session.sessionId
+    setRequestAuditSession(request, sessionId)
     createdNewSession = true
-    auditLogger.logEvent({
-      sessionId,
-      event: 'system_action',
-      action: 'session_created'
+    auditSystemAction(sessionId, 'session_created', {
+      requestId: request.auditContext?.requestId,
+      source: 'chat'
     })
   }
 
@@ -1779,6 +2011,7 @@ async function handleChat(request, response) {
 async function handleRequest(request, response) {
   const requestUrl = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`)
   const { pathname } = requestUrl
+  attachApiAudit(request, response, requestUrl)
 
   if (request.method === 'OPTIONS') {
     sendEmpty(response, 204)
@@ -1909,7 +2142,7 @@ async function handleRequest(request, response) {
   }
 
   if (pathname === '/api/agent/rag/init' && request.method === 'POST') {
-    await handleInitializeRag(response)
+    await handleInitializeRag(request, response)
     return
   }
 
@@ -1939,7 +2172,7 @@ async function handleRequest(request, response) {
   }
 
   if (pathname === '/api/agent/rag/search' && request.method === 'GET') {
-    await handleSearchRag(response, requestUrl)
+    await handleSearchRag(request, response, requestUrl)
     return
   }
 
@@ -1964,7 +2197,7 @@ async function handleRequest(request, response) {
   }
 
   if (pathname === '/api/agent/sessions' && request.method === 'POST') {
-    await handleCreateSession(response)
+    await handleCreateSession(request, response)
     return
   }
 
@@ -1976,14 +2209,14 @@ async function handleRequest(request, response) {
   const cancelSessionId = matchSessionCancelPath(pathname)
 
   if (cancelSessionId && request.method === 'POST') {
-    await handleCancelTask(response, cancelSessionId)
+    await handleCancelTask(request, response, cancelSessionId)
     return
   }
 
   const fileContentSessionId = matchSessionFileContentPath(pathname)
 
   if (fileContentSessionId && request.method === 'GET') {
-    await handleGetSessionFileContent(response, requestUrl, fileContentSessionId)
+    await handleGetSessionFileContent(request, response, requestUrl, fileContentSessionId)
     return
   }
 
@@ -2002,14 +2235,14 @@ async function handleRequest(request, response) {
   }
 
   if (detailSessionId && request.method === 'DELETE') {
-    await handleDeleteSession(response, detailSessionId)
+    await handleDeleteSession(request, response, detailSessionId)
     return
   }
 
   const ragDocumentId = matchRagDocumentPath(pathname)
 
   if (ragDocumentId && request.method === 'DELETE') {
-    await handleDeleteRagDocument(response, ragDocumentId)
+    await handleDeleteRagDocument(request, response, ragDocumentId)
     return
   }
 
@@ -2036,6 +2269,9 @@ const server = createServer(async (request, response) => {
 
 async function shutdown(signal) {
   console.log(`[agent-api] received ${signal}, flushing audit logs...`)
+  auditSystemAction('', 'server_shutdown_requested', {
+    signal
+  })
 
   try {
     await auditLogger.shutdown()
@@ -2066,7 +2302,16 @@ try {
   if (migratedMessageCount) {
     console.log(`[agent-api] conversation messages migrated to SQLite: ${migratedMessageCount}`)
   }
+  auditSystemAction('', 'conversation_messages_migrated', {
+    migratedCount: migratedMessageCount,
+    storageType: 'sqlite'
+  })
 } catch (error) {
+  auditLogger.logEvent({
+    event: 'error',
+    scope: 'conversation_messages_migration',
+    message: error instanceof Error ? error.message : String(error || '')
+  })
   console.warn('[agent-api] failed to migrate conversation messages:', error instanceof Error ? error.message : error)
 }
 
@@ -2076,13 +2321,28 @@ try {
   if (importedTokenUsageCount) {
     console.log(`[agent-api] token usage backfilled: ${importedTokenUsageCount}`)
   }
+  auditSystemAction('', 'token_usage_backfilled', {
+    importedCount: importedTokenUsageCount
+  })
 } catch (error) {
+  auditLogger.logEvent({
+    event: 'error',
+    scope: 'token_usage_backfill',
+    message: error instanceof Error ? error.message : String(error || '')
+  })
   console.warn('[agent-api] failed to backfill token usage:', error instanceof Error ? error.message : error)
 }
 
 await sessionRepository.recoverInterruptedTasks()
 
 server.listen(config.port, config.host, () => {
+  auditSystemAction('', 'server_started', {
+    host: config.host,
+    port: config.port,
+    sessionStore: config.storage.sessionsDir,
+    auditStore: config.storage.auditDir,
+    memoryStore: config.storage.memoryDir
+  })
   console.log(`[agent-api] listening on http://${config.host}:${config.port}`)
   console.log(`[agent-api] session store: ${config.storage.sessionsDir}`)
   console.log(`[agent-api] skills: ${skillRegistry.listSkills().map((item) => item.skillId).join(', ') || '(none)'}`)
