@@ -209,6 +209,14 @@
                 <button
                   type="button"
                   class="agent-settings-nav__item"
+                  :class="{ 'is-active': activeSettingsSection === 'settings-audit' }"
+                  @click="selectSettingsSection('settings-audit')"
+                >
+                  审计监控
+                </button>
+                <button
+                  type="button"
+                  class="agent-settings-nav__item"
                   :class="{ 'is-active': activeSettingsSection === 'settings-data-analysis' }"
                   @click="selectSettingsSection('settings-data-analysis')"
                 >

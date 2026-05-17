@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
-import { extname } from 'node:path'
+import { readFile, readdir, rm, stat } from 'node:fs/promises'
+import { basename, extname, join } from 'node:path'
 import mammoth from 'mammoth'
 import { createAuditLogger } from './auditLogger.js'
 import { createConfig } from './config.js'
@@ -836,6 +837,164 @@ async function handleGetTokenUsageAnalytics(response) {
   sendJson(response, 200, await tokenUsageStore.getAnalytics(aiConfigs))
 }
 
+function normalizeAuditSessionFileName(value) {
+  const normalizedValue = normalizeTrimmedString(value)
+
+  if (!normalizedValue) {
+    return ''
+  }
+
+  return normalizedValue.replace(/[^a-zA-Z0-9_.-]/g, '_')
+}
+
+function parseAuditEventLine(line) {
+  const normalizedLine = String(line || '').trim()
+
+  if (!normalizedLine) {
+    return null
+  }
+
+  try {
+    return JSON.parse(normalizedLine)
+  } catch {
+    return {
+      ts: '',
+      event: 'parse_error',
+      message: 'Audit event line is not valid JSON.',
+      raw: normalizedLine.slice(0, 500)
+    }
+  }
+}
+
+async function readAuditEvents(sessionId) {
+  const safeSessionId = normalizeAuditSessionFileName(sessionId)
+
+  if (!safeSessionId) {
+    throw new Error('Session id is required.')
+  }
+
+  const filePath = join(config.storage.auditDir, `${safeSessionId}.jsonl`)
+
+  try {
+    const content = await readFile(filePath, 'utf8')
+
+    return content
+      .split(/\r?\n/)
+      .map((line) => parseAuditEventLine(line))
+      .filter(Boolean)
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return []
+    }
+
+    throw error
+  }
+}
+
+async function deleteAuditSessionFile(sessionId) {
+  const safeSessionId = normalizeAuditSessionFileName(sessionId)
+
+  if (!safeSessionId) {
+    return false
+  }
+
+  const filePath = join(config.storage.auditDir, `${safeSessionId}.jsonl`)
+
+  try {
+    await rm(filePath, { force: true })
+    return true
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return false
+    }
+
+    throw error
+  }
+}
+
+async function handleListAuditSessions(response) {
+  let entries = []
+
+  try {
+    entries = await readdir(config.storage.auditDir, { withFileTypes: true })
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      sendJson(response, 200, { items: [] })
+      return
+    }
+
+    throw error
+  }
+
+  const items = []
+  const knownSessionIds = new Set((await sessionRepository.listSummaries()).map((item) => item.sessionId))
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
+      continue
+    }
+
+    const auditSessionId = basename(entry.name, '.jsonl')
+    const filePath = join(config.storage.auditDir, entry.name)
+
+    if (!knownSessionIds.has(auditSessionId)) {
+      await rm(filePath, { force: true })
+      continue
+    }
+
+    const [fileStat, events] = await Promise.all([
+      stat(filePath),
+      readAuditEvents(auditSessionId)
+    ])
+    const lastEvent = [...events].reverse().find(Boolean) || null
+
+    items.push({
+      sessionId: auditSessionId,
+      eventCount: events.length,
+      fileSizeBytes: fileStat.size,
+      updatedAt: new Date(fileStat.mtimeMs).toISOString(),
+      lastEvent: lastEvent?.event || '',
+      lastEventAt: lastEvent?.ts || lastEvent?.time || ''
+    })
+  }
+
+  items.sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')))
+
+  sendJson(response, 200, { items })
+}
+
+async function handleListAuditEvents(response, requestUrl) {
+  const sessionId = normalizeTrimmedString(requestUrl.searchParams.get('sessionId'))
+  const eventFilter = normalizeTrimmedString(requestUrl.searchParams.get('event'))
+  const limit = Math.max(
+    1,
+    Math.min(1000, Number.parseInt(requestUrl.searchParams.get('limit') || '300', 10) || 300)
+  )
+
+  if (!sessionId) {
+    sendJson(response, 400, {
+      message: 'Session id is required.'
+    })
+    return
+  }
+
+  const events = await readAuditEvents(sessionId)
+  const filteredEvents = eventFilter
+    ? events.filter((item) => normalizeTrimmedString(item?.event) === eventFilter)
+    : events
+  const items = filteredEvents.slice(-limit)
+  const eventTypes = [...new Set(events.map((item) => normalizeTrimmedString(item?.event)).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right))
+
+  sendJson(response, 200, {
+    sessionId: normalizeAuditSessionFileName(sessionId),
+    total: filteredEvents.length,
+    returned: items.length,
+    eventTypes,
+    items
+  })
+}
+
 async function handleGetUserMemoryProfile(response) {
   const profile = await memoryStore.readUserProfile()
   const status = await memoryStore.getStatus()
@@ -1313,6 +1472,14 @@ async function handleDeleteSession(response, sessionId) {
   }
 
   await sessionWorkspaces.deleteSessionWorkspace(sessionId)
+
+  try {
+    await auditLogger.flush()
+    await deleteAuditSessionFile(sessionId)
+  } catch (error) {
+    console.warn('[agent-api] failed to delete audit log for session:', error instanceof Error ? error.message : error)
+  }
+
   sendEmpty(response, 204)
 }
 
@@ -1654,6 +1821,16 @@ async function handleRequest(request, response) {
 
   if (pathname === '/api/agent/analytics/token-usage' && request.method === 'GET') {
     await handleGetTokenUsageAnalytics(response)
+    return
+  }
+
+  if (pathname === '/api/agent/audit/sessions' && request.method === 'GET') {
+    await handleListAuditSessions(response)
+    return
+  }
+
+  if (pathname === '/api/agent/audit/events' && request.method === 'GET') {
+    await handleListAuditEvents(response, requestUrl)
     return
   }
 

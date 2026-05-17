@@ -15,6 +15,7 @@ const WRITE_TOOL_NAMES = new Set(['write_file', 'apply_patch'])
 const TASK_CANCELLED_CODE = 'TASK_CANCELLED'
 const UI_FILE_CHANGE_REQUEST_PATTERNS = [
   /\u5199\u4ee3\u7801|\u6539\u4ee3\u7801|\u751f\u6210\u4ee3\u7801|\u521b\u5efa\u4ee3\u7801|\u5199\u4e00\u4e2a\u9875\u9762|\u5199\u4e2a\u9875\u9762|\u5199\u4e00\u4e2a\u7f51\u9875|\u5199\u4e2a\u7f51\u9875|\u65b0\u5efa\u9875\u9762|\u521b\u5efa\u9875\u9762|\u505a\u4e00\u4e2a\u9875\u9762|\u505a\u4e2a\u9875\u9762|\u505a\u4e00\u4e2a\u754c\u9762|\u505a\u4e2a\u754c\u9762|\u5199\u4e00\u4e2a\u754c\u9762|\u5199\u4e2a\u754c\u9762|\u521b\u5efa\u754c\u9762|\u751f\u6210\u9875\u9762|\u751f\u6210\u754c\u9762|\u521b\u5efa\u7ec4\u4ef6|\u65b0\u5efa\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u7ec4\u4ef6|\u5199\u4e2a\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u811a\u672c|\u5199\u4e2a\u811a\u672c|\u5199\u4e00\u4e2a html|\u5199\u4e00\u4e2a vue|\u5199\u4e00\u4e2a python|\u5199\u4e00\u4e2a py/i,
+  /(?:\u5199|\u521b\u5efa|\u751f\u6210|\u505a|\u5199\u5165)[\s\S]{0,40}(?:\u9875\u9762|\u7f51\u9875|\u754c\u9762|\u4e3b\u9875|\u7ec4\u4ef6|\u811a\u672c|\u6587\u4ef6|html|css|javascript|js|vue|react|python|py|index[\s,，.]*html)/i,
   /\b(create|build|make|generate|write)\b.*\b(page|webpage|ui|interface|html|css|javascript|js|python|py|vue|react|component|script)\b/i,
   /\b(page|ui|interface|html|css|javascript|js|vue|react|component)\b.*\b(create|build|make|generate|write)\b/i
 ]
@@ -205,7 +206,8 @@ function normalizeAction(value) {
 }
 
 function extractExplicitFilePaths(value) {
-  const matches = String(value || '').matchAll(/([A-Za-z0-9_./-]+\.(html|css|js|ts|tsx|jsx|vue|json|md|txt))/ig)
+  const normalizedValue = String(value || '').replace(/([A-Za-z0-9_./-]+)[,，](html|css|js|ts|tsx|jsx|vue|json|md|txt)\b/ig, '$1.$2')
+  const matches = normalizedValue.matchAll(/([A-Za-z0-9_./-]+\.(html|css|js|ts|tsx|jsx|vue|json|md|txt))/ig)
   const paths = []
   const seen = new Set()
 
@@ -653,6 +655,32 @@ function stripWrappingCodeFences(value) {
   return trimmed
 }
 
+function looksLikeInternalReactDecisionContent(value) {
+  const trimmed = stripWrappingCodeFences(value)
+
+  if (!trimmed) {
+    return false
+  }
+
+  if (/"type"\s*:\s*"react_decision"/i.test(trimmed)) {
+    return true
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed)
+    const action = parsed?.action
+
+    return (
+      parsed?.type === 'react_decision'
+      || action === 'tool'
+      || action === 'ask_user'
+      || (action && typeof action === 'object' && ['tool', 'ask_user', 'final'].includes(normalizeAction(action.type || action.action)))
+    )
+  } catch {
+    return false
+  }
+}
+
 function buildSafeAssistantReply({
   reply = '',
   fileChangesRequired = false,
@@ -667,6 +695,10 @@ function buildSafeAssistantReply({
       changedFiles,
       verifiedAfterModification
     })
+  }
+
+  if (looksLikeInternalReactDecisionContent(normalizedReply)) {
+    return '模型返回了内部工具调用 JSON，本轮已拦截，未展示为正常回复。请重新发送任务；如果是写文件任务，Agent 会继续通过工具真实写入工作区。'
   }
 
   if (fileChangesRequired && (looksLikeToolSummaryContent(normalizedReply) || looksLikeCodeHeavyContent(normalizedReply))) {
@@ -725,6 +757,56 @@ function getDecisionProgressSummary(decisionJson) {
   return normalizeTrimmedString(decisionJson?.summary) || getDecisionThoughtSummary(decisionJson)
 }
 
+function normalizeDecisionJson(decisionJson = {}) {
+  if (!decisionJson || typeof decisionJson !== 'object' || Array.isArray(decisionJson)) {
+    return {}
+  }
+
+  const normalized = { ...decisionJson }
+  const rawAction = decisionJson.action
+
+  if (rawAction && typeof rawAction === 'object' && !Array.isArray(rawAction)) {
+    const nestedActionType = normalizeAction(rawAction.type || rawAction.action)
+    const nestedTool = rawAction.tool && typeof rawAction.tool === 'object'
+      ? rawAction.tool
+      : null
+
+    if (nestedActionType) {
+      normalized.action = nestedActionType
+    }
+
+    if (!normalized.summary) {
+      normalized.summary = rawAction.summary || rawAction.thought_summary || rawAction.thoughtSummary || normalized.thought_summary
+    }
+
+    if (!normalized.reply) {
+      normalized.reply = rawAction.reply || rawAction.question || rawAction.answer || ''
+    }
+
+    if (!normalized.tool && (nestedActionType === 'tool' || rawAction.tool || rawAction.name)) {
+      normalized.tool = {
+        name: normalizeTrimmedString(rawAction.name || nestedTool?.name || rawAction.tool),
+        args: (
+          rawAction.args && typeof rawAction.args === 'object' && !Array.isArray(rawAction.args)
+            ? rawAction.args
+            : nestedTool?.args && typeof nestedTool.args === 'object' && !Array.isArray(nestedTool.args)
+              ? nestedTool.args
+              : {}
+        )
+      }
+    }
+  }
+
+  if (normalizeAction(normalized.action) === 'tool' && typeof normalized.tool === 'string') {
+    normalized.tool = {
+      name: normalizeTrimmedString(normalized.tool),
+      args: {}
+    }
+  }
+
+  return normalized
+}
+
 function createReactObservation(toolExecution) {
   return {
     status: toolExecution.status || 'success',
@@ -758,6 +840,8 @@ function buildAgentLoopMessages({
     'Do not expose hidden chain-of-thought.',
     'Use structured ReAct, not plain-text ReAct.',
     'Do not emit plain-text "Thought:", "Action:", or "Observation:" sections.',
+    'Use the exact decision schema below. The top-level "action" field must be a string, not an object.',
+    'Do not return {"type":"react_decision","action":{"type":"tool",...}}; return {"action":"tool","tool":{"name":"...","args":{}}} instead.',
     'Each turn must include a brief "thought_summary" that explains the next action at a safe, user-visible level.',
     'Never output private reasoning, hidden chain-of-thought, or step-by-step internal deliberation.',
     'Use the same language as the user.',
@@ -999,9 +1083,11 @@ function createToolTranscriptMessages(toolExecution, {
       content: serializeJson({
         type: 'react_decision',
         thought_summary: normalizeThoughtSummary(thoughtSummary),
-        action: {
-          type: 'tool',
-          tool: toolExecution.tool,
+        action: 'tool',
+        summary: toolExecution.summary || `Called tool ${toolExecution.tool}.`,
+        reply: '',
+        tool: {
+          name: toolExecution.tool,
           args: toolExecution.args
         }
       })
@@ -2579,9 +2665,10 @@ export function createAgentRunner({
         throwIfCancelled()
         throwIfTaskTimedOut()
 
-        const action = normalizeAction(decision.json?.action)
-        const thoughtSummary = getDecisionThoughtSummary(decision.json)
-        const decisionSummary = getDecisionProgressSummary(decision.json)
+        const decisionJson = normalizeDecisionJson(decision.json)
+        const action = normalizeAction(decisionJson.action)
+        const thoughtSummary = getDecisionThoughtSummary(decisionJson)
+        const decisionSummary = getDecisionProgressSummary(decisionJson)
         audit(sessionId, 'llm_decision', {
           stage: 'decision',
           iteration,
@@ -2589,10 +2676,10 @@ export function createAgentRunner({
           action,
           thoughtSummary,
           summary: decisionSummary,
-          tool: decision.json?.tool
+          tool: decisionJson.tool
             ? {
-                name: decision.json.tool.name,
-                args: decision.json.tool.args
+                name: decisionJson.tool.name,
+                args: decisionJson.tool.args
               }
             : null,
           usage: decision.usage
@@ -2604,8 +2691,8 @@ export function createAgentRunner({
             decisionSummary || '已分析目标，开始检查工作区。'
           )
 
-          const result = await executeToolRequest(decision.json?.tool, {
-            summary: decisionSummary || `正在执行工具 ${normalizeTrimmedString(decision.json?.tool?.name) || ''}。`,
+          const result = await executeToolRequest(decisionJson.tool, {
+            summary: decisionSummary || `正在执行工具 ${normalizeTrimmedString(decisionJson.tool?.name) || ''}。`,
             thoughtSummary
           })
 
@@ -2618,7 +2705,7 @@ export function createAgentRunner({
         }
 
         if (action === 'ask_user') {
-          const reply = normalizeTrimmedString(decision.json?.reply) || '我还缺少一项关键信息，你可以再补充一点吗？'
+          const reply = normalizeTrimmedString(decisionJson.reply || decisionJson.question) || '我还缺少一项关键信息，你可以再补充一点吗？'
           const waitingSummary = decisionSummary || '当前目标还需要补充信息。'
           const finalizedSteps = finalizeRunningSteps(taskSteps, waitingSummary)
 

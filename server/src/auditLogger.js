@@ -2,7 +2,8 @@ import { appendFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { normalizeTrimmedString, nowIso } from './utils.js'
 
-const SENSITIVE_KEY_PATTERN = /(api[-_]?key|authorization|password|secret|token|access[-_]?token|refresh[-_]?token|cookie|credential)/i
+const SENSITIVE_KEY_PATTERN = /(api[-_]?key|authorization|password|secret|access[-_]?token|refresh[-_]?token|auth[-_]?token|bearer|cookie|credential)/i
+const TOKEN_USAGE_KEY_PATTERN = /^(input|output|total|prompt|completion)?tokens?$/i
 const DEFAULT_MAX_STRING_LENGTH = 1200
 const DEFAULT_MAX_QUEUE_SIZE = 5000
 const DEFAULT_BATCH_SIZE = 200
@@ -25,6 +26,24 @@ function truncateString(value, maxLength = DEFAULT_MAX_STRING_LENGTH) {
 
 function createPreview(value, maxLength = 500) {
   return truncateString(value, maxLength).replace(/\s+/g, ' ').trim()
+}
+
+function isSensitiveKey(key) {
+  const normalizedKey = String(key || '').trim()
+
+  if (!normalizedKey) {
+    return false
+  }
+
+  if (TOKEN_USAGE_KEY_PATTERN.test(normalizedKey)) {
+    return false
+  }
+
+  if (/^token$/i.test(normalizedKey)) {
+    return true
+  }
+
+  return SENSITIVE_KEY_PATTERN.test(normalizedKey)
 }
 
 function sanitizeValue(value, depth = 0) {
@@ -56,7 +75,7 @@ function sanitizeValue(value, depth = 0) {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
         key,
-        SENSITIVE_KEY_PATTERN.test(key)
+        isSensitiveKey(key)
           ? '[redacted]'
           : sanitizeValue(item, depth + 1)
       ])

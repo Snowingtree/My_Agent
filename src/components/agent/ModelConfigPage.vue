@@ -125,6 +125,10 @@
         <SettingsToolsExplorer />
       </section>
 
+      <section v-else-if="props.activeSection === 'settings-audit'" class="model-config-section">
+        <SettingsAuditExplorer ref="auditExplorerRef" />
+      </section>
+
       <section v-else-if="props.activeSection === 'settings-data-analysis'" class="model-config-section">
         <div v-if="isLoadingTokenUsage" class="model-config-state">正在读取 token 使用数据...</div>
         <div v-else-if="tokenUsageError" class="model-config-state is-error">{{ tokenUsageError }}</div>
@@ -308,6 +312,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import http from '../../http.js'
+import SettingsAuditExplorer from './SettingsAuditExplorer.vue'
 import SettingsRagExplorer from './SettingsRagExplorer.vue'
 import SettingsSkillsExplorer from './SettingsSkillsExplorer.vue'
 import SettingsToolsExplorer from './SettingsToolsExplorer.vue'
@@ -330,6 +335,7 @@ const tokenUsageSummary = ref({
   outputTokens: 0,
   totalTokens: 0
 })
+const auditExplorerRef = ref(null)
 
 const isLoadingAi = ref(false)
 const isLoadingCapabilities = ref(false)
@@ -475,6 +481,10 @@ const SECTION_META = {
   'settings-tools': {
     title: '工具',
     description: '查看当前 Agent 可用工具，以及每个工具对应的实现源码。'
+  },
+  'settings-audit': {
+    title: '审计监控',
+    description: '按会话查看 Agent 的模型决策、工具调用、RAG 检索、MCP 调用和错误事件。'
   }
 }
 
@@ -678,6 +688,10 @@ async function ensureSectionLoaded(section, force = false) {
     if (force || (!tokenUsageRows.value.length && !isLoadingTokenUsage.value)) {
       await loadTokenUsage()
     }
+  }
+
+  if (section === 'settings-audit' && force) {
+    await auditExplorerRef.value?.refresh?.()
   }
 }
 
