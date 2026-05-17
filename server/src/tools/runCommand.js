@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { analyzeCommandPolicy } from '../commandPolicy.js'
 
 function normalizeArgList(value) {
   if (!Array.isArray(value)) {
@@ -66,6 +67,15 @@ export function createRunCommandTool({ workspace, workspaceConfig, runtimeConfig
       }
 
       const commandArgs = normalizeArgList(args.args)
+      const commandPolicy = analyzeCommandPolicy({
+        command,
+        args: commandArgs
+      })
+
+      if (!commandPolicy.allowed) {
+        throw new Error(`Command "${command}" was blocked by policy: ${commandPolicy.denials.join(' ')}`)
+      }
+
       const cwd = workspace.resolvePath(args.cwd || '.')
       const timeoutMs = runtimeConfig.commandTimeoutMs
 

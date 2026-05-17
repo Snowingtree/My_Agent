@@ -1,5 +1,12 @@
 import { readFile } from 'node:fs/promises'
+import { analyzeCommandPolicy } from './commandPolicy.js'
 import { createStructuredCompletion, createTextCompletion } from './llmClient.js'
+import {
+  createToolApprovalFingerprint,
+  doesToolApprovalMatch,
+  formatToolApprovalRequestMessage,
+  stripToolControlArgs
+} from './toolApproval.js'
 import {
   createId,
   createTaskStep,
@@ -13,6 +20,9 @@ import {
 
 const WRITE_TOOL_NAMES = new Set(['write_file', 'apply_patch'])
 const READ_TOOL_NAMES = new Set(['read_file', 'list_files', 'search_text'])
+const PROTECTED_LOCAL_TOOL_NAMES = new Set(['run_command', 'write_file', 'apply_patch'])
+const MCP_GATEWAY_TOOL_NAME = 'mcp_gateway'
+const MCP_CONNECTOR_SKILL_ID = 'mcp_connector'
 const TASK_CANCELLED_CODE = 'TASK_CANCELLED'
 const UI_FILE_CHANGE_REQUEST_PATTERNS = [
   /\u5199\u4ee3\u7801|\u6539\u4ee3\u7801|\u751f\u6210\u4ee3\u7801|\u521b\u5efa\u4ee3\u7801|\u5199\u4e00\u4e2a\u9875\u9762|\u5199\u4e2a\u9875\u9762|\u5199\u4e00\u4e2a\u7f51\u9875|\u5199\u4e2a\u7f51\u9875|\u65b0\u5efa\u9875\u9762|\u521b\u5efa\u9875\u9762|\u505a\u4e00\u4e2a\u9875\u9762|\u505a\u4e2a\u9875\u9762|\u505a\u4e00\u4e2a\u754c\u9762|\u505a\u4e2a\u754c\u9762|\u5199\u4e00\u4e2a\u754c\u9762|\u5199\u4e2a\u754c\u9762|\u521b\u5efa\u754c\u9762|\u751f\u6210\u9875\u9762|\u751f\u6210\u754c\u9762|\u521b\u5efa\u7ec4\u4ef6|\u65b0\u5efa\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u7ec4\u4ef6|\u5199\u4e2a\u7ec4\u4ef6|\u5199\u4e00\u4e2a\u811a\u672c|\u5199\u4e2a\u811a\u672c|\u5199\u4e00\u4e2a html|\u5199\u4e00\u4e2a vue|\u5199\u4e00\u4e2a python|\u5199\u4e00\u4e2a py/i,
@@ -577,6 +587,122 @@ function buildToolPromptWithSkillLoader(toolPromptText, skillCatalogPrompt, memo
     normalizeTrimmedString(memoryToolPrompt),
     normalizeTrimmedString(toolPromptText)
   ].filter(Boolean).join('\n')
+}
+
+function isMcpToolName(toolName) {
+  return normalizeTrimmedString(toolName).startsWith('mcp.')
+}
+
+function isProtectedToolName(toolName) {
+  return false
+}
+
+function normalizeToolMode(args = {}) {
+  return normalizeTrimmedString(args?.mode).toLowerCase()
+}
+
+function createBlockedToolExecution({
+  tool,
+  args = {},
+  reason = '',
+  message = '',
+  mode = '',
+  durationMs = 0
+} = {}) {
+  const normalizedTool = normalizeTrimmedString(tool) || 'unknown_tool'
+  const normalizedReason = normalizeTrimmedString(reason) || 'blocked'
+  const normalizedMessage = normalizeTrimmedString(message) || `${normalizedTool} was blocked by policy.`
+
+  return {
+    tool: normalizedTool,
+    args,
+    result: {
+      blocked: true,
+      reason: normalizedReason,
+      mode: normalizeTrimmedString(mode),
+      message: normalizedMessage
+    },
+    summary: normalizedMessage,
+    message: normalizedMessage,
+    status: 'blocked',
+    durationMs
+  }
+}
+
+function createProtectedToolHelpExecution({
+  tool,
+  args = {},
+  catalogItem = null,
+  policy = null,
+  durationMs = 0
+} = {}) {
+  const normalizedTool = normalizeTrimmedString(tool) || 'unknown_tool'
+  const warnings = Array.isArray(policy?.warnings) ? policy.warnings : []
+
+  return {
+    tool: normalizedTool,
+    args,
+    result: {
+      mode: 'help',
+      tool: normalizedTool,
+      description: normalizeTrimmedString(catalogItem?.description),
+      inputSchema: catalogItem?.inputSchema || null,
+      safety: {
+        twoPhaseRequired: true,
+        userApprovalRequiredForRun: true,
+        policyAllowed: policy?.allowed !== false,
+        riskLevel: normalizeTrimmedString(policy?.riskLevel) || 'high',
+        warnings,
+        denials: Array.isArray(policy?.denials) ? policy.denials : []
+      }
+    },
+    summary: `Loaded protected tool help for ${normalizedTool}.`,
+    message: `Protected tool ${normalizedTool} help loaded. Use mode="run" only after this help result and user approval.`,
+    status: 'success',
+    durationMs
+  }
+}
+
+function getProtectedToolReason(toolName) {
+  if (toolName === 'run_command') {
+    return '命令会在服务器工作区内启动进程。'
+  }
+
+  if (toolName === 'write_file' || toolName === 'apply_patch') {
+    return '该工具会修改工作区文件。'
+  }
+
+  if (isMcpToolName(toolName)) {
+    return 'MCP 工具可能访问外部系统或产生外部副作用。'
+  }
+
+  return '该工具属于受保护操作。'
+}
+
+function analyzeProtectedToolRunPolicy(toolName, args = {}) {
+  if (toolName === 'run_command') {
+    return analyzeCommandPolicy({
+      command: args?.command,
+      args: Array.isArray(args?.args) ? args.args : []
+    })
+  }
+
+  return {
+    allowed: true,
+    denials: [],
+    warnings: [getProtectedToolReason(toolName)],
+    riskLevel: isMcpToolName(toolName) ? 'high' : 'medium'
+  }
+}
+
+function findToolCatalogItem(toolRunner, toolName, { skill = null, mcpToolPrefixes = [] } = {}) {
+  if (!toolRunner || typeof toolRunner.getToolCatalog !== 'function') {
+    return null
+  }
+
+  return toolRunner
+    .getToolCatalog({ skill, mcpToolPrefixes })
+    .find((item) => normalizeTrimmedString(item?.name) === normalizeTrimmedString(toolName)) || null
 }
 
 function looksLikeToolSummaryContent(value) {
@@ -1310,6 +1436,24 @@ function formatToolDuration(durationMs) {
   return `${(normalizedDuration / 1000).toFixed(normalizedDuration >= 10000 ? 0 : 1)}s`
 }
 
+function formatToolStatusForMessage(status) {
+  const normalizedStatus = normalizeTrimmedString(status).toLowerCase()
+
+  if (normalizedStatus === 'failed') {
+    return '失败'
+  }
+
+  if (normalizedStatus === 'blocked') {
+    return '已阻止'
+  }
+
+  if (normalizedStatus === 'running') {
+    return 'running'
+  }
+
+  return '成功'
+}
+
 function createNormalizedToolMessageContent(toolExecution) {
   const toolName = normalizeTrimmedString(toolExecution?.tool) || 'unknown_tool'
   const toolSummary = normalizeTrimmedString(toolExecution?.summary) || `${toolName} 已执行。`
@@ -1319,7 +1463,7 @@ function createNormalizedToolMessageContent(toolExecution) {
 
   return [
     `工具：${toolName}`,
-    `状态：${toolStatus === 'failed' ? '失败' : '成功'}`,
+    `状态：${formatToolStatusForMessage(toolStatus)}`,
     durationLabel ? `耗时：${durationLabel}` : '',
     toolTarget,
     `结果：${toolSummary}`
@@ -1376,7 +1520,7 @@ function createToolMessageContent(toolExecution) {
 
   return [
     `工具：${toolName}`,
-    `状态：${toolStatus === 'failed' ? '失败' : '成功'}`,
+    `状态：${formatToolStatusForMessage(toolStatus)}`,
     durationLabel ? `耗时：${durationLabel}` : '',
     toolTarget,
     `结果：${toolSummary}`
@@ -2115,6 +2259,7 @@ export function createAgentRunner({
     requestedRagCollectionId = '',
     requestedRagCollectionIds = [],
     requestedEmbeddingAiId = '',
+    approvedToolApprovalId = '',
     abortSignal
   }) {
     const taskStartedAtMs = Date.now()
@@ -2163,6 +2308,17 @@ export function createAgentRunner({
       return
     }
 
+    const approvedPendingToolApproval = (
+      session.pendingToolApproval
+      && session.pendingToolApproval.status === 'approved'
+      && (
+        !approvedToolApprovalId
+        || normalizeTrimmedString(session.pendingToolApproval.approvalId) === normalizeTrimmedString(approvedToolApprovalId)
+      )
+    )
+      ? session.pendingToolApproval
+      : null
+
     const aiConfig = await getAiConfigById(aiRuntimeConfig, requestedAiId)
     const activeSkills = (
       Array.isArray(requestedSkillIds) && requestedSkillIds.length
@@ -2179,6 +2335,7 @@ export function createAgentRunner({
         .filter(Boolean)
     )]
     const skillRuntimeState = new Map()
+    const protectedToolRuntimeState = new Map()
     const resolveRuntimeSkill = (skillId) => (
       skillRegistry && typeof skillRegistry.getSkillById === 'function'
         ? skillRegistry.getSkillById(skillId)
@@ -2192,6 +2349,9 @@ export function createAgentRunner({
 
       return mergeActiveSkills(runningSkills)
     }
+    const isRuntimeSkillRunning = (skillId) => (
+      Boolean(skillRuntimeState.get(normalizeTrimmedString(skillId))?.running)
+    )
     const skillCatalogPrompt = buildSkillCatalogPrompt(
       skillRegistry && typeof skillRegistry.listSkills === 'function'
         ? skillRegistry.listSkills()
@@ -2259,7 +2419,9 @@ export function createAgentRunner({
     const conversationHistory = toChatHistorySafe(
       getRecentMessages(session.messages || [], aiRuntimeConfig.recentMessages)
     )
-    const latestGoal = String(latestUserMessage.content)
+    const latestGoal = approvedPendingToolApproval?.goal
+      ? String(approvedPendingToolApproval.goal)
+      : String(latestUserMessage.content)
     const fileChangesRequired = looksLikeFileChangeRequestSafe(latestGoal)
     const requiredCompanionExtensions = getRequiredCompanionExtensionsSafe(latestGoal)
     const currentDateContextText = buildCurrentDateContext(runtimeConfig?.timezone)
@@ -2324,12 +2486,15 @@ export function createAgentRunner({
       toolRunner
     })
     throwIfCancelled()
+    const approvedExecutionState = approvedPendingToolApproval?.state && typeof approvedPendingToolApproval.state === 'object'
+      ? approvedPendingToolApproval.state
+      : {}
     const executionState = {
-      modifiedWorkspace: false,
-      changedFiles: [],
-      verifiedAfterModification: false,
-      autoVerificationAttempted: false,
-      updatedUserProfileMemory: false
+      modifiedWorkspace: Boolean(approvedExecutionState.modifiedWorkspace),
+      changedFiles: Array.isArray(approvedExecutionState.changedFiles) ? [...approvedExecutionState.changedFiles] : [],
+      verifiedAfterModification: Boolean(approvedExecutionState.verifiedAfterModification),
+      autoVerificationAttempted: Boolean(approvedExecutionState.autoVerificationAttempted),
+      updatedUserProfileMemory: Boolean(approvedExecutionState.updatedUserProfileMemory)
     }
     const analysisStep = createTaskStep({
       title: '理解目标',
@@ -2367,46 +2532,236 @@ export function createAgentRunner({
       })
     }
 
+    async function requestProtectedToolApproval(normalizedRequest, {
+      executionId,
+      policy,
+      thoughtSummary = ''
+    } = {}) {
+      const approval = {
+        approvalId: createId('approval'),
+        status: 'pending',
+        tool: normalizedRequest.name,
+        args: stripToolControlArgs(normalizedRequest.args),
+        fingerprint: createToolApprovalFingerprint(normalizedRequest.name, normalizedRequest.args),
+        reason: getProtectedToolReason(normalizedRequest.name),
+        riskLevel: normalizeTrimmedString(policy?.riskLevel) || 'high',
+        policy: {
+          warnings: Array.isArray(policy?.warnings) ? policy.warnings : [],
+          denials: Array.isArray(policy?.denials) ? policy.denials : []
+        },
+        goal: latestGoal,
+        requestedAt: nowIso(),
+        requestedByTaskId: taskId,
+        requestedByExecutionId: executionId,
+        thoughtSummary: normalizeThoughtSummary(thoughtSummary),
+        state: {
+          modifiedWorkspace: Boolean(executionState.modifiedWorkspace),
+          changedFiles: Array.isArray(executionState.changedFiles) ? [...executionState.changedFiles] : [],
+          verifiedAfterModification: Boolean(executionState.verifiedAfterModification),
+          autoVerificationAttempted: Boolean(executionState.autoVerificationAttempted),
+          updatedUserProfileMemory: Boolean(executionState.updatedUserProfileMemory)
+        },
+        context: {
+          requestedAiId: aiConfig.aiId,
+          requestedModel: selectedModel,
+          requestedSkillId,
+          requestedSkillIds: activeSkills.map((item) => item.skillId),
+          requestedManualSkillIds: manualSkillIds,
+          requestedMcpServerIds,
+          requestedMcpToolPrefixes: activeMcpToolPrefixes,
+          requestedRagCollectionId,
+          requestedRagCollectionIds: normalizedRagCollectionIds,
+          requestedEmbeddingAiId
+        }
+      }
+      const approvalMessage = formatToolApprovalRequestMessage(approval)
+      const approvalStep = createTaskStep({
+        title: `等待确认 ${normalizedRequest.name}`,
+        status: 'pending',
+        summary: `受保护工具 ${normalizedRequest.name} 需要用户确认。`,
+        startedAt: nowIso()
+      })
+      taskSteps.push(approvalStep)
+
+      audit(sessionId, 'tool_approval_requested', {
+        executionId,
+        approvalId: approval.approvalId,
+        tool: approval.tool,
+        args: approval.args,
+        riskLevel: approval.riskLevel,
+        warnings: approval.policy.warnings,
+        thoughtSummary: approval.thoughtSummary
+      })
+
+      await sessionRepository.appendAssistantMessage(sessionId, {
+        content: approvalMessage,
+        model: selectedModel
+      })
+
+      await sessionRepository.updateSession(sessionId, (draftSession) => {
+        draftSession.pendingToolApproval = approval
+        draftSession.task = {
+          ...draftSession.task,
+          taskId,
+          status: 'waiting_for_user',
+          summary: approvalStep.summary,
+          steps: taskSteps,
+          completedAt: nowIso(),
+          updatedAt: nowIso()
+        }
+        draftSession.updatedAt = nowIso()
+        return draftSession
+      })
+
+      publishTaskProgress(sessionId, approvalStep.summary, selectedModel)
+
+      return {
+        ok: false,
+        waitingForApproval: true,
+        approval
+      }
+    }
+
     async function executeToolRequest(toolRequest, {
       summary = '',
       thoughtSummary = '',
-      stepTitle = ''
+      stepTitle = '',
+      approvedApprovalId = ''
     } = {}) {
       throwIfCancelled()
       throwIfTaskTimedOut()
 
       const normalizedRequest = normalizeToolRequest(toolRequest)
       const toolExecutionId = createId('tool')
-      const isMcpTool = normalizedRequest.name.startsWith('mcp.')
-      const isMemoryTool = normalizedRequest.name === MEMORY_TOOL_NAME
+      const protectedTool = isProtectedToolName(normalizedRequest.name)
+      const requestedToolMode = protectedTool ? normalizeToolMode(normalizedRequest.args) : ''
+      const strippedProtectedArgs = protectedTool
+        ? stripToolControlArgs(normalizedRequest.args)
+        : normalizedRequest.args
+      const isApprovedProtectedRun = Boolean(
+        protectedTool
+        && requestedToolMode === 'run'
+        && approvedPendingToolApproval
+        && normalizeTrimmedString(approvedPendingToolApproval.approvalId) === normalizeTrimmedString(approvedApprovalId)
+        && doesToolApprovalMatch(approvedPendingToolApproval, normalizedRequest.name, strippedProtectedArgs)
+      )
+      let executableRequest = normalizedRequest
+      let virtualProtectedToolExecution = null
+
+      if (protectedTool) {
+        const protectedToolStartedAt = Date.now()
+
+        if (!requestedToolMode || !['help', 'run'].includes(requestedToolMode)) {
+          virtualProtectedToolExecution = createBlockedToolExecution({
+            tool: normalizedRequest.name,
+            args: normalizedRequest.args,
+            mode: requestedToolMode,
+            reason: 'mode_required',
+            message: `Protected tool ${normalizedRequest.name} requires args.mode="help" before args.mode="run".`,
+            durationMs: Date.now() - protectedToolStartedAt
+          })
+        } else if (requestedToolMode === 'help') {
+          const policy = analyzeProtectedToolRunPolicy(normalizedRequest.name, strippedProtectedArgs)
+          protectedToolRuntimeState.set(normalizedRequest.name, {
+            helped: true,
+            helpedAt: nowIso()
+          })
+          virtualProtectedToolExecution = createProtectedToolHelpExecution({
+            tool: normalizedRequest.name,
+            args: normalizedRequest.args,
+            catalogItem: findToolCatalogItem(toolRunner, normalizedRequest.name, {
+              skill: getRuntimeActiveSkill(),
+              mcpToolPrefixes: activeMcpToolPrefixes
+            }),
+            policy,
+            durationMs: Date.now() - protectedToolStartedAt
+          })
+        } else {
+          const previousProtectedToolState = protectedToolRuntimeState.get(normalizedRequest.name)
+
+          if (!previousProtectedToolState?.helped && !isApprovedProtectedRun) {
+            virtualProtectedToolExecution = createBlockedToolExecution({
+              tool: normalizedRequest.name,
+              args: normalizedRequest.args,
+              mode: requestedToolMode,
+              reason: 'help_required',
+              message: `Protected tool ${normalizedRequest.name} requires args.mode="help" before mode="run".`,
+              durationMs: Date.now() - protectedToolStartedAt
+            })
+          } else {
+            const policy = analyzeProtectedToolRunPolicy(normalizedRequest.name, strippedProtectedArgs)
+
+            if (!policy.allowed) {
+              virtualProtectedToolExecution = createBlockedToolExecution({
+                tool: normalizedRequest.name,
+                args: strippedProtectedArgs,
+                mode: requestedToolMode,
+                reason: 'policy_denied',
+                message: `Protected tool ${normalizedRequest.name} was blocked by policy: ${policy.denials.join(' ')}`,
+                durationMs: Date.now() - protectedToolStartedAt
+              })
+            } else if (!isApprovedProtectedRun) {
+              return requestProtectedToolApproval(normalizedRequest, {
+                executionId: toolExecutionId,
+                policy,
+                thoughtSummary
+              })
+            } else {
+              executableRequest = {
+                name: normalizedRequest.name,
+                args: strippedProtectedArgs
+              }
+            }
+          }
+        }
+      }
+
+      if (
+        !virtualProtectedToolExecution
+        && normalizedRequest.name === MCP_GATEWAY_TOOL_NAME
+        && !isRuntimeSkillRunning(MCP_CONNECTOR_SKILL_ID)
+      ) {
+        virtualProtectedToolExecution = createBlockedToolExecution({
+          tool: normalizedRequest.name,
+          args: normalizedRequest.args,
+          reason: 'mcp_skill_required',
+          message: 'mcp_gateway is available only after loading the mcp_connector Skill with mode="help" and activating it with mode="run".'
+        })
+      }
+
+      const isMcpTool = (
+        executableRequest.name.startsWith('mcp.')
+        || executableRequest.name === MCP_GATEWAY_TOOL_NAME
+      ) && !virtualProtectedToolExecution
+      const isMemoryTool = executableRequest.name === MEMORY_TOOL_NAME
       const auditArgs = isMemoryTool
         ? {
-            action: normalizeTrimmedString(normalizedRequest.args?.action),
-            reason: normalizeTrimmedString(normalizedRequest.args?.reason),
-            profileLength: String(normalizedRequest.args?.profile || '').length
+            action: normalizeTrimmedString(executableRequest.args?.action),
+            reason: normalizeTrimmedString(executableRequest.args?.reason),
+            profileLength: String(executableRequest.args?.profile || '').length
           }
-        : normalizedRequest.args
+        : executableRequest.args
       audit(sessionId, isMcpTool ? 'mcp_call' : 'tool_call', {
         executionId: toolExecutionId,
-        tool: normalizedRequest.name,
+        tool: executableRequest.name,
         args: auditArgs,
         thoughtSummary,
         status: 'started'
       })
       publishTaskProgress(
         sessionId,
-        summary || `正在执行工具 ${normalizedRequest.name}。`,
+        summary || `正在执行工具 ${executableRequest.name}。`,
         selectedModel
       )
       pushSessionEvent(sessionId, 'tool.started', {
         executionId: toolExecutionId,
-        content: createRunningToolMessageContent(normalizedRequest)
+        content: createRunningToolMessageContent(executableRequest)
       })
 
       const toolStep = createTaskStep({
-        title: stepTitle || createToolStepTitle(normalizedRequest.name, normalizedRequest.args),
+        title: stepTitle || createToolStepTitle(executableRequest.name, executableRequest.args),
         status: 'in_progress',
-        summary: summary || `正在执行工具 ${normalizedRequest.name}。`,
+        summary: summary || `正在执行工具 ${executableRequest.name}。`,
         startedAt: nowIso()
       })
       taskSteps.push(toolStep)
@@ -2428,10 +2783,12 @@ export function createAgentRunner({
       const toolStartedAt = Date.now()
 
       try {
-        if (normalizedRequest.name === SKILL_TOOL_NAME) {
-          const skillId = normalizeTrimmedString(normalizedRequest.args?.skillId)
-          const mode = normalizeTrimmedString(normalizedRequest.args?.mode).toLowerCase()
-          const command = normalizeTrimmedString(normalizedRequest.args?.command)
+        if (virtualProtectedToolExecution) {
+          toolExecution = virtualProtectedToolExecution
+        } else if (executableRequest.name === SKILL_TOOL_NAME) {
+          const skillId = normalizeTrimmedString(executableRequest.args?.skillId)
+          const mode = normalizeTrimmedString(executableRequest.args?.mode).toLowerCase()
+          const command = normalizeTrimmedString(executableRequest.args?.command)
           const skill = resolveRuntimeSkill(skillId)
 
           if (!skill) {
@@ -2528,10 +2885,10 @@ export function createAgentRunner({
               durationMs: Date.now() - toolStartedAt
             }
           }
-        } else if (normalizedRequest.name === MEMORY_TOOL_NAME) {
-          const action = normalizeTrimmedString(normalizedRequest.args?.action).toLowerCase()
-          const profile = normalizeTrimmedString(normalizedRequest.args?.profile)
-          const reason = normalizeTrimmedString(normalizedRequest.args?.reason)
+        } else if (executableRequest.name === MEMORY_TOOL_NAME) {
+          const action = normalizeTrimmedString(executableRequest.args?.action).toLowerCase()
+          const profile = normalizeTrimmedString(executableRequest.args?.profile)
+          const reason = normalizeTrimmedString(executableRequest.args?.reason)
 
           if (!aiRuntimeConfig?.userProfileMemoryEnabled) {
             throw new Error('Long-term user profile memory is disabled.')
@@ -2572,13 +2929,13 @@ export function createAgentRunner({
             durationMs: Date.now() - toolStartedAt
           }
         } else {
-          toolExecution = await toolRunner.executeToolCall(normalizedRequest, {
+          toolExecution = await toolRunner.executeToolCall(executableRequest, {
             skill: getRuntimeActiveSkill(),
             mcpToolPrefixes: activeMcpToolPrefixes,
             signal: abortSignal,
             sessionId,
             onProgress: (progress) => {
-              if (normalizedRequest.name !== 'run_command') {
+              if (executableRequest.name !== 'run_command') {
                 return
               }
 
@@ -2590,14 +2947,14 @@ export function createAgentRunner({
 
               pushSessionEvent(sessionId, 'tool.output', {
                 executionId: toolExecutionId,
-                content: createRunningToolMessageContent(normalizedRequest, liveOutput)
+                content: createRunningToolMessageContent(executableRequest, liveOutput)
               })
             }
           })
         }
         toolExecution = {
           ...toolExecution,
-          status: 'success',
+          status: normalizeTrimmedString(toolExecution?.status) || 'success',
           durationMs: Date.now() - toolStartedAt
         }
       } catch (error) {
@@ -2605,10 +2962,10 @@ export function createAgentRunner({
           taskSteps[taskSteps.length - 1] = cancelStep(toolStep, '已停止当前处理。')
           throw createCancellationError()
         }
-        const errorMessage = normalizeTrimmedString(error?.message) || `工具 ${normalizedRequest.name} 执行失败。`
+        const errorMessage = normalizeTrimmedString(error?.message) || `工具 ${executableRequest.name} 执行失败。`
         audit(sessionId, isMcpTool ? 'mcp_result' : 'tool_result', {
           executionId: toolExecutionId,
-          tool: normalizedRequest.name,
+          tool: executableRequest.name,
           status: 'failed',
           durationMs: Date.now() - toolStartedAt,
           message: errorMessage
@@ -2616,14 +2973,33 @@ export function createAgentRunner({
         audit(sessionId, 'error', {
           scope: isMcpTool ? 'mcp_tool' : 'tool',
           executionId: toolExecutionId,
-          tool: normalizedRequest.name,
+          tool: executableRequest.name,
           message: errorMessage
         })
+        if (isApprovedProtectedRun) {
+          await sessionRepository.updateSession(sessionId, (draftSession) => {
+            if (
+              draftSession.pendingToolApproval
+              && normalizeTrimmedString(draftSession.pendingToolApproval.approvalId) === normalizeTrimmedString(approvedPendingToolApproval?.approvalId)
+            ) {
+              draftSession.pendingToolApproval = null
+              draftSession.updatedAt = nowIso()
+            }
+
+            return draftSession
+          })
+          audit(sessionId, 'tool_approval_consumed', {
+            executionId: toolExecutionId,
+            approvalId: approvedPendingToolApproval?.approvalId,
+            tool: executableRequest.name,
+            status: 'failed'
+          })
+        }
         taskSteps[taskSteps.length - 1] = failStep(toolStep, errorMessage)
 
         await sessionRepository.appendToolMessage(sessionId, {
           content: [
-            `Tool: ${normalizedRequest.name}`,
+            `Tool: ${executableRequest.name}`,
             '状态：失败',
             '',
             errorMessage
@@ -2665,11 +3041,44 @@ export function createAgentRunner({
       audit(sessionId, isMcpTool ? 'mcp_result' : 'tool_result', {
         executionId: toolExecutionId,
         tool: toolExecution.tool,
-        status: 'success',
+        status: toolExecution.status || 'success',
         durationMs: toolExecution.durationMs,
         summary: toolExecution.summary,
         result: toolExecution.result
       })
+      if (protectedTool) {
+        audit(sessionId, 'system_action', {
+          action: toolExecution.result?.blocked
+            ? 'protected_tool_run_blocked'
+            : toolExecution.result?.mode === 'help'
+              ? 'protected_tool_help'
+              : 'protected_tool_run',
+          executionId: toolExecutionId,
+          approvalId: isApprovedProtectedRun ? approvedPendingToolApproval?.approvalId : '',
+          tool: toolExecution.tool,
+          mode: toolExecution.result?.mode || requestedToolMode,
+          blocked: Boolean(toolExecution.result?.blocked),
+          reason: toolExecution.result?.reason || ''
+        })
+      }
+      if (isApprovedProtectedRun) {
+        await sessionRepository.updateSession(sessionId, (draftSession) => {
+          if (
+            draftSession.pendingToolApproval
+            && normalizeTrimmedString(draftSession.pendingToolApproval.approvalId) === normalizeTrimmedString(approvedPendingToolApproval?.approvalId)
+          ) {
+            draftSession.pendingToolApproval = null
+            draftSession.updatedAt = nowIso()
+          }
+
+          return draftSession
+        })
+        audit(sessionId, 'tool_approval_consumed', {
+          executionId: toolExecutionId,
+          approvalId: approvedPendingToolApproval?.approvalId,
+          tool: toolExecution.tool
+        })
+      }
       if (toolExecution.tool === SKILL_TOOL_NAME) {
         audit(sessionId, 'system_action', {
           action: toolExecution.result?.blocked
@@ -2700,15 +3109,15 @@ export function createAgentRunner({
 
       pushSessionEvent(sessionId, 'tool.finished', {
         executionId: toolExecutionId,
-        status: 'success'
+        status: toolExecution.status || 'success'
       })
 
       if (isReadToolName(toolExecution.tool)) {
         audit(sessionId, 'workspace_read', {
           executionId: toolExecutionId,
           tool: toolExecution.tool,
-          path: normalizeTrimmedString(toolExecution.result?.path || normalizedRequest.args?.path),
-          query: normalizeTrimmedString(toolExecution.result?.query || normalizedRequest.args?.query),
+          path: normalizeTrimmedString(toolExecution.result?.path || executableRequest.args?.path),
+          query: normalizeTrimmedString(toolExecution.result?.query || executableRequest.args?.query),
           sizeBytes: toolExecution.result?.sizeBytes ?? null,
           entryCount: Array.isArray(toolExecution.result?.entries) ? toolExecution.result.entries.length : null,
           matchCount: Array.isArray(toolExecution.result?.matches) ? toolExecution.result.matches.length : null,
@@ -2716,7 +3125,7 @@ export function createAgentRunner({
         })
       }
 
-      if (isWriteToolName(toolExecution.tool) && toolExecution.result?.changed !== false) {
+      if (isWriteToolName(toolExecution.tool) && toolExecution.result?.changed === true) {
         executionState.modifiedWorkspace = true
         executionState.verifiedAfterModification = false
 
@@ -2781,6 +3190,26 @@ export function createAgentRunner({
       }
     }
 
+    if (approvedPendingToolApproval) {
+      const approvedResult = await executeToolRequest({
+        name: approvedPendingToolApproval.tool,
+        args: {
+          ...(approvedPendingToolApproval.args && typeof approvedPendingToolApproval.args === 'object'
+            ? approvedPendingToolApproval.args
+            : {}),
+          mode: 'run'
+        }
+      }, {
+        summary: `正在执行已确认的受保护工具 ${approvedPendingToolApproval.tool}。`,
+        thoughtSummary: 'The user approved the pending protected tool call.',
+        approvedApprovalId: approvedPendingToolApproval.approvalId
+      })
+
+      if (!approvedResult.ok) {
+        return
+      }
+    }
+
     async function maybeRunAutoVerification() {
       throwIfCancelled()
       throwIfTaskTimedOut()
@@ -2810,6 +3239,30 @@ export function createAgentRunner({
       for (const commandSpec of verificationCommands) {
         throwIfCancelled()
 
+        if (false) {
+        const helpResult = await executeToolRequest({
+          name: 'run_command',
+          args: {
+            command: commandSpec.command,
+            args: commandSpec.args,
+            cwd: commandSpec.cwd,
+            mode: 'help'
+          }
+        }, {
+          summary: `正在读取验证命令说明 ${commandSpec.command}。`,
+          stepTitle: `读取验证命令说明 ${truncateText([commandSpec.command, ...(commandSpec.args || [])].join(' '), 36)}`
+        })
+
+        if (!helpResult.ok) {
+          return {
+            ranVerification: true,
+            failedTask: Boolean(helpResult.failed),
+            waitingForApproval: Boolean(helpResult.waitingForApproval)
+          }
+        }
+
+        }
+
         const result = await executeToolRequest({
           name: 'run_command',
           args: {
@@ -2825,7 +3278,8 @@ export function createAgentRunner({
         if (!result.ok) {
           return {
             ranVerification: true,
-            failedTask: true
+            failedTask: Boolean(result.failed),
+            waitingForApproval: Boolean(result.waitingForApproval)
           }
         }
 
@@ -3003,7 +3457,7 @@ export function createAgentRunner({
 
         const autoVerification = await maybeRunAutoVerification()
 
-        if (autoVerification.failedTask) {
+        if (autoVerification.failedTask || autoVerification.waitingForApproval) {
           return
         }
 
@@ -3139,7 +3593,7 @@ export function createAgentRunner({
 
       const autoVerification = await maybeRunAutoVerification()
 
-      if (autoVerification.failedTask) {
+      if (autoVerification.failedTask || autoVerification.waitingForApproval) {
         return
       }
 

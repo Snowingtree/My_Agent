@@ -282,6 +282,287 @@ export function createMcpRegistry({
 } = {}) {
   const serverStates = []
 
+  function getReadyServerStates(mcpToolPrefixes = []) {
+    const normalizedPrefixes = normalizeStringArray(mcpToolPrefixes)
+
+    if (
+      normalizedPrefixes.includes('__mcp_disabled__')
+      || normalizedPrefixes.includes('__no_selected_mcp_server__')
+    ) {
+      return []
+    }
+
+    return serverStates
+      .filter((state) => state.status === 'ready' && state.client)
+      .filter((state) => (
+        !normalizedPrefixes.length
+        || normalizedPrefixes.includes(state.definition.toolNamePrefix)
+      ))
+  }
+
+  function getMcpToolSummaries(mcpToolPrefixes = []) {
+    return getReadyServerStates(mcpToolPrefixes).flatMap((state) => (
+      state.tools.map((tool) => ({
+        serverId: state.definition.serverId,
+        serverName: state.definition.name,
+        toolName: tool.remoteName,
+        fullToolName: tool.fullName,
+        description: tool.description,
+        inputSchema: tool.inputSchema
+      }))
+    ))
+  }
+
+  function findGatewayTool(targetName, mcpToolPrefixes = []) {
+    const normalizedTarget = normalizeTrimmedString(targetName)
+
+    if (!normalizedTarget) {
+      return null
+    }
+
+    for (const state of getReadyServerStates(mcpToolPrefixes)) {
+      for (const tool of state.tools) {
+        const shortName = `${state.definition.serverId}.${tool.remoteName}`
+
+        if (
+          normalizedTarget === tool.fullName
+          || normalizedTarget === shortName
+          || normalizedTarget === tool.remoteName
+        ) {
+          return {
+            state,
+            tool
+          }
+        }
+      }
+    }
+
+    return null
+  }
+
+  function parseGatewayCommand(command) {
+    const normalizedCommand = normalizeTrimmedString(command)
+    const match = normalizedCommand.match(/^(\S+)(?:\s+([\s\S]*))?$/)
+
+    if (!match) {
+      return {
+        action: '',
+        rest: ''
+      }
+    }
+
+    return {
+      action: match[1].toLowerCase(),
+      rest: normalizeTrimmedString(match[2])
+    }
+  }
+
+  function parseCallCommand(rest) {
+    const match = normalizeTrimmedString(rest).match(/^(\S+)(?:\s+([\s\S]*))?$/)
+
+    if (!match) {
+      return {
+        target: '',
+        rawArgs: ''
+      }
+    }
+
+    return {
+      target: normalizeTrimmedString(match[1]),
+      rawArgs: normalizeTrimmedString(match[2])
+    }
+  }
+
+  function parseGatewayArguments(rawArgs) {
+    const normalizedArgs = normalizeTrimmedString(rawArgs)
+
+    if (!normalizedArgs) {
+      return {}
+    }
+
+    const parsedValue = JSON.parse(normalizedArgs)
+
+    if (!parsedValue || typeof parsedValue !== 'object' || Array.isArray(parsedValue)) {
+      throw new Error('mcp_gateway call arguments must be a JSON object.')
+    }
+
+    return parsedValue
+  }
+
+  function createMcpGatewayToolDefinition() {
+    return {
+      name: 'mcp_gateway',
+      source: 'mcp_gateway',
+      description: 'CyberClaw-style MCP gateway. Use one command entry to list, describe, or call selected MCP tools after the MCP Skill is activated.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: 'Command string. Examples: "list servers", "list tools", "describe mcp.server.tool", "call mcp.server.tool {\\"query\\":\\"react\\"}".'
+          }
+        },
+        required: ['command']
+      },
+      async run(args = {}, executionContext = {}) {
+        const command = normalizeTrimmedString(args?.command)
+        const mcpToolPrefixes = Array.isArray(executionContext?.mcpToolPrefixes)
+          ? executionContext.mcpToolPrefixes
+          : []
+
+        if (!command) {
+          throw new Error('mcp_gateway requires a command.')
+        }
+
+        const parsedCommand = parseGatewayCommand(command)
+        const action = parsedCommand.action
+        const rest = parsedCommand.rest
+
+        if (action === 'list') {
+          const target = rest.toLowerCase()
+          const serverStates = getReadyServerStates(mcpToolPrefixes)
+
+          if (!target || target === 'servers') {
+            return {
+              action: 'list_servers',
+              command,
+              servers: serverStates.map((state) => ({
+                serverId: state.definition.serverId,
+                serverName: state.definition.name,
+                toolNamePrefix: state.definition.toolNamePrefix,
+                toolCount: state.tools.length
+              }))
+            }
+          }
+
+          if (target === 'tools') {
+            return {
+              action: 'list_tools',
+              command,
+              tools: getMcpToolSummaries(mcpToolPrefixes)
+            }
+          }
+
+          if (target.startsWith('tools ')) {
+            const serverId = normalizeTrimmedString(rest.slice('tools '.length))
+            const tools = getMcpToolSummaries(mcpToolPrefixes)
+              .filter((tool) => tool.serverId === serverId || tool.serverName === serverId)
+
+            return {
+              action: 'list_tools',
+              command,
+              serverId,
+              tools
+            }
+          }
+        }
+
+        if (action === 'describe') {
+          const found = findGatewayTool(rest, mcpToolPrefixes)
+
+          if (!found) {
+            throw new Error(`Unknown or unavailable MCP tool: ${rest || '(empty)'}.`)
+          }
+
+          return {
+            action: 'describe_tool',
+            command,
+            tool: {
+              serverId: found.state.definition.serverId,
+              serverName: found.state.definition.name,
+              toolName: found.tool.remoteName,
+              fullToolName: found.tool.fullName,
+              description: found.tool.description,
+              inputSchema: found.tool.inputSchema
+            }
+          }
+        }
+
+        if (action === 'call') {
+          const callCommand = parseCallCommand(rest)
+          const found = findGatewayTool(callCommand.target, mcpToolPrefixes)
+
+          if (!found) {
+            throw new Error(`Unknown or unavailable MCP tool: ${callCommand.target || '(empty)'}.`)
+          }
+
+          const toolArgs = parseGatewayArguments(callCommand.rawArgs)
+          const rawResult = await found.state.client.callTool(found.tool.remoteName, toolArgs, {
+            signal: executionContext.signal
+          })
+          const result = normalizeMcpCallResult({
+            server: found.state.definition,
+            tool: found.tool,
+            result: rawResult
+          })
+
+          return {
+            action: 'call_tool',
+            command,
+            args: toolArgs,
+            ...result
+          }
+        }
+
+        throw new Error('Unsupported mcp_gateway command. Use: list servers, list tools, describe <tool>, or call <tool> <json-object>.')
+      },
+      summarize(result) {
+        if (result.action === 'call_tool') {
+          return result.isError
+            ? `MCP gateway call ${result.fullToolName} reported an error via ${result.serverName}.`
+            : `MCP gateway call ${result.fullToolName} completed via ${result.serverName}.`
+        }
+
+        if (result.action === 'list_tools') {
+          return `MCP gateway listed ${Array.isArray(result.tools) ? result.tools.length : 0} tool(s).`
+        }
+
+        if (result.action === 'list_servers') {
+          return `MCP gateway listed ${Array.isArray(result.servers) ? result.servers.length : 0} server(s).`
+        }
+
+        if (result.action === 'describe_tool') {
+          return `MCP gateway described ${result.tool?.fullToolName || 'an MCP tool'}.`
+        }
+
+        return 'MCP gateway command completed.'
+      },
+      formatMessage(result) {
+        if (result.action === 'call_tool') {
+          return [
+            `Tool: mcp_gateway`,
+            `MCP tool: ${result.fullToolName}`,
+            `Server: ${result.serverName}`,
+            `Status: ${result.isError ? 'error' : 'ok'}`,
+            '',
+            result.text
+              ? `Text output:\n${truncateText(result.text)}`
+              : `Structured output:\n${serializeJson(result.structuredContent || result.raw || {})}`
+          ].join('\n')
+        }
+
+        if (result.action === 'describe_tool') {
+          return [
+            'Tool: mcp_gateway',
+            `MCP tool: ${result.tool?.fullToolName || ''}`,
+            `Server: ${result.tool?.serverName || ''}`,
+            '',
+            result.tool?.description || '',
+            '',
+            `Input schema:\n${serializeJson(result.tool?.inputSchema || {})}`
+          ].join('\n')
+        }
+
+        return [
+          'Tool: mcp_gateway',
+          `Action: ${result.action || 'unknown'}`,
+          '',
+          serializeJson(result.tools || result.servers || result)
+        ].join('\n')
+      }
+    }
+  }
+
   function loadDefinitions() {
     const rawValue = readJsonFile(mcpConfig.configPath)
     const definitions = collectServerDefinitions(rawValue, mcpConfig.configPath)
@@ -378,10 +659,18 @@ export function createMcpRegistry({
       .flatMap((state) => state.tools.map((tool) => createMcpToolDefinition(state, tool)))
   }
 
+  function getGatewayToolDefinitions() {
+    return mcpConfig?.enabled
+      ? [createMcpGatewayToolDefinition()]
+      : []
+  }
+
   return {
     initialize,
     closeAll,
     getServerSummaries,
-    getToolDefinitions
+    getToolDefinitions,
+    getGatewayToolDefinitions,
+    getMcpToolSummaries
   }
 }

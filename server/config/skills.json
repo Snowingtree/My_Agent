@@ -25,6 +25,16 @@
       "disabledTools": []
     },
     {
+      "skillId": "mcp_connector",
+      "name": "MCP 连接器",
+      "description": "CyberClaw 风格的 MCP 访问方式。先读取技能说明，再启用技能，最后通过统一的 mcp_gateway 入口调用 MCP。",
+      "instructionPath": "../../skills/mcp_connector.md",
+      "preferredTools": [
+        "mcp_gateway"
+      ],
+      "disabledTools": []
+    },
+    {
       "skillId": "task_planner",
       "name": "任务规划",
       "description": "用于在实施前拆解目标、规划步骤、识别风险和梳理依赖。",

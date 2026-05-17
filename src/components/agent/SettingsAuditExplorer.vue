@@ -155,6 +155,10 @@ const EVENT_LABELS = {
   llm_final_text: '最终回答',
   tool_call: '工具调用',
   tool_result: '工具结果',
+  tool_approval_requested: '等待确认',
+  tool_approval_granted: '确认执行',
+  tool_approval_denied: '取消执行',
+  tool_approval_consumed: '确认已使用',
   mcp_call: 'MCP 调用',
   mcp_result: 'MCP 结果',
   workspace_read: '读取文件',
@@ -178,6 +182,9 @@ const ACTION_LABELS = {
   skill_help: '读取 Skill 说明',
   skill_run: '激活 Skill',
   skill_run_blocked: 'Skill 激活被阻止',
+  protected_tool_help: '读取工具说明',
+  protected_tool_run: '执行受保护工具',
+  protected_tool_run_blocked: '受保护工具被阻止',
   memory_compacted: '压缩短期记忆',
   user_profile_memory_updated: '更新长期记忆',
   ai_config_created: '创建 AI 配置',
@@ -206,6 +213,9 @@ const ACTION_EXPLANATIONS = {
   skill_help: 'Agent 读取了 Skill 的详细说明，但这一步还没有正式启用该 Skill。',
   skill_run: 'Agent 正式启用了这个 Skill，后续会按它的规则执行。',
   skill_run_blocked: 'Agent 想启用 Skill，但还没有先读取说明，所以被系统拦截。',
+  protected_tool_help: 'Agent 读取了受保护工具的说明，这一步不会执行真实操作。',
+  protected_tool_run: '用户确认后，Agent 执行了受保护工具。',
+  protected_tool_run_blocked: '受保护工具没有执行，原因可能是没有先读取说明、没有用户确认，或命令策略拒绝。',
   memory_compacted: '当前会话超过双水位阈值，旧轮次被压缩成摘要，最近轮次继续保留。',
   user_profile_memory_updated: '长期用户画像被更新，后续会话会读取这部分记忆。',
   ai_config_created: '管理员新增了一个 AI 配置。',
@@ -297,6 +307,7 @@ function statusLabel(value) {
 
   if (status === 'started') return '进行中'
   if (status === 'success') return '成功'
+  if (status === 'blocked') return '已阻止'
   if (status === 'failed' || status === 'error') return '失败'
   if (status === 'completed') return '完成'
   if (status === 'running' || status === 'in_progress') return '运行中'
@@ -379,6 +390,10 @@ function createReadableEventTitle(event) {
   if (type === 'rag_search') return `知识库检索完成，命中 ${event?.hitCount ?? 0} 条`
   if (type === 'llm_input') return event?.stage === 'final_text' ? '把上下文发送给模型生成最终回复' : '把上下文发送给模型判断下一步'
   if (type === 'llm_decision') return `模型决定：${actionLabel(event?.action)}`
+  if (type === 'tool_approval_requested') return `等待你确认受保护工具：${formatToolName(event?.tool)}`
+  if (type === 'tool_approval_granted') return `你已确认执行：${formatToolName(event?.tool)}`
+  if (type === 'tool_approval_denied') return `你已取消执行：${formatToolName(event?.tool)}`
+  if (type === 'tool_approval_consumed') return `确认已用于执行：${formatToolName(event?.tool)}`
   if (type === 'mcp_call') return `开始调用 MCP 工具：${event?.tool || '(未知工具)'}`
   if (type === 'mcp_result') return `${statusLabel(event?.status) || '完成'} MCP 工具：${event?.tool || '(未知工具)'}`
   if (isSkillToolEvent(event) && type === 'tool_call' && mode === 'help') return `开始读取 Skill 说明：${skillName}`
@@ -391,6 +406,9 @@ function createReadableEventTitle(event) {
   if (type === 'ai_message') return '回复已保存到会话'
   if (type === 'system_action' && action === 'skill_help') return `Skill 说明已读取：${skillName}`
   if (type === 'system_action' && action === 'skill_run') return `Skill 已激活：${skillName}`
+  if (type === 'system_action' && action === 'protected_tool_help') return `受保护工具说明已读取：${formatToolName(event?.tool)}`
+  if (type === 'system_action' && action === 'protected_tool_run') return `受保护工具已执行：${formatToolName(event?.tool)}`
+  if (type === 'system_action' && action === 'protected_tool_run_blocked') return `受保护工具被阻止：${formatToolName(event?.tool)}`
   if (type === 'system_action' && action === 'memory_compacted') return `短期记忆已压缩：压缩 ${event?.compressedTurnCount ?? event?.compressedMessageCount ?? 0} 轮，保留 ${event?.keptTurnCount ?? event?.keptMessageCount ?? 0} 轮`
   if (type === 'system_action' && action === 'user_profile_memory_updated') return '长期记忆已更新'
   if (type === 'system_action' && ACTION_LABELS[action]) return actionLabelText
@@ -474,6 +492,23 @@ function createReadableEventSummary(event) {
     return event?.queryPreview
       ? `检索问题：${event.queryPreview}`
       : ''
+  }
+
+  if (type === 'tool_approval_requested') {
+    const warnings = Array.isArray(event?.warnings) ? event.warnings.filter(Boolean).join('；') : ''
+    return warnings || '这个工具调用不会立即执行，系统正在等待用户明确确认。'
+  }
+
+  if (type === 'tool_approval_granted') {
+    return '用户已经确认，后端会按原始参数执行这次受保护工具调用。'
+  }
+
+  if (type === 'tool_approval_denied') {
+    return '用户取消了这次受保护工具调用，后端不会执行它。'
+  }
+
+  if (type === 'tool_approval_consumed') {
+    return '这条确认已经被用于一次真实工具执行，不能重复使用。'
   }
 
   if (type === 'mcp_call' || type === 'mcp_result') {

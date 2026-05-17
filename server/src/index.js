@@ -18,6 +18,10 @@ import { SessionRepository } from './sessionStore.js'
 import { createSkillRegistry } from './skillRegistry.js'
 import { createTokenUsageStore } from './tokenUsageStore.js'
 import { getToolDetailItem, listToolPreviewItems } from './toolCatalogDetails.js'
+import {
+  isToolApprovalConfirmation,
+  isToolApprovalDenial
+} from './toolApproval.js'
 import { createToolRunner } from './toolRunner.js'
 import { createId, normalizeTrimmedString } from './utils.js'
 import { createWorkspace } from './workspace.js'
@@ -265,7 +269,7 @@ const toolRunner = createToolRunner({
   workspaceConfig: config.workspace,
   runtimeConfig: config.runtime,
   externalToolProviders: [
-    () => mcpRegistry.getToolDefinitions()
+    () => mcpRegistry.getGatewayToolDefinitions()
   ]
 })
 
@@ -1536,14 +1540,18 @@ function normalizeLarkChatListResult(toolExecution) {
 }
 
 async function listLarkChatsViaMcp({ sessionId = '' } = {}) {
-  const larkChatListTools = toolRunner.getToolCatalog()
+  const larkChatListTools = mcpRegistry.getToolDefinitions()
     .filter((tool) => {
       const name = String(tool?.name || '').toLowerCase()
       return name.startsWith('mcp.lark.')
         && name.includes('chat')
         && (name.includes('list') || name.includes('get') || name.includes('search'))
     })
-    .map((tool) => tool.name)
+    .map((tool) => ({
+      name: tool.name,
+      run: tool.run,
+      formatMessage: tool.formatMessage
+    }))
 
   if (!larkChatListTools.length) {
     const error = new Error('Current Lark MCP has no chat list tool. Check IM permissions and AGENT_LARK_TOOLS.')
@@ -1559,18 +1567,21 @@ async function listLarkChatsViaMcp({ sessionId = '' } = {}) {
   ]
   let lastError = ''
 
-  for (const toolName of larkChatListTools) {
+  for (const tool of larkChatListTools) {
     for (const args of argCandidates) {
       try {
-        const toolExecution = await toolRunner.executeToolCall(
-          { name: toolName, args },
-          { sessionId }
-        )
+        const result = await tool.run(args, {})
+        const toolExecution = {
+          result,
+          message: typeof tool.formatMessage === 'function'
+            ? tool.formatMessage(result, args)
+            : ''
+        }
         const items = normalizeLarkChatListResult(toolExecution)
 
         return {
           items,
-          tool: toolName
+          tool: tool.name
         }
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error || '')
@@ -1877,6 +1888,157 @@ async function handleChat(request, response) {
   if (session?.task?.status && ['queued', 'pending', 'running', 'in_progress'].includes(session.task.status)) {
     sendJson(response, 409, {
       message: 'The current session is still processing the previous task.'
+    })
+    return
+  }
+
+  const pendingToolApproval = session?.pendingToolApproval?.status === 'pending'
+    ? session.pendingToolApproval
+    : null
+
+  if (pendingToolApproval) {
+    const approvalContext = pendingToolApproval.context && typeof pendingToolApproval.context === 'object'
+      ? pendingToolApproval.context
+      : {}
+    const approvalSkillIds = normalizeSkillIdArray(
+      Array.isArray(approvalContext.requestedSkillIds)
+        ? approvalContext.requestedSkillIds
+        : [approvalContext.requestedSkillId]
+    )
+    const approvalPrimarySkillId = approvalSkillIds[0] || primarySkill?.skillId || ''
+    const preparedSession = await sessionRepository.prepareSessionForTask({
+      sessionId,
+      message,
+      aiId: approvalContext.requestedAiId || aiConfig.aiId,
+      model: approvalContext.requestedModel || selectedModel,
+      skillId: approvalPrimarySkillId,
+      skillIds: approvalSkillIds.length ? approvalSkillIds : activeSkills.map((item) => item.skillId)
+    })
+
+    auditLogger.logUserMessage({
+      sessionId,
+      content: message,
+      aiId: approvalContext.requestedAiId || aiConfig.aiId,
+      model: approvalContext.requestedModel || selectedModel,
+      skillIds: approvalSkillIds.length ? approvalSkillIds : activeSkills.map((item) => item.skillId),
+      mcpServerIds: Array.isArray(approvalContext.requestedMcpServerIds)
+        ? approvalContext.requestedMcpServerIds
+        : requestedMcpServerIds,
+      ragCollectionIds: Array.isArray(approvalContext.requestedRagCollectionIds)
+        ? approvalContext.requestedRagCollectionIds
+        : requestedRagCollectionIds,
+      embeddingAiId: approvalContext.requestedEmbeddingAiId || requestedEmbeddingAiId,
+      attachmentCount: requestedAttachments.length,
+      createdNewSession: false,
+      approvalId: pendingToolApproval.approvalId
+    })
+
+    if (isToolApprovalDenial(message)) {
+      auditLogger.logEvent({
+        sessionId,
+        event: 'tool_approval_denied',
+        approvalId: pendingToolApproval.approvalId,
+        tool: pendingToolApproval.tool
+      })
+      await sessionRepository.appendAssistantMessage(sessionId, {
+        content: `已取消待执行操作：${pendingToolApproval.tool}。`,
+        model: approvalContext.requestedModel || selectedModel
+      })
+      const completedSession = await sessionRepository.updateSession(sessionId, (draftSession) => {
+        const timestamp = new Date().toISOString()
+        draftSession.pendingToolApproval = null
+        draftSession.task = {
+          ...draftSession.task,
+          status: 'completed',
+          summary: `已取消受保护工具 ${pendingToolApproval.tool}。`,
+          completedAt: timestamp,
+          updatedAt: timestamp
+        }
+        draftSession.updatedAt = timestamp
+        return draftSession
+      })
+
+      sendJson(response, 200, {
+        session: await attachWorkspaceState(completedSession || preparedSession)
+      })
+      return
+    }
+
+    if (!isToolApprovalConfirmation(message)) {
+      await sessionRepository.appendAssistantMessage(sessionId, {
+        content: `当前还有一个受保护操作等待确认：${pendingToolApproval.tool}。请回复“确认执行”继续，或回复“取消执行”放弃。`,
+        model: approvalContext.requestedModel || selectedModel
+      })
+      const waitingSession = await sessionRepository.updateSession(sessionId, (draftSession) => {
+        const timestamp = new Date().toISOString()
+        draftSession.task = {
+          ...draftSession.task,
+          status: 'waiting_for_user',
+          summary: `等待确认受保护工具 ${pendingToolApproval.tool}。`,
+          completedAt: timestamp,
+          updatedAt: timestamp
+        }
+        draftSession.updatedAt = timestamp
+        return draftSession
+      })
+
+      sendJson(response, 200, {
+        session: await attachWorkspaceState(waitingSession || preparedSession)
+      })
+      return
+    }
+
+    const approvedSession = await sessionRepository.updateSession(sessionId, (draftSession) => {
+      const timestamp = new Date().toISOString()
+      draftSession.pendingToolApproval = {
+        ...pendingToolApproval,
+        status: 'approved',
+        approvedAt: timestamp
+      }
+      draftSession.task = {
+        ...draftSession.task,
+        status: 'queued',
+        summary: `已确认，准备执行受保护工具 ${pendingToolApproval.tool}。`,
+        completedAt: null,
+        updatedAt: timestamp
+      }
+      draftSession.updatedAt = timestamp
+      return draftSession
+    })
+
+    auditLogger.logEvent({
+      sessionId,
+      event: 'tool_approval_granted',
+      approvalId: pendingToolApproval.approvalId,
+      tool: pendingToolApproval.tool
+    })
+
+    void agentRunner.startTask({
+      sessionId,
+      requestedAiId: approvalContext.requestedAiId || aiConfig.aiId,
+      requestedModel: approvalContext.requestedModel || selectedModel,
+      requestedSkillId: approvalContext.requestedSkillId || approvalPrimarySkillId,
+      requestedSkillIds: approvalSkillIds.length ? approvalSkillIds : activeSkills.map((item) => item.skillId),
+      requestedManualSkillIds: Array.isArray(approvalContext.requestedManualSkillIds)
+        ? approvalContext.requestedManualSkillIds
+        : requestedSkillIds,
+      requestedMcpServerIds: Array.isArray(approvalContext.requestedMcpServerIds)
+        ? approvalContext.requestedMcpServerIds
+        : requestedMcpServerIds,
+      requestedMcpToolPrefixes: Array.isArray(approvalContext.requestedMcpToolPrefixes)
+        ? approvalContext.requestedMcpToolPrefixes
+        : requestedMcpToolPrefixes,
+      requestedRagCollectionId: approvalContext.requestedRagCollectionId || requestedRagCollectionId,
+      requestedRagCollectionIds: Array.isArray(approvalContext.requestedRagCollectionIds)
+        ? approvalContext.requestedRagCollectionIds
+        : requestedRagCollectionIds,
+      requestedEmbeddingAiId: approvalContext.requestedEmbeddingAiId || requestedEmbeddingAiId,
+      requestedAttachments,
+      approvedToolApprovalId: pendingToolApproval.approvalId
+    })
+
+    sendJson(response, 200, {
+      session: await attachWorkspaceState(approvedSession || preparedSession)
     })
     return
   }

@@ -2326,7 +2326,9 @@ function parseToolMessage(content) {
 
   const normalizedStatus = inferredStatus === '运行中' || inferredStatus === 'running'
     ? 'running'
-    : (inferredStatus === '失败' || inferredStatus === 'failed' ? 'failed' : 'success')
+    : (inferredStatus === '已阻止' || inferredStatus === 'blocked'
+        ? 'blocked'
+        : (inferredStatus === '失败' || inferredStatus === 'failed' ? 'failed' : 'success'))
 
   return {
     kind: skillLine ? 'skill' : 'tool',
@@ -2347,6 +2349,10 @@ function resolveToolStatusLabel(status) {
 
   if (normalizedStatus === 'running') {
     return '执行中'
+  }
+
+  if (normalizedStatus === 'blocked') {
+    return '已阻止'
   }
 
   return '成功'

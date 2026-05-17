@@ -95,7 +95,10 @@ export function createToolRunner({
     const normalizedPrefixes = normalizeStringArray(mcpToolPrefixes)
 
     if (normalizedPrefixes.includes(MCP_DISABLED_PREFIX)) {
-      return tools.filter((tool) => String(tool.source || '').trim() !== 'mcp')
+      return tools.filter((tool) => {
+        const source = String(tool.source || '').trim()
+        return source !== 'mcp'
+      })
     }
 
     if (!normalizedPrefixes.length) {
@@ -103,7 +106,13 @@ export function createToolRunner({
     }
 
     return tools.filter((tool) => {
-      if (String(tool.source || '').trim() !== 'mcp') {
+      const source = String(tool.source || '').trim()
+
+      if (source === 'mcp_gateway') {
+        return true
+      }
+
+      if (source !== 'mcp') {
         return true
       }
 
@@ -196,7 +205,7 @@ export function createToolRunner({
       args && typeof args === 'object' && !Array.isArray(args)
         ? args
         : {}
-    const result = await tool.run(normalizedArgs, { signal, onProgress })
+    const result = await tool.run(normalizedArgs, { signal, onProgress, mcpToolPrefixes })
 
     return {
       tool: tool.name,
