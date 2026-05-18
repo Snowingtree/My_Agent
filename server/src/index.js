@@ -6,15 +6,7 @@ import { createAuditLogger } from './auditLogger.js'
 import { createConfig } from './config.js'
 import { createEmbeddingClient } from './embeddingClient.js'
 import { loadEnvFiles } from './env.js'
-import {
-  createAuthCookieHeader,
-  createAuthToken,
-  createExpiredAuthCookieHeader,
-  readAuthCookie,
-  readBearerToken,
-  safeCompare,
-  verifyAuthToken
-} from './auth.js'
+import { createAuthToken, readBearerToken, safeCompare, verifyAuthToken } from './auth.js'
 import { getAiConfigById, insertAiConfig, loadAiConfigs, resolveModel, toPublicAiConfig, updateAiConfig } from './aiConfigs.js'
 import { createAgentRunner } from './agentRunner.js'
 import { createMcpRegistry } from './mcpRegistry.js'
@@ -300,37 +292,8 @@ const agentRunner = createAgentRunner({
   auditLogger
 })
 
-function appendVaryHeader(response, value) {
-  const normalizedValue = normalizeTrimmedString(value)
-
-  if (!normalizedValue) {
-    return
-  }
-
-  const existing = String(response.getHeader('Vary') || '').trim()
-  const values = existing
-    ? existing.split(',').map((item) => item.trim()).filter(Boolean)
-    : []
-
-  if (!values.some((item) => item.toLowerCase() === normalizedValue.toLowerCase())) {
-    values.push(normalizedValue)
-  }
-
-  response.setHeader('Vary', values.join(', '))
-}
-
-function setBaseHeaders(response, request = null) {
-  const requestOrigin = normalizeTrimmedString(request?.headers?.origin)
-
-  if (!response.hasHeader('Access-Control-Allow-Origin')) {
-    response.setHeader('Access-Control-Allow-Origin', requestOrigin || '*')
-  }
-
-  if (requestOrigin) {
-    response.setHeader('Access-Control-Allow-Credentials', 'true')
-    appendVaryHeader(response, 'Origin')
-  }
-
+function setBaseHeaders(response) {
+  response.setHeader('Access-Control-Allow-Origin', '*')
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
   response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
   response.setHeader('Cache-Control', 'no-store')
@@ -661,30 +624,8 @@ function matchAiConfigPath(pathname) {
   return match?.[1] ? decodeURIComponent(match[1]) : ''
 }
 
-function isSecureRequest(request) {
-  const forwardedProto = normalizeTrimmedString(request?.headers?.['x-forwarded-proto'])
-    .split(',')[0]
-    .trim()
-    .toLowerCase()
-
-  return Boolean(request?.socket?.encrypted) || forwardedProto === 'https'
-}
-
-function setAuthCookie(response, request, token) {
-  response.setHeader('Set-Cookie', createAuthCookieHeader(token, {
-    ttlMs: config.auth.tokenTtlMs,
-    secure: isSecureRequest(request)
-  }))
-}
-
-function clearAuthCookie(response, request) {
-  response.setHeader('Set-Cookie', createExpiredAuthCookieHeader({
-    secure: isSecureRequest(request)
-  }))
-}
-
 function getAuthorizedUser(request) {
-  const token = readAuthCookie(request.headers) || readBearerToken(request.headers)
+  const token = readBearerToken(request.headers)
   return verifyAuthToken(token, config.auth.secret)
 }
 
@@ -977,20 +918,13 @@ async function handleLogin(request, response) {
     const sharedLogin = await trySharedAuthLogin(payload)
 
     if (sharedLogin?.ok) {
-      setAuthCookie(response, request, sharedLogin.body.token)
       auditLogger.logEvent({
         event: 'auth_success',
         requestId: request.auditContext?.requestId,
         provider: 'shared',
         username: normalizeTrimmedString(sharedLogin.body?.user?.username || payload?.username)
       })
-      sendJson(response, 200, {
-        user: sharedLogin.body?.user && typeof sharedLogin.body.user === 'object'
-          ? sharedLogin.body.user
-          : {
-              username: normalizeTrimmedString(payload?.username)
-            }
-      })
+      sendJson(response, 200, sharedLogin.body)
       return
     }
 
@@ -1012,7 +946,6 @@ async function handleLogin(request, response) {
     secret: config.auth.secret,
     ttlMs: config.auth.tokenTtlMs
   })
-  setAuthCookie(response, request, token)
 
   auditLogger.logEvent({
     event: 'auth_success',
@@ -1022,36 +955,9 @@ async function handleLogin(request, response) {
   })
 
   sendJson(response, 200, {
+    token,
     user: {
       username: validation.username
-    }
-  })
-}
-
-function handleLogout(request, response) {
-  clearAuthCookie(response, request)
-  auditLogger.logEvent({
-    event: 'auth_logout',
-    requestId: request.auditContext?.requestId
-  })
-  sendEmpty(response, 204)
-}
-
-function handleGetAuthSession(request, response) {
-  const authPayload = getAuthorizedUser(request)
-
-  if (!authPayload) {
-    sendJson(response, 200, {
-      authenticated: false,
-      user: null
-    })
-    return
-  }
-
-  sendJson(response, 200, {
-    authenticated: true,
-    user: {
-      username: normalizeTrimmedString(authPayload.sub) || 'admin'
     }
   })
 }
@@ -2342,7 +2248,6 @@ async function handleRequest(request, response) {
   const requestUrl = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`)
   const { pathname } = requestUrl
   attachApiAudit(request, response, requestUrl)
-  setBaseHeaders(response, request)
 
   if (request.method === 'OPTIONS') {
     sendEmpty(response, 204)
@@ -2394,16 +2299,6 @@ async function handleRequest(request, response) {
 
   if (pathname === '/api/login' && request.method === 'POST') {
     await handleLogin(request, response)
-    return
-  }
-
-  if (pathname === '/api/auth/session' && request.method === 'GET') {
-    handleGetAuthSession(request, response)
-    return
-  }
-
-  if (pathname === '/api/logout' && request.method === 'POST') {
-    handleLogout(request, response)
     return
   }
 

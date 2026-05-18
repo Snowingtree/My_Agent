@@ -1,5 +1,18 @@
 ﻿import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import http, { buildApiUrl } from './http.js'
+import {
+  AGENT_ACTIVE_SESSION_KEY,
+  AGENT_AI_ID_KEY,
+  AGENT_AI_MODEL_KEY,
+  AGENT_EMBEDDING_AI_ID_KEY,
+  AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY,
+  AGENT_LARK_CHAT_ID_KEY,
+  AGENT_MCP_SERVER_IDS_KEY,
+  AGENT_RAG_COLLECTION_ID_KEY,
+  AGENT_RAG_COLLECTION_IDS_KEY,
+  AGENT_SKILL_ID_KEY,
+  AUTH_TOKEN_KEY
+} from './storage.js'
 
 const NEW_SESSION_TITLE = '新对话'
 const UNSELECTED_MODEL_LABEL = '未选择模型'
@@ -21,6 +34,131 @@ const CODING_MODE_PATTERNS = [
   /代码|改代码|写代码|编程|重构|修复|bug|报错|报错信息|新增文件|新建文件|创建文件|修改文件|读文件|写文件|函数|组件|接口|脚本|构建|打包|依赖|样式|css|html|js|ts|tsx|jsx|vue|react|node|npm/i,
   /\b(code|coding|bug|fix|refactor|file|files|component|function|api|build|patch|write|read|debug|test|lint|typescript|javascript|vue|react|node|npm)\b/i
 ]
+
+function createId(prefix = 'id') {
+  const normalizedPrefix = String(prefix || 'id').trim() || 'id'
+
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${normalizedPrefix}_${crypto.randomUUID().replace(/-/g, '')}`
+  }
+
+  return `${normalizedPrefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+}
+
+function resolveStorage(storage) {
+  if (
+    storage
+    && typeof storage.getItem === 'function'
+    && typeof storage.setItem === 'function'
+    && typeof storage.removeItem === 'function'
+  ) {
+    return storage
+  }
+
+  if (typeof window !== 'undefined' && window.localStorage) {
+    return window.localStorage
+  }
+
+  return null
+}
+
+function readStorageValue(storage, storageKey) {
+  const resolvedStorage = resolveStorage(storage)
+
+  if (!resolvedStorage || !storageKey) {
+    return ''
+  }
+
+  try {
+    return String(resolvedStorage.getItem(storageKey) || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+function writeStorageValue(storage, storageKey, value) {
+  const resolvedStorage = resolveStorage(storage)
+
+  if (!resolvedStorage || !storageKey) {
+    return
+  }
+
+  try {
+    const normalizedValue = String(value || '').trim()
+
+    if (!normalizedValue) {
+      resolvedStorage.removeItem(storageKey)
+      return
+    }
+
+    resolvedStorage.setItem(storageKey, normalizedValue)
+  } catch {
+    // ignore storage quota/privacy errors
+  }
+}
+
+function readStorageStringArray(storage, storageKey) {
+  const rawValue = readStorageValue(storage, storageKey)
+
+  if (!rawValue) {
+    return []
+  }
+
+  try {
+    const parsedValue = JSON.parse(rawValue)
+
+    if (Array.isArray(parsedValue)) {
+      return [...new Set(parsedValue.map((item) => String(item || '').trim()).filter(Boolean))]
+    }
+
+    if (typeof parsedValue === 'string') {
+      return parsedValue.split(/[,，]/).map((item) => item.trim()).filter(Boolean)
+    }
+  } catch {
+    // fall back to the legacy comma separated format
+  }
+
+  return [...new Set(rawValue.split(/[,，]/).map((item) => item.trim()).filter(Boolean))]
+}
+
+function writeStorageStringArray(storage, storageKey, value) {
+  const normalizedValue = Array.isArray(value)
+    ? [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))]
+    : []
+
+  writeStorageValue(storage, storageKey, normalizedValue.length ? JSON.stringify(normalizedValue) : '')
+}
+
+function readAttachmentMarkers(storage) {
+  const rawValue = readStorageValue(storage, AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY)
+
+  if (!rawValue) {
+    return {}
+  }
+
+  try {
+    const parsedValue = JSON.parse(rawValue)
+    return parsedValue && typeof parsedValue === 'object' && !Array.isArray(parsedValue) ? parsedValue : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeAttachmentMarkers(storage, value) {
+  const normalizedValue = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+
+  writeStorageValue(
+    storage,
+    AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY,
+    Object.keys(normalizedValue).length ? JSON.stringify(normalizedValue) : ''
+  )
+}
+
+function createAttachmentMetaList(value) {
+  return Array.isArray(value)
+    ? [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))]
+    : []
+}
 
 function getAttachmentBucketKey(sessionId) {
   const normalizedSessionId = String(sessionId || '').trim()
@@ -229,12 +367,13 @@ function detectCodingIntent(value) {
   return CODING_MODE_PATTERNS.some((pattern) => pattern.test(normalized))
 }
 
-export function useAgentWorkspace({ notify, confirmDelete } = {}) {
+export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
+  const resolvedStorage = resolveStorage(storage)
   const emitNotify = normalizeNotify(notify)
   const resolveDeleteConfirmation = normalizeConfirmDelete(confirmDelete)
 
   const sessions = ref([])
-  const activeSessionId = ref('')
+  const activeSessionId = ref(readStorageValue(resolvedStorage, AGENT_ACTIVE_SESSION_KEY))
   const activeSession = ref(null)
   const draft = ref('')
   const loadError = ref('')
@@ -249,13 +388,20 @@ export function useAgentWorkspace({ notify, confirmDelete } = {}) {
   const skills = ref([])
   const isLoadingAiConfigs = ref(false)
   const isLoadingSkills = ref(false)
-  const selectedAiId = ref('')
-  const selectedModel = ref('')
-  const selectedSkillIds = ref([])
-  const selectedMcpServerIds = ref([MCP_DISABLED_SELECTION])
-  const selectedLarkChatId = ref('')
-  const selectedRagCollectionIds = ref([])
-  const selectedEmbeddingAiId = ref('')
+  const selectedAiId = ref(readStorageValue(resolvedStorage, AGENT_AI_ID_KEY))
+  const selectedModel = ref(readStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY))
+  const selectedSkillIds = ref(readStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY))
+  const selectedMcpServerIds = ref(readStorageStringArray(resolvedStorage, AGENT_MCP_SERVER_IDS_KEY))
+  if (!selectedMcpServerIds.value.length) {
+    selectedMcpServerIds.value = [MCP_DISABLED_SELECTION]
+  }
+  const selectedLarkChatId = ref(readStorageValue(resolvedStorage, AGENT_LARK_CHAT_ID_KEY))
+  const legacySelectedRagCollectionId = readStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY)
+  const selectedRagCollectionIds = ref(readStorageStringArray(resolvedStorage, AGENT_RAG_COLLECTION_IDS_KEY))
+  if (!selectedRagCollectionIds.value.length && legacySelectedRagCollectionId) {
+    selectedRagCollectionIds.value = [legacySelectedRagCollectionId]
+  }
+  const selectedEmbeddingAiId = ref(readStorageValue(resolvedStorage, AGENT_EMBEDDING_AI_ID_KEY))
   const ragCollections = ref([])
   const isLoadingRagCollections = ref(false)
   const ragCollectionError = ref('')
@@ -445,23 +591,83 @@ export function useAgentWorkspace({ notify, confirmDelete } = {}) {
   let sessionStreamStartTimer = null
   let sessionStreamAbortController = null
 
-  function persistActiveSessionId() {}
+  function persistActiveSessionId() {
+    writeStorageValue(resolvedStorage, AGENT_ACTIVE_SESSION_KEY, activeSessionId.value)
+  }
 
-  function persistSelectedAi() {}
+  function persistSelectedAi() {
+    writeStorageValue(resolvedStorage, AGENT_AI_ID_KEY, selectedAiId.value)
+    writeStorageValue(resolvedStorage, AGENT_AI_MODEL_KEY, selectedModel.value)
+  }
 
-  function persistSelectedSkill() {}
+  function persistSelectedSkill() {
+    writeStorageStringArray(resolvedStorage, AGENT_SKILL_ID_KEY, selectedSkillIds.value)
+  }
 
-  function persistSelectedMcpServers() {}
+  function persistSelectedMcpServers() {
+    writeStorageStringArray(resolvedStorage, AGENT_MCP_SERVER_IDS_KEY, selectedMcpServerIds.value)
+  }
 
-  function persistSelectedLarkChat() {}
+  function persistSelectedLarkChat() {
+    writeStorageValue(resolvedStorage, AGENT_LARK_CHAT_ID_KEY, selectedLarkChatId.value)
+  }
 
-  function persistSelectedRagCollection() {}
+  function persistSelectedRagCollection() {
+    writeStorageStringArray(resolvedStorage, AGENT_RAG_COLLECTION_IDS_KEY, selectedRagCollectionIds.value)
+    writeStorageValue(resolvedStorage, AGENT_RAG_COLLECTION_ID_KEY, selectedRagCollectionIds.value[0] || '')
+  }
 
-  function persistSelectedEmbeddingAi() {}
+  function persistSelectedEmbeddingAi() {
+    writeStorageValue(resolvedStorage, AGENT_EMBEDDING_AI_ID_KEY, selectedEmbeddingAiId.value)
+  }
 
-  function setAttachmentMarker() {}
+  function getAttachmentMarkerSnapshot() {
+    return readAttachmentMarkers(resolvedStorage)
+  }
 
-  function clearAttachmentMarker() {}
+  function persistAttachmentMarkerSnapshot(value) {
+    writeAttachmentMarkers(resolvedStorage, value)
+  }
+
+  function setAttachmentMarker(sessionId, attachments) {
+    const normalizedSessionId = String(sessionId || '').trim()
+
+    if (!normalizedSessionId) {
+      return
+    }
+
+    const normalizedAttachments = Array.isArray(attachments) ? attachments.filter(Boolean) : []
+    const nextMarkers = getAttachmentMarkerSnapshot()
+
+    if (!normalizedAttachments.length) {
+      delete nextMarkers[normalizedSessionId]
+      persistAttachmentMarkerSnapshot(nextMarkers)
+      return
+    }
+
+    nextMarkers[normalizedSessionId] = {
+      names: normalizedAttachments.map((item) => item.name),
+      updatedAt: new Date().toISOString()
+    }
+    persistAttachmentMarkerSnapshot(nextMarkers)
+  }
+
+  function clearAttachmentMarker(sessionId) {
+    const normalizedSessionId = String(sessionId || '').trim()
+
+    if (!normalizedSessionId) {
+      return
+    }
+
+    const nextMarkers = getAttachmentMarkerSnapshot()
+
+    if (!nextMarkers[normalizedSessionId]) {
+      return
+    }
+
+    delete nextMarkers[normalizedSessionId]
+    persistAttachmentMarkerSnapshot(nextMarkers)
+  }
 
   function updateAttachmentBucket(bucketKey, attachments) {
     const normalizedBucketKey = getAttachmentBucketKey(bucketKey)
@@ -518,8 +724,35 @@ export function useAgentWorkspace({ notify, confirmDelete } = {}) {
     }
   }
 
-  function maybeShowExpiredAttachmentNotice() {
-    expiredAttachmentNotice.value = null
+  function maybeShowExpiredAttachmentNotice(sessionId) {
+    const normalizedSessionId = String(sessionId || '').trim()
+
+    if (!normalizedSessionId) {
+      expiredAttachmentNotice.value = null
+      return
+    }
+
+    const activeAttachments = Array.isArray(sessionAttachments.value[getAttachmentBucketKey(normalizedSessionId)])
+      ? sessionAttachments.value[getAttachmentBucketKey(normalizedSessionId)]
+      : []
+
+    if (activeAttachments.length) {
+      expiredAttachmentNotice.value = null
+      clearAttachmentMarker(normalizedSessionId)
+      return
+    }
+
+    const marker = getAttachmentMarkerSnapshot()[normalizedSessionId]
+
+    if (!marker) {
+      expiredAttachmentNotice.value = null
+      return
+    }
+
+    expiredAttachmentNotice.value = {
+      sessionId: normalizedSessionId,
+      names: createAttachmentMetaList(marker.names)
+    }
   }
 
   function dismissExpiredAttachmentNotice() {
@@ -758,12 +991,18 @@ export function useAgentWorkspace({ notify, confirmDelete } = {}) {
     sessionStreamAbortController = controller
 
     try {
+      const token = readStorageValue(resolvedStorage, AUTH_TOKEN_KEY)
+      const headers = {
+        Accept: 'text/event-stream'
+      }
+
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+
       const response = await fetch(buildApiUrl(`/api/agent/sessions/${normalizedSessionId}/stream`), {
         method: 'GET',
-        headers: {
-          Accept: 'text/event-stream'
-        },
-        credentials: 'include',
+        headers,
         signal: controller.signal
       })
 
