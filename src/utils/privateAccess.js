@@ -4,11 +4,11 @@ const DEFAULT_PRIVATE_APP_BASE_URL = (
 const DEFAULT_PUBLIC_APP_BASE_URL = (
   import.meta.env.VITE_PUBLIC_APP_BASE_URL || 'http://www.wmzh.online'
 ).replace(/\/$/, '')
-const PRIVATE_APP_RUNTIME_ACCESS_KEY = 'private-app-runtime-access'
 const PRIVATE_APP_ALLOWED_HOSTS = String(import.meta.env.VITE_PRIVATE_APP_ALLOWED_HOSTS || '')
   .split(',')
   .map((host) => host.trim().toLowerCase())
   .filter(Boolean)
+let runtimePrivateAppAccess = false
 
 function normalizeHostname(value) {
   return String(value || '').trim().toLowerCase()
@@ -62,24 +62,11 @@ function getPublicAppBaseUrl() {
 }
 
 function setRuntimePrivateAppAccess(value) {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  if (value) {
-    window.sessionStorage?.setItem(PRIVATE_APP_RUNTIME_ACCESS_KEY, 'true')
-    return
-  }
-
-  window.sessionStorage?.removeItem(PRIVATE_APP_RUNTIME_ACCESS_KEY)
+  runtimePrivateAppAccess = Boolean(value)
 }
 
 function hasRuntimePrivateAppAccess() {
-  if (typeof window === 'undefined') {
-    return false
-  }
-
-  return window.sessionStorage?.getItem(PRIVATE_APP_RUNTIME_ACCESS_KEY) === 'true'
+  return runtimePrivateAppAccess
 }
 
 function canUsePrivateAppOrigin() {

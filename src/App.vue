@@ -3,8 +3,12 @@
     <PrivateAccessLoadingOverlay :state="privateAppChecking ? 'checking' : 'denied'" />
   </main>
 
+  <main v-else-if="authChecking" class="auth-layout">
+    <PrivateAccessLoadingOverlay state="checking" />
+  </main>
+
   <main v-else-if="isAuthenticated" class="agent-root">
-    <AgentWorkspaceScreen @logout="handleLogout" />
+    <AgentWorkspaceScreen :username="currentUsername" @logout="handleLogout" />
   </main>
 
   <main v-else class="auth-layout">
@@ -20,13 +24,13 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import LoginForm from './components/LoginForm/LoginForm.vue'
 import PrivateAccessLoadingOverlay from './components/PrivateAccessLoadingOverlay/PrivateAccessLoadingOverlay.vue'
 import { usePrivateAppAccess } from './hooks/usePrivateAppAccess.js'
-import { clearAgentAuthSession, persistAgentAuthSession } from './auth.js'
+import { clearAgentAuthSession, clearAgentWorkspacePreferences, persistAgentAuthSession } from './auth.js'
 import http from './http.js'
-import { AGENT_AUTH_CHANGED_EVENT, AGENT_AUTH_KEY, AUTH_TOKEN_KEY } from './storage.js'
+import { LEGACY_AUTH_TOKEN_KEY } from './storage.js'
 import AgentWorkspaceScreen from './components/AgentWorkspaceScreen.vue'
 
 const agentTitle = 'Agent'
@@ -34,7 +38,9 @@ const LEGACY_LOGIN_ENDPOINT = '/api/login'
 const submitting = ref(false)
 const serverError = ref('')
 const { privateAppAvailable, privateAppChecking } = usePrivateAppAccess()
-const isAuthenticated = ref(readAgentAuthState())
+const authChecking = ref(false)
+const isAuthenticated = ref(false)
+const currentUsername = ref('')
 
 let previousHtmlOverflow = ''
 let previousBodyOverflow = ''
@@ -69,32 +75,6 @@ function syncDocumentScrollLock(locked) {
   isDocumentScrollLocked = false
 }
 
-function readAgentAuthState() {
-  const token = localStorage.getItem(AUTH_TOKEN_KEY)
-
-  return (
-    localStorage.getItem(AGENT_AUTH_KEY) === 'true'
-    && typeof token === 'string'
-    && token.trim().length > 0
-  )
-}
-
-function refreshAuthState() {
-  isAuthenticated.value = readAgentAuthState()
-}
-
-function handleAuthStateChanged() {
-  refreshAuthState()
-}
-
-function handleStorageChanged(event) {
-  const changedKey = String(event?.key || '').trim()
-
-  if (!changedKey || [AGENT_AUTH_KEY, AUTH_TOKEN_KEY].includes(changedKey)) {
-    refreshAuthState()
-  }
-}
-
 async function loginWithSharedBlogAuth(payload) {
   const response = await fetch(LEGACY_LOGIN_ENDPOINT, {
     method: 'POST',
@@ -102,7 +82,8 @@ async function loginWithSharedBlogAuth(payload) {
       'Content-Type': 'application/json',
       Accept: 'application/json'
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    credentials: 'include'
   })
   const rawBody = await response.text()
   let body = null
@@ -126,6 +107,29 @@ async function loginWithSharedBlogAuth(payload) {
   return body || {}
 }
 
+async function syncAuthSession() {
+  if (!privateAppAvailable.value) {
+    return
+  }
+
+  authChecking.value = true
+  localStorage.removeItem(LEGACY_AUTH_TOKEN_KEY)
+  clearAgentWorkspacePreferences({ storage: localStorage })
+
+  try {
+    const data = await http.get('/api/auth/session')
+    isAuthenticated.value = Boolean(data?.authenticated)
+    currentUsername.value = isAuthenticated.value
+      ? String(data?.user?.username || '').trim()
+      : ''
+  } catch {
+    isAuthenticated.value = false
+    currentUsername.value = ''
+  } finally {
+    authChecking.value = false
+  }
+}
+
 async function handleLogin(payload) {
   serverError.value = ''
   submitting.value = true
@@ -133,59 +137,60 @@ async function handleLogin(payload) {
   try {
     const data = await loginWithSharedBlogAuth(payload)
     const username = typeof data.user?.username === 'string' ? data.user.username : payload.username
-    const token = typeof data.token === 'string' ? data.token : ''
-
-    if (!token) {
-      throw new Error('Login succeeded but the server did not return an auth token.')
-    }
 
     persistAgentAuthSession({
-      storage: localStorage,
-      username,
-      token,
-      authTokenKey: AUTH_TOKEN_KEY
+      storage: localStorage
     })
 
-    refreshAuthState()
+    currentUsername.value = String(username || '').trim()
+    isAuthenticated.value = true
   } catch (error) {
     clearAgentAuthSession({
-      storage: localStorage,
-      authTokenKey: AUTH_TOKEN_KEY
+      storage: localStorage
     })
     serverError.value = error instanceof Error ? error.message : 'Login failed. Please try again.'
-    refreshAuthState()
+    currentUsername.value = ''
+    isAuthenticated.value = false
   } finally {
     submitting.value = false
   }
 }
 
-function handleLogout() {
+async function handleLogout() {
+  try {
+    await http.post('/api/logout')
+  } catch {
+    // Local cleanup still matters if the network request fails or the cookie is already expired.
+  }
+
   clearAgentAuthSession({
     storage: localStorage,
-    authTokenKey: AUTH_TOKEN_KEY
+    clearPreferences: true
   })
-  refreshAuthState()
+  currentUsername.value = ''
+  isAuthenticated.value = false
 }
 
 watch(isAuthenticated, (value) => {
   syncDocumentScrollLock(value)
 }, { immediate: true })
 
-onMounted(() => {
-  syncDocumentScrollLock(isAuthenticated.value)
+watch(
+  privateAppAvailable,
+  (available) => {
+    if (available) {
+      void syncAuthSession()
+      return
+    }
 
-  if (typeof window !== 'undefined') {
-    window.addEventListener(AGENT_AUTH_CHANGED_EVENT, handleAuthStateChanged)
-    window.addEventListener('storage', handleStorageChanged)
-  }
-})
+    authChecking.value = false
+    isAuthenticated.value = false
+    currentUsername.value = ''
+  },
+  { immediate: true }
+)
 
 onBeforeUnmount(() => {
-  if (typeof window !== 'undefined') {
-    window.removeEventListener(AGENT_AUTH_CHANGED_EVENT, handleAuthStateChanged)
-    window.removeEventListener('storage', handleStorageChanged)
-  }
-
   syncDocumentScrollLock(false)
 })
 </script>

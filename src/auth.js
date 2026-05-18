@@ -1,6 +1,19 @@
-import { AGENT_AUTH_CHANGED_EVENT, AGENT_AUTH_KEY, AGENT_USERNAME_KEY } from './storage.js'
-
-const DEFAULT_AGENT_USERNAME = '访客'
+import {
+  AGENT_ACTIVE_SESSION_KEY,
+  AGENT_AI_ID_KEY,
+  AGENT_AI_MODEL_KEY,
+  AGENT_AUTH_CHANGED_EVENT,
+  AGENT_AUTH_KEY,
+  AGENT_EMBEDDING_AI_ID_KEY,
+  AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY,
+  AGENT_LARK_CHAT_ID_KEY,
+  AGENT_MCP_SERVER_IDS_KEY,
+  AGENT_RAG_COLLECTION_IDS_KEY,
+  AGENT_SKILL_ID_KEY,
+  AGENT_USERNAME_KEY,
+  LEGACY_AGENT_RAG_COLLECTION_ID_KEY,
+  LEGACY_AUTH_TOKEN_KEY
+} from './storage.js'
 
 function resolveStorage(storage) {
   if (storage && typeof storage.getItem === 'function') {
@@ -14,10 +27,6 @@ function resolveStorage(storage) {
   return null
 }
 
-function normalizeValue(value) {
-  return String(value ?? '').trim()
-}
-
 function notifyAgentAuthChanged() {
   if (typeof window === 'undefined') {
     return
@@ -26,59 +35,68 @@ function notifyAgentAuthChanged() {
   window.dispatchEvent(new Event(AGENT_AUTH_CHANGED_EVENT))
 }
 
-export function getAgentUsername({ storage, fallback = DEFAULT_AGENT_USERNAME } = {}) {
-  const resolvedStorage = resolveStorage(storage)
-
-  if (!resolvedStorage) {
-    return fallback
-  }
-
-  return normalizeValue(resolvedStorage.getItem(AGENT_USERNAME_KEY)) || fallback
-}
-
-export function persistAgentAuthSession({
-  storage,
-  username,
-  token,
-  authTokenKey
-} = {}) {
-  const resolvedStorage = resolveStorage(storage)
-
-  if (!resolvedStorage) {
+function removeStorageKeys(storage, keys) {
+  if (!storage || !Array.isArray(keys)) {
     return
   }
 
-  const normalizedToken = normalizeValue(token)
+  keys.forEach((key) => {
+    if (key) {
+      storage.removeItem(key)
+    }
+  })
+}
 
-  if (!normalizedToken) {
-    throw new Error('Agent auth session requires a token.')
-  }
+export function clearAgentWorkspacePreferences({ storage } = {}) {
+  const resolvedStorage = resolveStorage(storage)
 
-  resolvedStorage.setItem(AGENT_AUTH_KEY, 'true')
-  resolvedStorage.setItem(
+  removeStorageKeys(resolvedStorage, [
+    AGENT_AUTH_KEY,
     AGENT_USERNAME_KEY,
-    normalizeValue(username) || DEFAULT_AGENT_USERNAME
-  )
+    AGENT_ACTIVE_SESSION_KEY,
+    AGENT_AI_ID_KEY,
+    AGENT_AI_MODEL_KEY,
+    AGENT_SKILL_ID_KEY,
+    AGENT_MCP_SERVER_IDS_KEY,
+    AGENT_LARK_CHAT_ID_KEY,
+    AGENT_RAG_COLLECTION_IDS_KEY,
+    AGENT_EMBEDDING_AI_ID_KEY,
+    AGENT_EPHEMERAL_ATTACHMENT_MARKERS_KEY,
+    LEGACY_AGENT_RAG_COLLECTION_ID_KEY,
+    LEGACY_AUTH_TOKEN_KEY
+  ])
 
-  if (authTokenKey) {
-    resolvedStorage.setItem(authTokenKey, normalizedToken)
+  if (typeof sessionStorage !== 'undefined') {
+    removeStorageKeys(sessionStorage, [
+      AGENT_MCP_SERVER_IDS_KEY,
+      AGENT_LARK_CHAT_ID_KEY
+    ])
   }
+}
+
+export function persistAgentAuthSession({ storage } = {}) {
+  const resolvedStorage = resolveStorage(storage)
+
+  removeStorageKeys(resolvedStorage, [
+    AGENT_AUTH_KEY,
+    AGENT_USERNAME_KEY,
+    LEGACY_AUTH_TOKEN_KEY
+  ])
 
   notifyAgentAuthChanged()
 }
 
-export function clearAgentAuthSession({ storage, authTokenKey } = {}) {
+export function clearAgentAuthSession({ storage, clearPreferences = false } = {}) {
   const resolvedStorage = resolveStorage(storage)
 
-  if (!resolvedStorage) {
-    return
-  }
+  removeStorageKeys(resolvedStorage, [
+    AGENT_AUTH_KEY,
+    AGENT_USERNAME_KEY,
+    LEGACY_AUTH_TOKEN_KEY
+  ])
 
-  resolvedStorage.removeItem(AGENT_AUTH_KEY)
-  resolvedStorage.removeItem(AGENT_USERNAME_KEY)
-
-  if (authTokenKey) {
-    resolvedStorage.removeItem(authTokenKey)
+  if (clearPreferences) {
+    clearAgentWorkspacePreferences({ storage: resolvedStorage })
   }
 
   notifyAgentAuthChanged()

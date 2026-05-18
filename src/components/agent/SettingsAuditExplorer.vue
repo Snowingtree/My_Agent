@@ -148,6 +148,7 @@ const EVENT_LABELS = {
   api_response: '接口响应',
   auth_success: '登录成功',
   auth_failure: '登录失败',
+  auth_logout: '退出登录',
   user_message: '用户消息',
   ai_message: '回复入库',
   llm_input: '模型输入',
@@ -383,6 +384,7 @@ function createReadableEventTitle(event) {
   if (type === 'api_response') return `接口响应完成：${event?.method || 'GET'} ${requestPath}，状态 ${event?.statusCode ?? '未知'}`
   if (type === 'auth_success') return `登录成功：${event?.username || '未知用户'}`
   if (type === 'auth_failure') return `登录失败：${event?.username || '未知用户'}`
+  if (type === 'auth_logout') return '用户退出登录，后端已清除认证 Cookie'
   if (type === 'user_message') return `用户发送：${event?.contentPreview || '(空消息)'}`
   if (type === 'workspace_read') return `读取工作区内容：${event?.path || event?.query || '(未记录路径)'}`
   if (type === 'workspace_write') return `写入工作区文件：${event?.path || '(未记录路径)'}`
@@ -454,6 +456,10 @@ function createReadableEventSummary(event) {
 
   if (type === 'auth_failure') {
     return '认证失败，没有发放访问 token。'
+  }
+
+  if (type === 'auth_logout') {
+    return '后端返回过期的 HttpOnly Cookie，浏览器会删除当前认证状态。'
   }
 
   if (type === 'llm_decision') {

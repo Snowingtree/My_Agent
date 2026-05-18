@@ -403,11 +403,17 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { createMessage } from 'snowingress-my-components'
-import { getAgentUsername } from '../auth.js'
 import http from '../http.js'
 import { useAgentWorkspace } from '../useAgentWorkspace.js'
 import AgentWorkspace from './agent/AgentWorkspace/AgentWorkspace.vue'
 import ModelConfigPage from './agent/ModelConfigPage.vue'
+
+const props = defineProps({
+  username: {
+    type: String,
+    default: ''
+  }
+})
 
 defineEmits(['logout'])
 
@@ -609,7 +615,7 @@ watch(
   }
 )
 
-const username = ref(getAgentUsername({ storage: localStorage }))
+const username = computed(() => String(props.username || '').trim() || '访客')
 const userInitial = computed(() => {
   const value = String(username.value || '').trim()
   return value ? value.charAt(0).toUpperCase() : 'A'
@@ -696,7 +702,6 @@ const {
   workspaceFileError,
   workspaceMode
 } = useAgentWorkspace({
-  storage: localStorage,
   notify,
   confirmDelete: () => window.confirm('确认删除这个 Agent 会话吗？')
 })

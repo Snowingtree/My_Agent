@@ -1,5 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 
+export const AUTH_COOKIE_NAME = 'magent_auth_token'
+
 function base64urlEncode(value) {
   return Buffer.from(value).toString('base64url')
 }
@@ -115,6 +117,65 @@ export function verifyAuthToken(token, secret) {
   }
 
   return null
+}
+
+export function readCookieValue(headers, name) {
+  const normalizedName = String(name || '').trim()
+  const cookieHeader = String(headers?.cookie || '').trim()
+
+  if (!normalizedName || !cookieHeader) {
+    return ''
+  }
+
+  const prefix = `${normalizedName}=`
+  const pair = cookieHeader
+    .split(';')
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(prefix))
+
+  if (!pair) {
+    return ''
+  }
+
+  try {
+    return decodeURIComponent(pair.slice(prefix.length))
+  } catch {
+    return pair.slice(prefix.length)
+  }
+}
+
+export function readAuthCookie(headers) {
+  return readCookieValue(headers, AUTH_COOKIE_NAME)
+}
+
+function createCookieHeader(name, value, attributes = []) {
+  return [
+    `${name}=${encodeURIComponent(String(value || ''))}`,
+    ...attributes.filter(Boolean)
+  ].join('; ')
+}
+
+export function createAuthCookieHeader(token, { ttlMs, secure = false } = {}) {
+  const maxAgeSeconds = Math.max(1, Math.floor(Number(ttlMs || 0) / 1000))
+
+  return createCookieHeader(AUTH_COOKIE_NAME, token, [
+    'Path=/',
+    `Max-Age=${maxAgeSeconds}`,
+    'HttpOnly',
+    'SameSite=Lax',
+    secure ? 'Secure' : ''
+  ])
+}
+
+export function createExpiredAuthCookieHeader({ secure = false } = {}) {
+  return createCookieHeader(AUTH_COOKIE_NAME, '', [
+    'Path=/',
+    'Max-Age=0',
+    'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+    'HttpOnly',
+    'SameSite=Lax',
+    secure ? 'Secure' : ''
+  ])
 }
 
 export function readBearerToken(headers) {
