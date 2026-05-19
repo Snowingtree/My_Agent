@@ -400,6 +400,73 @@ function extractJsonLikeObjectField(rawText, fieldName) {
   return null
 }
 
+function extractJsonLikeBooleanField(rawText, fieldName) {
+  const source = String(rawText || '')
+  const fieldToken = `"${fieldName}"`
+  const startIndex = source.indexOf(fieldToken)
+
+  if (startIndex === -1) {
+    return undefined
+  }
+
+  const colonIndex = source.indexOf(':', startIndex + fieldToken.length)
+
+  if (colonIndex === -1) {
+    return undefined
+  }
+
+  const valueMatch = source.slice(colonIndex + 1).trimStart().match(/^(true|false)\b/i)
+
+  if (!valueMatch) {
+    return undefined
+  }
+
+  return valueMatch[1].toLowerCase() === 'true'
+}
+
+function extractToolSource(rawText) {
+  const source = String(rawText || '')
+  const toolFieldIndex = source.indexOf('"tool"')
+
+  return toolFieldIndex === -1 ? source : source.slice(toolFieldIndex)
+}
+
+function extractToolNameLoose(rawText) {
+  const toolSource = extractToolSource(rawText)
+
+  return extractJsonLikeStringField(toolSource, 'name', ['args', 'summary', 'reply', 'question'])
+    || extractJsonLikeStringFieldLoose(toolSource, 'name')
+}
+
+function tryRecoverWriteFileTool(rawText) {
+  const toolName = extractToolNameLoose(rawText)
+
+  if (toolName !== 'write_file') {
+    return null
+  }
+
+  const path = extractJsonLikeStringField(rawText, 'path', ['content', 'createDirectories', 'mode'])
+    || extractJsonLikeStringFieldLoose(rawText, 'path')
+  const content = extractJsonLikeStringField(rawText, 'content', ['createDirectories', 'mode'])
+  const mode = extractJsonLikeStringField(rawText, 'mode', ['path', 'content', 'createDirectories'])
+    || extractJsonLikeStringFieldLoose(rawText, 'mode')
+  const createDirectories = extractJsonLikeBooleanField(rawText, 'createDirectories')
+
+  if (!path || !content) {
+    return null
+  }
+
+  return {
+    name: 'write_file',
+    args: {
+      ...(mode ? { mode } : {}),
+      path,
+      content,
+      ...(createDirectories === undefined ? {} : { createDirectories })
+    }
+  }
+}
+
 function tryRecoverJsonLikeResponse(rawText) {
   const action = extractJsonLikeStringField(rawText, 'action', ['summary', 'reply', 'question', 'tool'])
     || extractJsonLikeStringField(rawText, 'action', ['thought_summary', 'thoughtSummary', 'summary', 'reply', 'question', 'tool'])
@@ -457,6 +524,7 @@ function tryRecoverJsonLikeResponse(rawText) {
     const summary = extractJsonLikeStringField(rawText, 'summary', ['tool', 'reply', 'question'])
       || extractJsonLikeStringFieldLoose(rawText, 'summary')
     const tool = extractJsonLikeObjectField(rawText, 'tool')
+      || tryRecoverWriteFileTool(rawText)
 
     if (!tool?.name) {
       return null

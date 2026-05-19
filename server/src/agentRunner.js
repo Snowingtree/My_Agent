@@ -1121,6 +1121,7 @@ function buildAgentLoopMessages({
     'Coding quality rule: before calling write_file or apply_patch for code changes, inspect the workspace with list_files, search_text, or read_file in this task. Understand the existing structure before editing.',
     'If ephemeral uploaded files are provided, treat them as conversation-scoped reference material for this run.',
     'Use apply_patch for targeted edits and write_file for new files or full rewrites.',
+    'When using write_file, args.content must be one valid JSON string: escape line breaks as \\n and quotes as \\"; do not place raw multiline code directly inside the JSON string.',
     'Never claim that a file changed unless a write tool actually succeeded.',
     'When you modify files and a verification command is available, expect a follow-up verification step before the final answer. If verification fails, inspect the error, make the smallest fix, and verify again.',
     ...(requireFileChanges

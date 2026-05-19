@@ -793,30 +793,73 @@
       :class="{ 'is-visible': hasWorkspaceFilePreview }"
       :aria-hidden="hasWorkspaceFilePreview ? 'false' : 'true'"
     >
-      <section class="agent-code-viewer">
+      <section
+        class="agent-code-viewer"
+        :class="{ 'is-preview-mode': isHtmlWorkspaceFile && workspaceFileViewMode === 'preview' }"
+      >
         <div class="agent-code-viewer__head">
-          <div class="agent-code-viewer__head-copy">
-            <p class="agent-panel__eyebrow">文件预览</p>
-            <h3>{{ selectedWorkspaceFileDisplayName }}</h3>
-            <small>{{ selectedWorkspaceFileMeta }}</small>
+          <div class="agent-code-viewer__head-main">
+            <div class="agent-code-viewer__view-tabs" role="tablist" aria-label="文件查看方式">
+              <button
+                type="button"
+                class="agent-code-viewer__view-tab"
+                :class="{ 'is-active': workspaceFileViewMode === 'code' }"
+                role="tab"
+                :aria-selected="workspaceFileViewMode === 'code' ? 'true' : 'false'"
+                @click="setWorkspaceFileViewMode('code')"
+              >
+                代码
+              </button>
+              <button
+                v-if="isHtmlWorkspaceFile"
+                type="button"
+                class="agent-code-viewer__view-tab"
+                :class="{ 'is-active': workspaceFileViewMode === 'preview' }"
+                role="tab"
+                :aria-selected="workspaceFileViewMode === 'preview' ? 'true' : 'false'"
+                @click="setWorkspaceFileViewMode('preview')"
+              >
+                预览
+              </button>
+            </div>
+            <div class="agent-code-viewer__head-copy">
+              <h3>{{ selectedWorkspaceFileDisplayName }}</h3>
+            </div>
           </div>
-          <button
-            type="button"
-            class="agent-code-viewer__close"
-            aria-label="收起文件预览"
-            @click="$emit('close-workspace-file')"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M9 6L15 12L9 18"
-                fill="none"
-                stroke="currentColor"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="1.9"
-              />
-            </svg>
-          </button>
+          <div class="agent-code-viewer__actions">
+            <button
+              type="button"
+              class="agent-code-viewer__copy"
+              :class="{ 'is-copied': hasCopiedWorkspaceFile }"
+              :disabled="!normalizedWorkspaceFileContent || isLoadingWorkspaceFile"
+              :aria-label="hasCopiedWorkspaceFile ? '代码已复制' : (isCopyingWorkspaceFile ? '正在复制代码' : '复制代码')"
+              title="复制"
+              @click="copyWorkspaceFileContent"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="9" y="9" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.7" />
+                <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="agent-code-viewer__close"
+              aria-label="收起文件预览"
+              title="关闭"
+              @click="$emit('close-workspace-file')"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M6 6L18 18M18 6L6 18"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.9"
+                />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <p v-if="workspaceFileError" class="form-error agent-code-viewer__status">{{ workspaceFileError }}</p>
@@ -826,20 +869,15 @@
           <div v-if="hasCopiedWorkspaceFile" class="agent-code-viewer__copy-toast" role="status" aria-live="polite">
             已复制到剪贴板
           </div>
-          <button
-            type="button"
-            class="agent-code-viewer__copy agent-code-viewer__copy--overlay"
-            :class="{ 'is-copied': hasCopiedWorkspaceFile }"
-            :disabled="!normalizedWorkspaceFileContent || isLoadingWorkspaceFile"
-            :aria-label="hasCopiedWorkspaceFile ? '代码已复制' : (isCopyingWorkspaceFile ? '正在复制代码' : '复制代码')"
-            @click="copyWorkspaceFileContent"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="9" y="9" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.7" />
-              <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
-            </svg>
-          </button>
-          <pre class="agent-code-viewer__body"><code class="hljs" v-html="renderedWorkspaceFileContent"></code></pre>
+          <iframe
+            v-if="isHtmlWorkspaceFile && workspaceFileViewMode === 'preview'"
+            class="agent-code-viewer__preview-frame"
+            title="HTML 预览"
+            sandbox="allow-scripts allow-forms allow-modals"
+            referrerpolicy="no-referrer"
+            :srcdoc="normalizedWorkspaceFileContent"
+          ></iframe>
+          <pre v-else class="agent-code-viewer__body"><code class="hljs" v-html="renderedWorkspaceFileContent"></code></pre>
         </div>
       </section>
     </aside>
@@ -977,6 +1015,7 @@ const activeSessionExtraTab = ref('skill')
 const suppressAutoOpen = ref(false)
 const hasInitializedWorkspaceFilesForSession = ref(false)
 const renderedWorkspaceFileContent = ref('')
+const workspaceFileViewMode = ref('code')
 let activeResizePointerId = null
 let workspaceFileCopyResetTimer = null
 let conversationCopyToastTimer = null
@@ -1440,16 +1479,23 @@ const selectedWorkspaceLanguage = computed(() => {
   return extensionMap[extension] || ''
 })
 
-const selectedWorkspaceFileMeta = computed(() => {
-  const sizeBytes = Number(props.selectedWorkspaceFileSizeBytes)
-  const sizeLabel = Number.isFinite(sizeBytes)
-    ? (sizeBytes >= 1024 ? `${(sizeBytes / 1024).toFixed(1)} KB` : `${sizeBytes} B`)
-    : ''
-  const updatedAt = String(props.selectedWorkspaceFileUpdatedAt || '').trim()
-  const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleString('zh-CN') : ''
+const selectedWorkspaceFileExtension = computed(() => {
+  const normalizedPath = String(props.selectedWorkspaceFilePath || '').trim().toLowerCase()
 
-  return [sizeLabel, updatedLabel].filter(Boolean).join(' · ')
+  if (!normalizedPath.includes('.')) {
+    return ''
+  }
+
+  return normalizedPath.split('.').pop() || ''
 })
+
+const selectedWorkspaceFileExtensionLabel = computed(() => (
+  selectedWorkspaceFileExtension.value || 'file'
+))
+
+const isHtmlWorkspaceFile = computed(() => (
+  ['html', 'htm'].includes(selectedWorkspaceFileExtension.value)
+))
 
 const selectedWorkspaceFileDisplayName = computed(() => {
   return getFileDisplayName(props.selectedWorkspaceFilePath)
@@ -2629,6 +2675,14 @@ function startPreviewResize(event) {
   updatePreviewWidthFromClientX(event.clientX)
 }
 
+function setWorkspaceFileViewMode(mode) {
+  const normalizedMode = String(mode || '').trim()
+
+  workspaceFileViewMode.value = normalizedMode === 'preview' && isHtmlWorkspaceFile.value
+    ? 'preview'
+    : 'code'
+}
+
 function handleComposerKeydown(event) {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) {
     return
@@ -2770,6 +2824,23 @@ watch(
       stopPreviewResize()
     }
   }
+)
+
+watch(
+  () => props.selectedWorkspaceFilePath,
+  () => {
+    workspaceFileViewMode.value = 'code'
+  }
+)
+
+watch(
+  isHtmlWorkspaceFile,
+  (isHtmlFile) => {
+    if (!isHtmlFile) {
+      workspaceFileViewMode.value = 'code'
+    }
+  },
+  { immediate: true }
 )
 
 watch(
@@ -5266,34 +5337,79 @@ onBeforeUnmount(() => {
 
 .agent-code-viewer__head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+.agent-code-viewer__head-main {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
+.agent-code-viewer__view-tabs {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 36px;
+  padding: 3px;
+  border-radius: 999px;
+  background: #f3f4f6;
+}
+
+.agent-code-viewer__view-tab {
+  min-width: 48px;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #667085;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 650;
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.agent-code-viewer__view-tab.is-active {
+  background: #ffffff;
+  color: #101828;
+  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.1);
+}
+
+.agent-code-viewer__view-tab:hover:not(.is-active) {
+  color: #344054;
 }
 
 .agent-code-viewer__head-copy {
   min-width: 0;
 }
 
-.agent-code-viewer__head-copy h3,
-.agent-code-viewer__head-copy p,
-.agent-code-viewer__head-copy small {
+.agent-code-viewer__head-copy h3 {
   margin: 0;
 }
 
 .agent-code-viewer__head-copy h3 {
-  margin-top: 6px;
   color: var(--agent-text);
   font-size: 1rem;
   line-height: 1.5;
-  word-break: break-word;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.agent-code-viewer__head-copy small {
-  display: block;
-  margin-top: 8px;
-  color: var(--agent-subtle);
-  font-size: 0.78rem;
+.agent-code-viewer__actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
 }
 
 .agent-code-viewer__copy,
@@ -5314,6 +5430,12 @@ onBeforeUnmount(() => {
 
 .agent-code-viewer__copy {
   line-height: 1;
+}
+
+.agent-code-viewer__copy.is-copied {
+  background: #eaf7ee;
+  border-color: #cbe9d5;
+  color: #227a48;
 }
 
 .agent-code-viewer__copy svg {
@@ -5344,24 +5466,14 @@ onBeforeUnmount(() => {
   color: #264db7;
 }
 
-.agent-code-viewer__copy--overlay {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 2;
-  box-shadow: 0 8px 24px rgba(31, 41, 55, 0.08);
-}
-
-.agent-code-viewer__copy--overlay.is-copied {
-  background: #eaf7ee;
-  border-color: #cbe9d5;
-  color: #227a48;
-}
-
 .agent-code-viewer__body-wrap {
   position: relative;
   min-height: 0;
   display: grid;
+}
+
+.agent-code-viewer.is-preview-mode .agent-code-viewer__body-wrap {
+  min-height: clamp(480px, 68dvh, 760px);
 }
 
 .agent-code-viewer__copy-toast {
@@ -5400,6 +5512,16 @@ onBeforeUnmount(() => {
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.agent-code-viewer__preview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+  border: 1px solid var(--agent-border);
+  border-radius: 18px;
+  background: #ffffff;
 }
 
 .agent-code-viewer__body code {
@@ -5603,17 +5725,16 @@ onBeforeUnmount(() => {
     border-radius: 18px;
   }
 
+  .agent-code-viewer.is-preview-mode .agent-code-viewer__body-wrap {
+    min-height: calc(100dvh - 126px);
+  }
+
   .agent-code-viewer__head {
     align-items: center;
   }
 
   .agent-code-viewer__head-copy h3 {
     font-size: 0.94rem;
-  }
-
-  .agent-code-viewer__head-copy small {
-    margin-top: 4px;
-    font-size: 0.72rem;
   }
 
   .agent-code-viewer__body {
