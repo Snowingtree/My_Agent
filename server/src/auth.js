@@ -31,20 +31,41 @@ export function safeCompare(left, right) {
   return timingSafeEqual(leftHash, rightHash)
 }
 
-export function createAuthToken({ username, secret, ttlMs }) {
+export function createAuthToken({ username, secret, ttlMs, type = '' }) {
   const issuedAt = Date.now()
   const payload = {
     sub: username,
     iat: issuedAt,
     exp: issuedAt + ttlMs
   }
+
+  if (type) {
+    payload.typ = type
+  }
+
   const payloadSegment = base64urlEncode(JSON.stringify(payload))
   const signatureSegment = signPayload(payloadSegment, secret)
 
   return `${payloadSegment}.${signatureSegment}`
 }
 
-function verifyLegacyAuthToken(token, secret) {
+function verifyTokenPayloadType(payload, expectedType) {
+  const normalizedExpectedType = String(expectedType || '').trim()
+
+  if (!normalizedExpectedType) {
+    return true
+  }
+
+  const actualType = String(payload?.typ || '').trim()
+
+  if (!actualType && normalizedExpectedType === 'access') {
+    return true
+  }
+
+  return actualType === normalizedExpectedType
+}
+
+function verifyLegacyAuthToken(token, secret, options = {}) {
   const [payloadSegment, signatureSegment] = token.split('.')
 
   if (!payloadSegment || !signatureSegment) {
@@ -63,10 +84,10 @@ function verifyLegacyAuthToken(token, secret) {
     return null
   }
 
-  return payload
+  return verifyTokenPayloadType(payload, options.expectedType) ? payload : null
 }
 
-function verifyJwtAuthToken(token, secret) {
+function verifyJwtAuthToken(token, secret, options = {}) {
   const [headerSegment, payloadSegment, signatureSegment] = token.split('.')
 
   if (!headerSegment || !payloadSegment || !signatureSegment) {
@@ -94,10 +115,10 @@ function verifyJwtAuthToken(token, secret) {
     return null
   }
 
-  return payload
+  return verifyTokenPayloadType(payload, options.expectedType) ? payload : null
 }
 
-export function verifyAuthToken(token, secret) {
+export function verifyAuthToken(token, secret, options = {}) {
   const normalizedToken = String(token || '').trim()
 
   if (!normalizedToken) {
@@ -107,11 +128,11 @@ export function verifyAuthToken(token, secret) {
   const segments = normalizedToken.split('.')
 
   if (segments.length === 2) {
-    return verifyLegacyAuthToken(normalizedToken, secret)
+    return verifyLegacyAuthToken(normalizedToken, secret, options)
   }
 
   if (segments.length === 3) {
-    return verifyJwtAuthToken(normalizedToken, secret)
+    return verifyJwtAuthToken(normalizedToken, secret, options)
   }
 
   return null

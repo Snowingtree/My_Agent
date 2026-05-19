@@ -6,7 +6,7 @@ import { createAuditLogger } from './auditLogger.js'
 import { createConfig } from './config.js'
 import { createEmbeddingClient } from './embeddingClient.js'
 import { loadEnvFiles } from './env.js'
-import { createAuthToken, readBearerToken, safeCompare, verifyAuthToken } from './auth.js'
+import { createAuthToken, readBearerToken, verifyAuthToken } from './auth.js'
 import { getAiConfigById, insertAiConfig, loadAiConfigs, resolveModel, toPublicAiConfig, updateAiConfig } from './aiConfigs.js'
 import { createAgentRunner } from './agentRunner.js'
 import { createMcpRegistry } from './mcpRegistry.js'
@@ -626,7 +626,9 @@ function matchAiConfigPath(pathname) {
 
 function getAuthorizedUser(request) {
   const token = readBearerToken(request.headers)
-  return verifyAuthToken(token, config.auth.secret)
+  return verifyAuthToken(token, config.auth.secret, {
+    expectedType: 'access'
+  })
 }
 
 function requireAuth(request, response) {
@@ -653,30 +655,10 @@ function validateLoginPayload(payload) {
     }
   }
 
-  if (
-    !safeCompare(username, config.auth.username)
-    || !safeCompare(password, config.auth.password)
-  ) {
-    return {
-      ok: false,
-      message: 'Invalid username or password.'
-    }
-  }
-
   return {
     ok: true,
     username
   }
-}
-
-function validateLocalLoginCredentials(payload) {
-  const username = normalizeTrimmedString(payload?.username)
-  const password = String(payload?.password ?? '')
-
-  return (
-    safeCompare(username, config.auth.username)
-    && safeCompare(password, config.auth.password)
-  )
 }
 
 const CODING_SKILL_HINT_PATTERNS = [
@@ -714,6 +696,30 @@ function looksLikeFrontendSkillRequest(message) {
     /页面|界面|组件|样式|布局|按钮|表单|弹窗|代码块|响应式|移动端|桌面端|前端|导航|侧边栏|会话区|卡片|溢出|遮挡|错位/.test(normalizedMessage)
     || /\b(ui|ux|frontend|front-end|page|webpage|component|layout|style|css|html|vue|react|button|modal|form|responsive|mobile|desktop|overflow)\b/i.test(normalizedMessage)
   )
+}
+
+function createAuthTokenPair(username) {
+  const normalizedUsername = normalizeTrimmedString(username)
+  const accessToken = createAuthToken({
+    username: normalizedUsername,
+    secret: config.auth.secret,
+    ttlMs: config.auth.accessTokenTtlMs,
+    type: 'access'
+  })
+  const refreshToken = createAuthToken({
+    username: normalizedUsername,
+    secret: config.auth.secret,
+    ttlMs: config.auth.refreshTokenTtlMs,
+    type: 'refresh'
+  })
+
+  return {
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    token_type: 'Bearer',
+    expires_in: Math.floor(config.auth.accessTokenTtlMs / 1000),
+    refresh_expires_in: Math.floor(config.auth.refreshTokenTtlMs / 1000)
+  }
 }
 
 function looksLikeFrontendQualityRequest(message) {
@@ -875,20 +881,9 @@ async function trySharedAuthLogin(payload) {
     }
   }
 
-  const token = normalizeTrimmedString(body?.token)
-
-  if (!token) {
-    return {
-      ok: false,
-      statusCode: 502,
-      message: 'Shared login succeeded but did not return a token.'
-    }
-  }
-
   return {
     ok: true,
     body: {
-      token,
       user: body?.user && typeof body.user === 'object'
         ? body.user
         : {
@@ -914,50 +909,88 @@ async function handleLogin(request, response) {
     return
   }
 
-  if (!validateLocalLoginCredentials(payload)) {
-    const sharedLogin = await trySharedAuthLogin(payload)
+  const sharedLogin = await trySharedAuthLogin(payload)
 
-    if (sharedLogin?.ok) {
-      auditLogger.logEvent({
-        event: 'auth_success',
-        requestId: request.auditContext?.requestId,
-        provider: 'shared',
-        username: normalizeTrimmedString(sharedLogin.body?.user?.username || payload?.username)
-      })
-      sendJson(response, 200, sharedLogin.body)
-      return
-    }
+  if (sharedLogin?.ok) {
+    const sharedUsername = normalizeTrimmedString(sharedLogin.body?.user?.username || validation.username)
+    const tokenPair = createAuthTokenPair(sharedUsername)
 
     auditLogger.logEvent({
-      event: 'auth_failure',
+      event: 'auth_success',
       requestId: request.auditContext?.requestId,
-      provider: 'local_or_shared',
-      username: normalizeTrimmedString(payload?.username),
-      statusCode: sharedLogin?.statusCode || 401
+      provider: 'shared',
+      username: sharedUsername
     })
-    sendJson(response, sharedLogin?.statusCode === 401 ? 401 : 502, {
-      message: sharedLogin?.message || 'Invalid username or password.'
+    sendJson(response, 200, {
+      ...tokenPair,
+      user: {
+        username: sharedUsername
+      }
     })
     return
   }
 
-  const token = createAuthToken({
+  auditLogger.logEvent({
+    event: 'auth_failure',
+    requestId: request.auditContext?.requestId,
+    provider: 'shared',
     username: validation.username,
-    secret: config.auth.secret,
-    ttlMs: config.auth.tokenTtlMs
+    statusCode: sharedLogin?.statusCode || 502
+  })
+  sendJson(response, sharedLogin?.statusCode === 401 ? 401 : 502, {
+    message: sharedLogin?.message || 'Shared login service is not configured.'
+  })
+}
+
+async function handleRefreshAuthToken(request, response) {
+  const payload = await readJsonBody(request)
+  const refreshToken = normalizeTrimmedString(
+    payload?.refreshToken
+    || payload?.refresh_token
+    || readBearerToken(request.headers)
+  )
+
+  if (!refreshToken) {
+    auditLogger.logEvent({
+      event: 'auth_failure',
+      requestId: request.auditContext?.requestId,
+      reason: 'missing_refresh_token'
+    })
+    sendJson(response, 401, {
+      message: 'Refresh token is required.'
+    })
+    return
+  }
+
+  const refreshPayload = verifyAuthToken(refreshToken, config.auth.secret, {
+    expectedType: 'refresh'
   })
 
+  if (!refreshPayload?.sub) {
+    auditLogger.logEvent({
+      event: 'auth_failure',
+      requestId: request.auditContext?.requestId,
+      reason: 'invalid_refresh_token'
+    })
+    sendJson(response, 401, {
+      message: 'Invalid or expired refresh token.'
+    })
+    return
+  }
+
+  const username = normalizeTrimmedString(refreshPayload.sub)
+  const tokenPair = createAuthTokenPair(username)
+
   auditLogger.logEvent({
-    event: 'auth_success',
+    event: 'auth_refresh',
     requestId: request.auditContext?.requestId,
-    provider: 'local',
-    username: validation.username
+    username
   })
 
   sendJson(response, 200, {
-    token,
+    ...tokenPair,
     user: {
-      username: validation.username
+      username
     }
   })
 }
@@ -2297,8 +2330,13 @@ async function handleRequest(request, response) {
     return
   }
 
-  if (pathname === '/api/login' && request.method === 'POST') {
+  if (pathname === '/api/agent/login' && request.method === 'POST') {
     await handleLogin(request, response)
+    return
+  }
+
+  if (pathname === '/api/auth/refresh' && request.method === 'POST') {
+    await handleRefreshAuthToken(request, response)
     return
   }
 
@@ -2582,10 +2620,6 @@ server.listen(config.port, config.host, () => {
   console.log(`[agent-api] listening on http://${config.host}:${config.port}`)
   console.log(`[agent-api] session store: ${config.storage.sessionsDir}`)
   console.log(`[agent-api] skills: ${skillRegistry.listSkills().map((item) => item.skillId).join(', ') || '(none)'}`)
-
-  if (config.auth.password === 'change-me-please') {
-    console.warn('[agent-api] AGENT_ADMIN_PASSWORD is using the default value. Change it before production use.')
-  }
 
   if (config.auth.secret === 'local-agent-secret') {
     console.warn('[agent-api] AGENT_AUTH_SECRET is using the default value. Change it before production use.')

@@ -16,7 +16,7 @@
 
 ## 主要接口
 
-- `POST /api/login`
+- `POST /api/agent/login`
 - `GET /api/health`
 - `GET /api/ai/configs`
 - `POST /api/ai/configs`
@@ -106,7 +106,7 @@ RAG 依赖 PostgreSQL + pgvector。
 
 ## 安全注意
 
-- `AGENT_ADMIN_PASSWORD` 和 `AGENT_AUTH_SECRET` 生产环境必须改成强随机值。
+- `AGENT_AUTH_SECRET` 生产环境必须改成强随机值。
 - `AGENT_ENABLE_WRITE_TOOLS=true` 会允许 Agent 写文件，只应写入受控工作区。
 - `AGENT_ALLOWED_COMMANDS` 应保持最小化。
 - MCP server 可以访问外部系统，启用前需要确认权限范围。

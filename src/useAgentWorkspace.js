@@ -1,5 +1,5 @@
 ﻿import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import http, { buildApiUrl } from './http.js'
+import http, { buildApiUrl, refreshAgentAccessToken } from './http.js'
 import {
   AGENT_ACTIVE_SESSION_KEY,
   AGENT_AI_ID_KEY,
@@ -991,20 +991,33 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     sessionStreamAbortController = controller
 
     try {
-      const token = readStorageValue(resolvedStorage, AUTH_TOKEN_KEY)
-      const headers = {
-        Accept: 'text/event-stream'
-      }
+      const createStreamHeaders = () => {
+        const token = readStorageValue(resolvedStorage, AUTH_TOKEN_KEY)
+        const headers = {
+          Accept: 'text/event-stream'
+        }
 
-      if (token) {
-        headers.Authorization = `Bearer ${token}`
-      }
+        if (token) {
+          headers.Authorization = `Bearer ${token}`
+        }
 
-      const response = await fetch(buildApiUrl(`/api/agent/sessions/${normalizedSessionId}/stream`), {
+        return headers
+      }
+      const streamUrl = buildApiUrl(`/api/agent/sessions/${normalizedSessionId}/stream`)
+      let response = await fetch(streamUrl, {
         method: 'GET',
-        headers,
+        headers: createStreamHeaders(),
         signal: controller.signal
       })
+
+      if (response.status === 401) {
+        await refreshAgentAccessToken()
+        response = await fetch(streamUrl, {
+          method: 'GET',
+          headers: createStreamHeaders(),
+          signal: controller.signal
+        })
+      }
 
       if (!response.ok || !response.body) {
         throw new Error(`Session stream failed with ${response.status}.`)

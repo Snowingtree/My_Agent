@@ -25,12 +25,12 @@ import LoginForm from './components/LoginForm/LoginForm.vue'
 import PrivateAccessLoadingOverlay from './components/PrivateAccessLoadingOverlay/PrivateAccessLoadingOverlay.vue'
 import { usePrivateAppAccess } from './hooks/usePrivateAppAccess.js'
 import { clearAgentAuthSession, persistAgentAuthSession } from './auth.js'
-import http from './http.js'
-import { AGENT_AUTH_CHANGED_EVENT, AGENT_AUTH_KEY, AUTH_TOKEN_KEY } from './storage.js'
+import { buildApiUrl } from './http.js'
+import { AGENT_AUTH_CHANGED_EVENT, AGENT_AUTH_KEY, AUTH_REFRESH_TOKEN_KEY, AUTH_TOKEN_KEY } from './storage.js'
 import AgentWorkspaceScreen from './components/AgentWorkspaceScreen.vue'
 
 const agentTitle = 'Agent'
-const LEGACY_LOGIN_ENDPOINT = '/api/login'
+const LOGIN_ENDPOINT = '/api/agent/login'
 const submitting = ref(false)
 const serverError = ref('')
 const { privateAppAvailable, privateAppChecking } = usePrivateAppAccess()
@@ -70,7 +70,7 @@ function syncDocumentScrollLock(locked) {
 }
 
 async function loginWithSharedBlogAuth(payload) {
-  const response = await fetch(LEGACY_LOGIN_ENDPOINT, {
+  const response = await fetch(buildApiUrl(LOGIN_ENDPOINT), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -101,12 +101,15 @@ async function loginWithSharedBlogAuth(payload) {
 }
 
 function readAgentAuthState() {
-  const token = localStorage.getItem(AUTH_TOKEN_KEY)
+  const accessToken = localStorage.getItem(AUTH_TOKEN_KEY)
+  const refreshToken = localStorage.getItem(AUTH_REFRESH_TOKEN_KEY)
 
   return (
     localStorage.getItem(AGENT_AUTH_KEY) === 'true'
-    && typeof token === 'string'
-    && token.trim().length > 0
+    && typeof accessToken === 'string'
+    && accessToken.trim().length > 0
+    && typeof refreshToken === 'string'
+    && refreshToken.trim().length > 0
   )
 }
 
@@ -121,7 +124,7 @@ function handleAuthStateChanged() {
 function handleStorageChanged(event) {
   const changedKey = String(event?.key || '').trim()
 
-  if (!changedKey || [AGENT_AUTH_KEY, AUTH_TOKEN_KEY].includes(changedKey)) {
+  if (!changedKey || [AGENT_AUTH_KEY, AUTH_TOKEN_KEY, AUTH_REFRESH_TOKEN_KEY].includes(changedKey)) {
     refreshAuthState()
   }
 }
@@ -133,24 +136,28 @@ async function handleLogin(payload) {
   try {
     const data = await loginWithSharedBlogAuth(payload)
     const username = typeof data.user?.username === 'string' ? data.user.username : payload.username
-    const token = typeof data.token === 'string' ? data.token : ''
+    const accessToken = typeof data.access_token === 'string' ? data.access_token : ''
+    const refreshToken = typeof data.refresh_token === 'string' ? data.refresh_token : ''
 
-    if (!token) {
-      throw new Error('Login succeeded but the server did not return an auth token.')
+    if (!accessToken || !refreshToken) {
+      throw new Error('Login succeeded but the server did not return access_token and refresh_token.')
     }
 
     persistAgentAuthSession({
       storage: localStorage,
       username,
-      token,
-      authTokenKey: AUTH_TOKEN_KEY
+      accessToken,
+      refreshToken,
+      authTokenKey: AUTH_TOKEN_KEY,
+      refreshTokenKey: AUTH_REFRESH_TOKEN_KEY
     })
 
     refreshAuthState()
   } catch (error) {
     clearAgentAuthSession({
       storage: localStorage,
-      authTokenKey: AUTH_TOKEN_KEY
+      authTokenKey: AUTH_TOKEN_KEY,
+      refreshTokenKey: AUTH_REFRESH_TOKEN_KEY
     })
     serverError.value = error instanceof Error ? error.message : 'Login failed. Please try again.'
     refreshAuthState()
@@ -162,7 +169,8 @@ async function handleLogin(payload) {
 function handleLogout() {
   clearAgentAuthSession({
     storage: localStorage,
-    authTokenKey: AUTH_TOKEN_KEY
+    authTokenKey: AUTH_TOKEN_KEY,
+    refreshTokenKey: AUTH_REFRESH_TOKEN_KEY
   })
   refreshAuthState()
 }

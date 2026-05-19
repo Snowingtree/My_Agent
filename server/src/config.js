@@ -10,11 +10,27 @@ function readNumberEnv(name, fallbackValue) {
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallbackValue
 }
 
-function readTokenTtlMs() {
-  const explicitMilliseconds = readNumberEnv('AGENT_TOKEN_TTL_MS', 0)
+function readAccessTokenTtlMs() {
+  const explicitMilliseconds = readNumberEnv('AGENT_ACCESS_TOKEN_TTL_MS', 0)
 
   if (explicitMilliseconds > 0) {
     return explicitMilliseconds
+  }
+
+  return 60 * 60 * 1000
+}
+
+function readRefreshTokenTtlMs() {
+  const explicitMilliseconds = readNumberEnv('AGENT_REFRESH_TOKEN_TTL_MS', 0)
+
+  if (explicitMilliseconds > 0) {
+    return explicitMilliseconds
+  }
+
+  const legacyMilliseconds = readNumberEnv('AGENT_TOKEN_TTL_MS', 0)
+
+  if (legacyMilliseconds > 0) {
+    return legacyMilliseconds
   }
 
   const legacySeconds = readNumberEnv('AUTH_TOKEN_TTL_SECONDS', 0)
@@ -155,10 +171,9 @@ export function createConfig() {
     host: String(process.env.AGENT_HOST || process.env.API_HOST || '127.0.0.1').trim() || '127.0.0.1',
     port: agentPort,
     auth: {
-      username: String(process.env.AGENT_ADMIN_USERNAME || 'admin').trim() || 'admin',
-      password: String(process.env.AGENT_ADMIN_PASSWORD || 'change-me-please').trim() || 'change-me-please',
       secret: String(process.env.AGENT_AUTH_SECRET || process.env.AUTH_TOKEN_SECRET || 'local-agent-secret').trim() || 'local-agent-secret',
-      tokenTtlMs: readTokenTtlMs(),
+      accessTokenTtlMs: readAccessTokenTtlMs(),
+      refreshTokenTtlMs: readRefreshTokenTtlMs(),
       sharedAuthBaseUrl: explicitSharedAuthBaseUrl || inferredSharedAuthBaseUrl,
       sharedAuthLoginPath: String(process.env.AGENT_SHARED_AUTH_LOGIN_PATH || '/api/login').trim() || '/api/login',
       sharedAuthTimeoutMs: readNumberEnv('AGENT_SHARED_AUTH_TIMEOUT_MS', 10000)

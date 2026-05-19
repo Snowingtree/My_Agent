@@ -40,7 +40,10 @@ export function persistAgentAuthSession({
   storage,
   username,
   token,
-  authTokenKey
+  accessToken,
+  refreshToken,
+  authTokenKey,
+  refreshTokenKey
 } = {}) {
   const resolvedStorage = resolveStorage(storage)
 
@@ -48,10 +51,15 @@ export function persistAgentAuthSession({
     return
   }
 
-  const normalizedToken = normalizeValue(token)
+  const normalizedAccessToken = normalizeValue(accessToken || token)
+  const normalizedRefreshToken = normalizeValue(refreshToken)
 
-  if (!normalizedToken) {
-    throw new Error('Agent auth session requires a token.')
+  if (!normalizedAccessToken) {
+    throw new Error('Agent auth session requires an access token.')
+  }
+
+  if (!normalizedRefreshToken) {
+    throw new Error('Agent auth session requires a refresh token.')
   }
 
   resolvedStorage.setItem(AGENT_AUTH_KEY, 'true')
@@ -61,13 +69,17 @@ export function persistAgentAuthSession({
   )
 
   if (authTokenKey) {
-    resolvedStorage.setItem(authTokenKey, normalizedToken)
+    resolvedStorage.setItem(authTokenKey, normalizedAccessToken)
+  }
+
+  if (refreshTokenKey) {
+    resolvedStorage.setItem(refreshTokenKey, normalizedRefreshToken)
   }
 
   notifyAgentAuthChanged()
 }
 
-export function clearAgentAuthSession({ storage, authTokenKey } = {}) {
+export function clearAgentAuthSession({ storage, authTokenKey, refreshTokenKey } = {}) {
   const resolvedStorage = resolveStorage(storage)
 
   if (!resolvedStorage) {
@@ -79,6 +91,10 @@ export function clearAgentAuthSession({ storage, authTokenKey } = {}) {
 
   if (authTokenKey) {
     resolvedStorage.removeItem(authTokenKey)
+  }
+
+  if (refreshTokenKey) {
+    resolvedStorage.removeItem(refreshTokenKey)
   }
 
   notifyAgentAuthChanged()
