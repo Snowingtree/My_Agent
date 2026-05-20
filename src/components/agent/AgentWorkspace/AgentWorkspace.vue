@@ -828,6 +828,17 @@
           </div>
           <div class="agent-code-viewer__actions">
             <button
+              v-if="isHtmlWorkspaceFile && workspaceFileViewMode === 'preview'"
+              type="button"
+              class="agent-code-viewer__script-toggle"
+              :class="{ 'is-enabled': workspacePreviewScriptsEnabled }"
+              :aria-pressed="workspacePreviewScriptsEnabled ? 'true' : 'false'"
+              :title="workspacePreviewScriptsEnabled ? '关闭脚本执行' : '运行脚本'"
+              @click="toggleWorkspacePreviewScripts"
+            >
+              {{ workspacePreviewScriptsEnabled ? '脚本开' : '运行脚本' }}
+            </button>
+            <button
               type="button"
               class="agent-code-viewer__copy"
               :class="{ 'is-copied': hasCopiedWorkspaceFile }"
@@ -870,13 +881,20 @@
             已复制到剪贴板
           </div>
           <iframe
-            v-if="isHtmlWorkspaceFile && workspaceFileViewMode === 'preview'"
+            v-if="isHtmlWorkspaceFile && workspaceFileViewMode === 'preview' && selectedWorkspaceFilePreviewUrl"
+            :key="workspacePreviewFrameKey"
             class="agent-code-viewer__preview-frame"
             title="HTML 预览"
-            sandbox="allow-scripts allow-forms allow-modals"
+            :sandbox="workspacePreviewSandbox"
             referrerpolicy="no-referrer"
-            :srcdoc="normalizedWorkspaceFileContent"
+            :src="selectedWorkspaceFilePreviewUrl"
           ></iframe>
+          <p
+            v-else-if="isHtmlWorkspaceFile && workspaceFileViewMode === 'preview'"
+            class="agent-code-viewer__status"
+          >
+            正在准备 HTML 预览...
+          </p>
           <pre v-else class="agent-code-viewer__body"><code class="hljs" v-html="renderedWorkspaceFileContent"></code></pre>
         </div>
       </section>
@@ -959,6 +977,7 @@ const props = defineProps({
   skills: { type: Array, default: () => [] },
   selectedWorkspaceFileContent: { type: String, default: '' },
   selectedWorkspaceFilePath: { type: String, default: '' },
+  selectedWorkspaceFilePreviewUrl: { type: String, default: '' },
   selectedWorkspaceFileSizeBytes: { type: Number, default: null },
   selectedWorkspaceFileUpdatedAt: { type: String, default: '' },
   sessionError: { type: String, default: '' },
@@ -1016,6 +1035,7 @@ const suppressAutoOpen = ref(false)
 const hasInitializedWorkspaceFilesForSession = ref(false)
 const renderedWorkspaceFileContent = ref('')
 const workspaceFileViewMode = ref('code')
+const workspacePreviewScriptsEnabled = ref(false)
 let activeResizePointerId = null
 let workspaceFileCopyResetTimer = null
 let conversationCopyToastTimer = null
@@ -1496,6 +1516,15 @@ const selectedWorkspaceFileExtensionLabel = computed(() => (
 const isHtmlWorkspaceFile = computed(() => (
   ['html', 'htm'].includes(selectedWorkspaceFileExtension.value)
 ))
+
+const workspacePreviewSandbox = computed(() => (
+  workspacePreviewScriptsEnabled.value ? 'allow-scripts' : ''
+))
+
+const workspacePreviewFrameKey = computed(() => [
+  props.selectedWorkspaceFilePreviewUrl,
+  workspacePreviewScriptsEnabled.value ? 'scripts' : 'static'
+].join('|'))
 
 const selectedWorkspaceFileDisplayName = computed(() => {
   return getFileDisplayName(props.selectedWorkspaceFilePath)
@@ -2683,6 +2712,10 @@ function setWorkspaceFileViewMode(mode) {
     : 'code'
 }
 
+function toggleWorkspacePreviewScripts() {
+  workspacePreviewScriptsEnabled.value = !workspacePreviewScriptsEnabled.value
+}
+
 function handleComposerKeydown(event) {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) {
     return
@@ -2830,6 +2863,7 @@ watch(
   () => props.selectedWorkspaceFilePath,
   () => {
     workspaceFileViewMode.value = 'code'
+    workspacePreviewScriptsEnabled.value = false
   }
 )
 
@@ -2838,6 +2872,7 @@ watch(
   (isHtmlFile) => {
     if (!isHtmlFile) {
       workspaceFileViewMode.value = 'code'
+      workspacePreviewScriptsEnabled.value = false
     }
   },
   { immediate: true }
@@ -5412,6 +5447,27 @@ onBeforeUnmount(() => {
   gap: 6px;
 }
 
+.agent-code-viewer__script-toggle {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #e4e8ef;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #475467;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.agent-code-viewer__script-toggle.is-enabled {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #c2410c;
+}
+
 .agent-code-viewer__copy,
 .agent-code-viewer__close {
   width: 34px;
@@ -5460,6 +5516,7 @@ onBeforeUnmount(() => {
 }
 
 .agent-code-viewer__copy:hover:not(:disabled),
+.agent-code-viewer__script-toggle:hover,
 .agent-code-viewer__close:hover {
   background: #eef3ff;
   border-color: #d4defc;

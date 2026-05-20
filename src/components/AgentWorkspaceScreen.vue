@@ -294,6 +294,7 @@
           :skills="skills"
           :selected-workspace-file-content="selectedWorkspaceFileContent"
           :selected-workspace-file-path="selectedWorkspaceFilePath"
+          :selected-workspace-file-preview-url="selectedWorkspaceFilePreviewUrl"
           :selected-workspace-file-size-bytes="selectedWorkspaceFileSizeBytes"
           :selected-workspace-file-updated-at="selectedWorkspaceFileUpdatedAt"
           :session-error="sessionError"
@@ -680,6 +681,7 @@ const {
   selectedSkillLabel,
   selectedWorkspaceFileContent,
   selectedWorkspaceFilePath,
+  selectedWorkspaceFilePreviewUrl,
   selectedWorkspaceFileSizeBytes,
   selectedWorkspaceFileUpdatedAt,
   sendMessage,

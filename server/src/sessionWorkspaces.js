@@ -142,6 +142,36 @@ export function createSessionWorkspacesRepository({
     }
   }
 
+  async function readWorkspaceFileBuffer(sessionId, relativePath, maxFileSizeBytes = 4 * 1024 * 1024) {
+    const workspace = resolveWorkspace(sessionId)
+    const target = workspace.resolvePath(relativePath)
+    const fileHandle = await open(target.absolutePath, 'r')
+
+    try {
+      const fileStat = await fileHandle.stat()
+
+      if (!fileStat.isFile()) {
+        throw new Error('The requested path is not a file.')
+      }
+
+      if (fileStat.size > maxFileSizeBytes) {
+        throw new Error(`The requested file exceeds the preview size limit of ${maxFileSizeBytes} bytes.`)
+      }
+
+      const buffer = Buffer.alloc(fileStat.size)
+      const { bytesRead } = await fileHandle.read(buffer, 0, fileStat.size, 0)
+
+      return {
+        path: target.relativePath,
+        buffer: buffer.subarray(0, bytesRead),
+        sizeBytes: fileStat.size,
+        updatedAt: new Date(fileStat.mtimeMs).toISOString()
+      }
+    } finally {
+      await fileHandle.close()
+    }
+  }
+
   async function listWorkspaceFiles(sessionId, trackedFiles = []) {
     const workspace = resolveWorkspace(sessionId)
 
@@ -233,6 +263,7 @@ export function createSessionWorkspacesRepository({
     getWorkspaceFolderLabel,
     listWorkspaceFiles,
     readWorkspaceFile,
+    readWorkspaceFileBuffer,
     resolveWorkspace,
     createWorkspaceFileRecord
   }

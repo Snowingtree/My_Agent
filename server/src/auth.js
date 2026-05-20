@@ -31,9 +31,10 @@ export function safeCompare(left, right) {
   return timingSafeEqual(leftHash, rightHash)
 }
 
-export function createAuthToken({ username, secret, ttlMs, type = '' }) {
+export function createAuthToken({ username, secret, ttlMs, type = '', extraPayload = {} }) {
   const issuedAt = Date.now()
   const payload = {
+    ...(extraPayload && typeof extraPayload === 'object' && !Array.isArray(extraPayload) ? extraPayload : {}),
     sub: username,
     iat: issuedAt,
     exp: issuedAt + ttlMs

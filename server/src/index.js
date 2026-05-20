@@ -31,6 +31,8 @@ loadEnvFiles()
 const config = createConfig()
 const MCP_DISABLED_SELECTION = '__mcp_disabled__'
 const MCP_ALL_SELECTION = '__mcp_all__'
+const WORKSPACE_PREVIEW_TOKEN_TYPE = 'workspace_preview'
+const WORKSPACE_PREVIEW_TOKEN_TTL_MS = 10 * 60 * 1000
 let sessionWorkspaces = null
 const sessionStreamSubscribers = new Map()
 const tokenUsageStore = createTokenUsageStore(config.storage.tokenUsageFile)
@@ -313,6 +315,54 @@ function sendEmpty(response, statusCode = 204) {
   response.end()
 }
 
+function getWorkspacePreviewContentType(filePath) {
+  const extension = extname(String(filePath || '').toLowerCase())
+  const contentTypes = {
+    '.html': 'text/html; charset=utf-8',
+    '.htm': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.mjs': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml; charset=utf-8',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.ico': 'image/x-icon',
+    '.txt': 'text/plain; charset=utf-8',
+    '.md': 'text/markdown; charset=utf-8',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf'
+  }
+
+  return contentTypes[extension] || 'application/octet-stream'
+}
+
+function sendWorkspacePreviewFile(response, item) {
+  setBaseHeaders(response)
+  response.statusCode = 200
+  response.setHeader('Content-Type', getWorkspacePreviewContentType(item?.path))
+  response.setHeader('Content-Length', Buffer.byteLength(item?.buffer || Buffer.alloc(0)))
+  response.setHeader('Content-Security-Policy', [
+    "default-src 'self' data: blob:",
+    "img-src 'self' data: blob:",
+    "media-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'unsafe-inline'",
+    "connect-src 'self'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'self'"
+  ].join('; '))
+  response.setHeader('Referrer-Policy', 'no-referrer')
+  response.setHeader('Content-Disposition', 'inline')
+  response.end(item?.buffer || Buffer.alloc(0))
+}
+
 function sendSseHeaders(response) {
   setBaseHeaders(response)
   response.statusCode = 200
@@ -341,8 +391,15 @@ function normalizeAuditQuery(requestUrl) {
   return Object.fromEntries(
     [...requestUrl.searchParams.entries()].map(([key, value]) => [
       key,
-      String(value || '').slice(0, 500)
+      /token/i.test(key) ? '[redacted]' : String(value || '').slice(0, 500)
     ])
+  )
+}
+
+function sanitizeAuditPath(pathname) {
+  return String(pathname || '').replace(
+    /^\/api\/agent\/preview\/[^/]+\/([^/]+)/,
+    '/api/agent/preview/:token/$1'
   )
 }
 
@@ -356,7 +413,13 @@ function resolveRequestSessionId(requestUrl) {
   const pathname = normalizeTrimmedString(requestUrl.pathname)
   const sessionPathMatch = pathname.match(/^\/api\/agent\/sessions\/([^/]+)/)
 
-  return sessionPathMatch ? decodeURIComponent(sessionPathMatch[1]) : ''
+  if (sessionPathMatch?.[1]) {
+    return decodeURIComponent(sessionPathMatch[1])
+  }
+
+  const previewPathMatch = pathname.match(/^\/api\/agent\/preview\/[^/]+\/([^/]+)/)
+
+  return previewPathMatch?.[1] ? decodeURIComponent(previewPathMatch[1]) : ''
 }
 
 function getClientIp(request) {
@@ -390,7 +453,7 @@ function attachApiAudit(request, response, requestUrl) {
     event: 'api_request',
     requestId,
     method,
-    path: requestUrl.pathname,
+    path: sanitizeAuditPath(requestUrl.pathname),
     query: normalizeAuditQuery(requestUrl),
     clientIp: getClientIp(request),
     userAgent: normalizeTrimmedString(request.headers['user-agent'])
@@ -402,7 +465,7 @@ function attachApiAudit(request, response, requestUrl) {
       event: 'api_response',
       requestId,
       method,
-      path: requestUrl.pathname,
+      path: sanitizeAuditPath(requestUrl.pathname),
       statusCode: response.statusCode,
       durationMs: Date.now() - startedAtMs
     })
@@ -604,6 +667,25 @@ function matchSessionFileContentPath(pathname) {
   return match?.[1] ? decodeURIComponent(match[1]) : ''
 }
 
+function matchSessionPreviewTokenPath(pathname) {
+  const match = pathname.match(/^\/api\/agent\/sessions\/([^/]+)\/preview-token$/)
+  return match?.[1] ? decodeURIComponent(match[1]) : ''
+}
+
+function matchWorkspacePreviewPath(pathname) {
+  const match = pathname.match(/^\/api\/agent\/preview\/([^/]+)\/([^/]+)\/(.+)$/)
+
+  if (!match?.[1] || !match?.[2] || !match?.[3]) {
+    return null
+  }
+
+  return {
+    token: decodeURIComponent(match[1]),
+    sessionId: decodeURIComponent(match[2]),
+    filePath: decodeURIComponent(match[3])
+  }
+}
+
 function matchSessionCancelPath(pathname) {
   const match = pathname.match(/^\/api\/agent\/sessions\/([^/]+)\/cancel$/)
   return match?.[1] ? decodeURIComponent(match[1]) : ''
@@ -642,6 +724,30 @@ function requireAuth(request, response) {
   }
 
   return authPayload
+}
+
+function createWorkspacePreviewToken(sessionId, username) {
+  return createAuthToken({
+    username: normalizeTrimmedString(username) || 'preview',
+    secret: config.auth.secret,
+    ttlMs: WORKSPACE_PREVIEW_TOKEN_TTL_MS,
+    type: WORKSPACE_PREVIEW_TOKEN_TYPE,
+    extraPayload: {
+      sid: normalizeTrimmedString(sessionId)
+    }
+  })
+}
+
+function verifyWorkspacePreviewToken(token, sessionId) {
+  const payload = verifyAuthToken(token, config.auth.secret, {
+    expectedType: WORKSPACE_PREVIEW_TOKEN_TYPE
+  })
+
+  if (!payload) {
+    return null
+  }
+
+  return normalizeTrimmedString(payload.sid) === normalizeTrimmedString(sessionId) ? payload : null
 }
 
 function validateLoginPayload(payload) {
@@ -1831,6 +1937,70 @@ async function handleGetSessionFileContent(request, response, requestUrl, sessio
   sendJson(response, 200, { item })
 }
 
+async function handleCreateWorkspacePreviewToken(request, response, sessionId) {
+  const session = await sessionRepository.getSession(sessionId)
+
+  if (!session) {
+    sendJson(response, 404, {
+      message: 'Session not found.'
+    })
+    return
+  }
+
+  const authPayload = getAuthorizedUser(request)
+  const token = createWorkspacePreviewToken(sessionId, authPayload?.sub)
+
+  auditLogger.logEvent({
+    sessionId,
+    event: 'system_action',
+    action: 'workspace_preview_token_issued',
+    requestId: request.auditContext?.requestId,
+    expiresInMs: WORKSPACE_PREVIEW_TOKEN_TTL_MS
+  })
+
+  sendJson(response, 200, {
+    token,
+    expiresIn: Math.floor(WORKSPACE_PREVIEW_TOKEN_TTL_MS / 1000)
+  })
+}
+
+async function handleGetWorkspacePreviewFile(request, response, previewRequest) {
+  const sessionId = normalizeTrimmedString(previewRequest?.sessionId)
+  const filePath = normalizeTrimmedString(previewRequest?.filePath)
+
+  if (!verifyWorkspacePreviewToken(previewRequest?.token, sessionId)) {
+    sendJson(response, 401, {
+      message: 'Workspace preview token is invalid or expired.'
+    })
+    return
+  }
+
+  const session = await sessionRepository.getSession(sessionId)
+
+  if (!session) {
+    sendJson(response, 404, {
+      message: 'Session not found.'
+    })
+    return
+  }
+
+  const item = await sessionWorkspaces.readWorkspaceFileBuffer(
+    sessionId,
+    filePath,
+    config.workspace.maxFileSizeBytes
+  )
+
+  auditLogger.logEvent({
+    sessionId,
+    event: 'workspace_read',
+    requestId: request.auditContext?.requestId,
+    source: 'preview',
+    path: item?.path || filePath,
+    sizeBytes: item?.sizeBytes ?? null
+  })
+  sendWorkspacePreviewFile(response, item)
+}
+
 async function handleDeleteSession(request, response, sessionId) {
   const removed = await sessionRepository.deleteSession(sessionId)
 
@@ -2340,6 +2510,13 @@ async function handleRequest(request, response) {
     return
   }
 
+  const workspacePreviewRequest = matchWorkspacePreviewPath(pathname)
+
+  if (workspacePreviewRequest && request.method === 'GET') {
+    await handleGetWorkspacePreviewFile(request, response, workspacePreviewRequest)
+    return
+  }
+
   if (pathname.startsWith('/api/')) {
     const authPayload = requireAuth(request, response)
 
@@ -2491,6 +2668,13 @@ async function handleRequest(request, response) {
 
   if (fileContentSessionId && request.method === 'GET') {
     await handleGetSessionFileContent(request, response, requestUrl, fileContentSessionId)
+    return
+  }
+
+  const previewTokenSessionId = matchSessionPreviewTokenPath(pathname)
+
+  if (previewTokenSessionId && request.method === 'GET') {
+    await handleCreateWorkspacePreviewToken(request, response, previewTokenSessionId)
     return
   }
 

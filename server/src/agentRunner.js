@@ -1000,6 +1000,15 @@ function normalizeThoughtSummary(value) {
   return truncateText(normalizeTrimmedString(value), 220)
 }
 
+function isMalformedJsonModelResponseError(error) {
+  const message = normalizeTrimmedString(error?.message)
+
+  return (
+    message.includes('Model response contained malformed JSON')
+    || message.includes('Model response did not contain a JSON object')
+  )
+}
+
 function getDecisionThoughtSummary(decisionJson) {
   return normalizeThoughtSummary(decisionJson?.thought_summary || decisionJson?.thoughtSummary || '')
 }
@@ -3403,17 +3412,45 @@ export function createAgentRunner({
           userProfileMemoryContext: Boolean(userProfileText)
         })
 
-        const decision = await createStructuredCompletion({
-          aiConfig,
-          model: selectedModel,
-          requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
-          idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
-          streamResponses: aiRuntimeConfig.streamResponses,
-          timeoutRetries: aiRuntimeConfig.timeoutRetries,
-          timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
-          signal: abortSignal,
-          messages: loopMessages
-        })
+        let decision = null
+
+        try {
+          decision = await createStructuredCompletion({
+            aiConfig,
+            model: selectedModel,
+            requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+            idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
+            streamResponses: aiRuntimeConfig.streamResponses,
+            timeoutRetries: aiRuntimeConfig.timeoutRetries,
+            timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
+            signal: abortSignal,
+            messages: loopMessages
+          })
+        } catch (error) {
+          if (isMalformedJsonModelResponseError(error) && iteration < runtimeConfig.maxToolIterations - 1) {
+            const retrySummary = '模型返回的工具决策 JSON 格式无效，正在要求模型重新输出合法 JSON。'
+            audit(sessionId, 'error', {
+              scope: 'llm_decision',
+              taskId,
+              iteration,
+              message: normalizeTrimmedString(error?.message)
+            })
+            toolMessages.push({
+              role: 'user',
+              content: [
+                'The previous decision was rejected because it was malformed JSON. No tool was executed.',
+                'Retry now with strict valid JSON only.',
+                'If you need write_file, args.content must be one valid JSON string with all line breaks escaped as \\n and quotes escaped as \\".',
+                'Do not put raw multiline code outside the JSON string. If the edit is small, prefer apply_patch.'
+              ].join('\n')
+            })
+            publishTaskProgress(sessionId, retrySummary, selectedModel)
+            await sleep(runtimeConfig.stepDelayMs)
+            continue
+          }
+
+          throw error
+        }
         throwIfCancelled()
         throwIfTaskTimedOut()
 

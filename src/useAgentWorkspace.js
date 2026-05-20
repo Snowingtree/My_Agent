@@ -35,6 +35,20 @@ const CODING_MODE_PATTERNS = [
   /\b(code|coding|bug|fix|refactor|file|files|component|function|api|build|patch|write|read|debug|test|lint|typescript|javascript|vue|react|node|npm)\b/i
 ]
 
+function isHtmlWorkspacePath(filePath) {
+  return /\.(html|htm)$/i.test(String(filePath || '').trim())
+}
+
+function encodeWorkspacePreviewPath(filePath) {
+  return String(filePath || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join('/')
+}
+
 function createId(prefix = 'id') {
   const normalizedPrefix = String(prefix || 'id').trim() || 'id'
 
@@ -424,6 +438,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
   const selectedWorkspaceFileContent = ref('')
   const selectedWorkspaceFileUpdatedAt = ref('')
   const selectedWorkspaceFileSizeBytes = ref(null)
+  const selectedWorkspaceFilePreviewUrl = ref('')
   const isLoadingWorkspaceFile = ref(false)
   const workspaceFileError = ref('')
 
@@ -839,6 +854,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     selectedWorkspaceFileContent.value = ''
     selectedWorkspaceFileUpdatedAt.value = ''
     selectedWorkspaceFileSizeBytes.value = null
+    selectedWorkspaceFilePreviewUrl.value = ''
     isLoadingWorkspaceFile.value = false
     workspaceFileError.value = ''
   }
@@ -1875,6 +1891,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     selectedWorkspaceFileContent.value = ''
     selectedWorkspaceFileUpdatedAt.value = ''
     selectedWorkspaceFileSizeBytes.value = null
+    selectedWorkspaceFilePreviewUrl.value = ''
     workspaceFileError.value = ''
     isLoadingWorkspaceFile.value = true
 
@@ -1889,6 +1906,22 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
       selectedWorkspaceFileContent.value = String(item.content || '')
       selectedWorkspaceFileUpdatedAt.value = String(item.updatedAt || '')
       selectedWorkspaceFileSizeBytes.value = Number.isFinite(item.sizeBytes) ? item.sizeBytes : null
+
+      if (isHtmlWorkspacePath(normalizedPath)) {
+        try {
+          const tokenData = await http.get(`/api/agent/sessions/${activeSessionId.value}/preview-token`)
+          const previewToken = String(tokenData.token || '').trim()
+          const encodedPath = encodeWorkspacePreviewPath(normalizedPath)
+
+          if (previewToken && encodedPath) {
+            selectedWorkspaceFilePreviewUrl.value = buildApiUrl(
+              `/api/agent/preview/${encodeURIComponent(previewToken)}/${encodeURIComponent(activeSessionId.value)}/${encodedPath}`
+            )
+          }
+        } catch (error) {
+          console.warn('[agent] failed to prepare workspace preview:', error instanceof Error ? error.message : error)
+        }
+      }
     } catch (error) {
       workspaceFileError.value = normalizeErrorMessage(error, '读取会话文件失败。')
     } finally {
@@ -2057,6 +2090,7 @@ export function useAgentWorkspace({ storage, notify, confirmDelete } = {}) {
     removeEphemeralAttachment,
     selectedWorkspaceFileContent,
     selectedWorkspaceFilePath,
+    selectedWorkspaceFilePreviewUrl,
     selectedWorkspaceFileSizeBytes,
     selectedWorkspaceFileUpdatedAt,
     workspaceMode,
