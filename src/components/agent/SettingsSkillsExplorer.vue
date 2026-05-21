@@ -39,6 +39,35 @@
             <span>{{ selectedSkillDetail.updatedAt }}</span>
           </p>
         </div>
+
+        <div v-if="selectedSkillDetail" class="settings-skills__detail-actions">
+          <template v-if="isEditingSkill">
+            <button
+              type="button"
+              class="settings-skills__action-button"
+              :disabled="isSavingSkill"
+              @click="cancelEditSkill"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              class="settings-skills__action-button is-primary"
+              :disabled="isSavingSkill || !hasUnsavedSkillEdit"
+              @click="saveSkillFile"
+            >
+              {{ isSavingSkill ? '保存中...' : '保存' }}
+            </button>
+          </template>
+          <button
+            v-else
+            type="button"
+            class="settings-skills__action-button is-primary"
+            @click="beginEditSkill"
+          >
+            编辑
+          </button>
+        </div>
       </div>
 
       <p v-if="detailError" class="settings-skills__status is-error">{{ detailError }}</p>
@@ -48,8 +77,31 @@
       <div
         v-else
         class="settings-skills__content"
+        :class="{ 'is-editing': isEditingSkill }"
       >
+        <MdEditor
+          v-if="isEditingSkill"
+          v-model="skillDraftContent"
+          class="settings-skills__markdown-editor"
+          editor-id="settings-skills-markdown-editor"
+          language="zh-CN"
+          theme="light"
+          preview-theme="smart-blue"
+          code-theme="github"
+          :preview="false"
+          :html-preview="false"
+          :no-mermaid="true"
+          :no-katex="true"
+          :no-echarts="true"
+          :no-upload-img="true"
+          :no-prettier="true"
+          :md-heading-id="resolveMarkdownHeadingId"
+          :sanitize="sanitizeSkillMarkdownHtml"
+          :style="{ height: '100%' }"
+        />
+
         <MdPreview
+          v-else
           class="settings-skills__markdown-preview"
           editor-id="settings-skills-markdown-preview"
           language="zh-CN"
@@ -70,7 +122,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { MdPreview } from 'md-editor-v3'
+import { MdEditor, MdPreview } from 'md-editor-v3'
 import 'md-editor-v3/lib/style.css'
 import http from '../../http.js'
 
@@ -81,6 +133,9 @@ const isLoadingList = ref(false)
 const isLoadingDetail = ref(false)
 const listError = ref('')
 const detailError = ref('')
+const isEditingSkill = ref(false)
+const isSavingSkill = ref(false)
+const skillDraftContent = ref('')
 const FRONTMATTER_PATTERN = /^(?:\uFEFF)?(---|\+\+\+)\r?\n[\s\S]*?\r?\n\1\r?\n?/
 const ZERO_WIDTH_MARK_PATTERN = /[\u200B-\u200D\u2060\uFEFF]/g
 const HARD_SPACE_PATTERN = /[\u00A0\u202F]/g
@@ -137,6 +192,79 @@ const normalizedSkillContent = computed(() => {
   return normalizeMarkdownSource(selectedSkillDetail.value?.content || '')
 })
 
+const hasUnsavedSkillEdit = computed(() => {
+  return skillDraftContent.value !== String(selectedSkillDetail.value?.content || '')
+})
+
+function syncSkillListItem(nextItem) {
+  if (!nextItem?.skillPath) {
+    return
+  }
+
+  skills.value = skills.value.map((item) => (
+    item.skillPath === nextItem.skillPath
+      ? {
+          ...item,
+          name: nextItem.name,
+          title: nextItem.title,
+          description: nextItem.description,
+          sizeBytes: nextItem.sizeBytes,
+          updatedAt: nextItem.updatedAt
+        }
+      : item
+  ))
+}
+
+function beginEditSkill() {
+  skillDraftContent.value = String(selectedSkillDetail.value?.content || '')
+  isEditingSkill.value = true
+  detailError.value = ''
+}
+
+function cancelEditSkill() {
+  if (
+    hasUnsavedSkillEdit.value
+    && typeof window !== 'undefined'
+    && !window.confirm('当前技能说明有未保存修改，确定取消编辑吗？')
+  ) {
+    return
+  }
+
+  skillDraftContent.value = String(selectedSkillDetail.value?.content || '')
+  isEditingSkill.value = false
+  detailError.value = ''
+}
+
+async function saveSkillFile() {
+  if (!selectedSkillDetail.value?.skillPath || isSavingSkill.value) {
+    return
+  }
+
+  isSavingSkill.value = true
+  detailError.value = ''
+
+  try {
+    const response = await http.put('/api/agent/skill-file-detail', {
+      path: selectedSkillDetail.value.skillPath,
+      content: skillDraftContent.value
+    })
+    const nextItem = response?.item || null
+
+    if (nextItem) {
+      selectedSkillDetail.value = nextItem
+      selectedSkillPath.value = nextItem.skillPath
+      skillDraftContent.value = String(nextItem.content || '')
+      syncSkillListItem(nextItem)
+    }
+
+    isEditingSkill.value = false
+  } catch (error) {
+    detailError.value = error instanceof Error ? error.message : '保存技能说明失败。'
+  } finally {
+    isSavingSkill.value = false
+  }
+}
+
 async function loadSkillList() {
   isLoadingList.value = true
   listError.value = ''
@@ -165,9 +293,21 @@ async function loadSkillList() {
 }
 
 async function selectSkill(skillPath) {
+  if (
+    isEditingSkill.value
+    && hasUnsavedSkillEdit.value
+    && selectedSkillPath.value !== skillPath
+    && typeof window !== 'undefined'
+    && !window.confirm('当前技能说明有未保存修改，确定切换文件吗？')
+  ) {
+    return
+  }
+
   selectedSkillPath.value = skillPath
   isLoadingDetail.value = true
   detailError.value = ''
+  isEditingSkill.value = false
+  skillDraftContent.value = ''
 
   try {
     const response = await http.get('/api/agent/skill-file-detail', {
@@ -175,6 +315,7 @@ async function selectSkill(skillPath) {
     })
 
     selectedSkillDetail.value = response?.item || null
+    skillDraftContent.value = String(selectedSkillDetail.value?.content || '')
   } catch (error) {
     selectedSkillDetail.value = null
     detailError.value = error instanceof Error ? error.message : '读取技能说明失败。'
@@ -291,6 +432,48 @@ onMounted(() => {
   font-size: 0.82rem;
 }
 
+.settings-skills__detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.settings-skills__action-button {
+  min-width: 64px;
+  height: 34px;
+  border: 1px solid #d8deea;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #344054;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.settings-skills__action-button:hover:not(:disabled) {
+  border-color: #b9c5d8;
+  background: #f8fafc;
+}
+
+.settings-skills__action-button.is-primary {
+  border-color: #2757bf;
+  background: #2757bf;
+  color: #ffffff;
+}
+
+.settings-skills__action-button.is-primary:hover:not(:disabled) {
+  border-color: #1d4aad;
+  background: #1d4aad;
+}
+
+.settings-skills__action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .settings-skills__status {
   margin: 0;
   padding: 18px;
@@ -311,6 +494,28 @@ onMounted(() => {
   font-size: 0.98rem;
   line-height: 1.86;
   word-break: break-word;
+}
+
+.settings-skills__content.is-editing {
+  padding: 0;
+  overflow: hidden;
+}
+
+.settings-skills__markdown-editor {
+  height: 100%;
+  border: 0;
+}
+
+.settings-skills__markdown-editor :deep(.md-editor-input-wrapper) {
+  background: #ffffff;
+}
+
+.settings-skills__markdown-editor :deep(.cm-editor) {
+  font-size: 0.92rem;
+}
+
+.settings-skills__markdown-editor :deep(.cm-content) {
+  font-family: Consolas, 'SFMono-Regular', Menlo, Monaco, monospace;
 }
 
 .settings-skills__markdown-preview {

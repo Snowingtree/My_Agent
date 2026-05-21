@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, extname, join, parse, relative, resolve } from 'node:path'
 import { normalizeTrimmedString } from './utils.js'
 
@@ -125,9 +125,34 @@ export function createSkillLibrary({ rootDir }) {
     }
   }
 
+  function updateSkillFileDetail(skillPath, content) {
+    const normalizedPath = normalizeTrimmedString(skillPath)
+
+    if (!normalizedPath) {
+      return null
+    }
+
+    const skillItem = listSkillFiles().find((item) => item.skillPath === normalizedPath)
+
+    if (!skillItem) {
+      return null
+    }
+
+    const absolutePath = resolve(resolvedRootDir, skillItem.contentPath)
+    const relativeToRoot = relative(resolvedRootDir, absolutePath)
+
+    if (relativeToRoot.startsWith('..')) {
+      return null
+    }
+
+    writeFileSync(absolutePath, String(content ?? ''), 'utf8')
+    return getSkillFileDetail(normalizedPath)
+  }
+
   return {
     rootDir: resolvedRootDir,
     listSkillFiles,
-    getSkillFileDetail
+    getSkillFileDetail,
+    updateSkillFileDetail
   }
 }

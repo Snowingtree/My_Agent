@@ -1435,6 +1435,36 @@ async function handleGetSkillFileDetail(response, requestUrl) {
   sendJson(response, 200, { item })
 }
 
+async function handleUpdateSkillFileDetail(request, response) {
+  const payload = await readJsonBody(request)
+  const skillPath = normalizeTrimmedString(payload?.path)
+  const content = typeof payload?.content === 'string' ? payload.content : ''
+
+  if (!skillPath) {
+    sendJson(response, 400, {
+      message: 'Skill path is required.'
+    })
+    return
+  }
+
+  const item = skillLibrary.updateSkillFileDetail(skillPath, content)
+
+  if (!item) {
+    sendJson(response, 404, {
+      message: 'Skill file not found.'
+    })
+    return
+  }
+
+  skillRegistry.reload()
+  auditSystemAction('', 'skill_file_updated', {
+    skillPath: item.skillPath,
+    sizeBytes: item.sizeBytes
+  })
+
+  sendJson(response, 200, { item })
+}
+
 async function handleGetCapabilities(response) {
   sendJson(response, 200, {
     skills: skillRegistry.listSkills(),
@@ -2579,6 +2609,11 @@ async function handleRequest(request, response) {
 
   if (pathname === '/api/agent/skill-file-detail' && request.method === 'GET') {
     await handleGetSkillFileDetail(response, requestUrl)
+    return
+  }
+
+  if (pathname === '/api/agent/skill-file-detail' && request.method === 'PUT') {
+    await handleUpdateSkillFileDetail(request, response)
     return
   }
 
