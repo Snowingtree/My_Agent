@@ -1438,7 +1438,6 @@ async function handleGetSkillFileDetail(response, requestUrl) {
 async function handleUpdateSkillFileDetail(request, response) {
   const payload = await readJsonBody(request)
   const skillPath = normalizeTrimmedString(payload?.path)
-  const content = typeof payload?.content === 'string' ? payload.content : ''
 
   if (!skillPath) {
     sendJson(response, 400, {
@@ -1447,6 +1446,14 @@ async function handleUpdateSkillFileDetail(request, response) {
     return
   }
 
+  if (!Object.prototype.hasOwnProperty.call(payload || {}, 'content') || typeof payload.content !== 'string') {
+    sendJson(response, 400, {
+      message: 'Skill content must be a string.'
+    })
+    return
+  }
+
+  const content = payload.content
   const item = skillLibrary.updateSkillFileDetail(skillPath, content)
 
   if (!item) {

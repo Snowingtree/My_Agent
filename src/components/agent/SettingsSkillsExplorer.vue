@@ -293,6 +293,10 @@ async function loadSkillList() {
 }
 
 async function selectSkill(skillPath) {
+  if (isEditingSkill.value && selectedSkillPath.value === skillPath) {
+    return
+  }
+
   if (
     isEditingSkill.value
     && hasUnsavedSkillEdit.value
