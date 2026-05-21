@@ -14,6 +14,7 @@
   "dependencies": {
     "axios": "^1.14.0",
     "highlight.js": "^11.11.1",
+    "md-editor-v3": "^6.4.2",
     "snowingress-my-components": "^0.1.2",
     "vue": "^3.5.13"
   },

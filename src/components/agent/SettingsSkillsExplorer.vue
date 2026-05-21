@@ -45,17 +45,33 @@
       <p v-else-if="isLoadingDetail" class="settings-skills__status">正在读取技能说明...</p>
       <p v-else-if="!selectedSkillDetail" class="settings-skills__status">从左侧选择一个技能文件，查看它的说明文档。</p>
 
-      <article
+      <div
         v-else
-        class="settings-skills__content agent-markdown-content"
-        v-html="renderedSkillContent"
-      ></article>
+        class="settings-skills__content"
+      >
+        <MdPreview
+          class="settings-skills__markdown-preview"
+          editor-id="settings-skills-markdown-preview"
+          language="zh-CN"
+          theme="light"
+          preview-theme="smart-blue"
+          code-theme="github"
+          :model-value="normalizedSkillContent"
+          :md-heading-id="resolveMarkdownHeadingId"
+          :sanitize="sanitizeSkillMarkdownHtml"
+          :no-mermaid="true"
+          :no-katex="true"
+          :no-echarts="true"
+        />
+      </div>
     </section>
   </section>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { MdPreview } from 'md-editor-v3'
+import 'md-editor-v3/lib/style.css'
 import http from '../../http.js'
 
 const skills = ref([])
@@ -65,114 +81,60 @@ const isLoadingList = ref(false)
 const isLoadingDetail = ref(false)
 const listError = ref('')
 const detailError = ref('')
+const FRONTMATTER_PATTERN = /^(?:\uFEFF)?(---|\+\+\+)\r?\n[\s\S]*?\r?\n\1\r?\n?/
+const ZERO_WIDTH_MARK_PATTERN = /[\u200B-\u200D\u2060\uFEFF]/g
+const HARD_SPACE_PATTERN = /[\u00A0\u202F]/g
 
-function escapeHtml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-function renderInlineMarkdown(value) {
-  return escapeHtml(value)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
-    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
-    .replace(/_([^_\n]+)_/g, '<em>$1</em>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer noopener">$1</a>')
-}
-
-function flushMarkdownParagraph(paragraphLines, htmlBlocks) {
-  if (!paragraphLines.length) {
-    return
+function normalizeMarkdownSource(markdown) {
+  if (!markdown) {
+    return ''
   }
 
-  htmlBlocks.push(`<p>${paragraphLines.map((line) => renderInlineMarkdown(line)).join('<br>')}</p>`)
-  paragraphLines.length = 0
+  return String(markdown)
+    .replace(/^\uFEFF/, '')
+    .replace(FRONTMATTER_PATTERN, '')
+    .replace(ZERO_WIDTH_MARK_PATTERN, '')
+    .replace(HARD_SPACE_PATTERN, ' ')
 }
 
-function renderMarkdownHtml(content) {
-  const lines = String(content || '').replace(/\r\n/g, '\n').split('\n')
-  const htmlBlocks = []
-  const paragraphLines = []
-  let activeListType = ''
-  let activeListItems = []
-
-  const flushList = () => {
-    if (!activeListType || !activeListItems.length) {
-      activeListType = ''
-      activeListItems = []
-      return
-    }
-
-    const tagName = activeListType === 'ordered' ? 'ol' : 'ul'
-    htmlBlocks.push(`<${tagName}>${activeListItems.map((item) => `<li>${item}</li>`).join('')}</${tagName}>`)
-    activeListType = ''
-    activeListItems = []
-  }
-
-  for (const rawLine of lines) {
-    const line = String(rawLine || '')
-    const trimmed = line.trim()
-
-    if (!trimmed) {
-      flushMarkdownParagraph(paragraphLines, htmlBlocks)
-      flushList()
-      continue
-    }
-
-    const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/)
-
-    if (headingMatch) {
-      flushMarkdownParagraph(paragraphLines, htmlBlocks)
-      flushList()
-      const level = headingMatch[1].length
-      htmlBlocks.push(`<h${level}>${renderInlineMarkdown(headingMatch[2])}</h${level}>`)
-      continue
-    }
-
-    const orderedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/)
-
-    if (orderedMatch) {
-      flushMarkdownParagraph(paragraphLines, htmlBlocks)
-      if (activeListType && activeListType !== 'ordered') {
-        flushList()
-      }
-      activeListType = 'ordered'
-      activeListItems.push(renderInlineMarkdown(orderedMatch[2]))
-      continue
-    }
-
-    const unorderedMatch = trimmed.match(/^[-*+]\s+(.+)$/)
-
-    if (unorderedMatch) {
-      flushMarkdownParagraph(paragraphLines, htmlBlocks)
-      if (activeListType && activeListType !== 'unordered') {
-        flushList()
-      }
-      activeListType = 'unordered'
-      activeListItems.push(renderInlineMarkdown(unorderedMatch[1]))
-      continue
-    }
-
-    if (activeListType) {
-      flushList()
-    }
-
-    paragraphLines.push(trimmed)
-  }
-
-  flushMarkdownParagraph(paragraphLines, htmlBlocks)
-  flushList()
-
-  return htmlBlocks.join('')
+function buildMarkdownHeadingId(index) {
+  return `skill-heading-${index}`
 }
 
-const renderedSkillContent = computed(() => {
-  return renderMarkdownHtml(selectedSkillDetail.value?.content || '')
+function resolveMarkdownHeadingId({ index }) {
+  return buildMarkdownHeadingId(index)
+}
+
+function isAbsoluteUrl(value) {
+  return /^(?:[a-z]+:)?\/\//i.test(String(value || ''))
+}
+
+function sanitizeSkillMarkdownHtml(html) {
+  if (!html || typeof document === 'undefined') {
+    return html
+  }
+
+  const wrapper = document.createElement('div')
+  wrapper.innerHTML = String(html)
+
+  wrapper.querySelectorAll('img[src]').forEach((element) => {
+    element.setAttribute('loading', 'lazy')
+  })
+
+  wrapper.querySelectorAll('a[href]').forEach((element) => {
+    const href = element.getAttribute('href') || ''
+
+    if (isAbsoluteUrl(href)) {
+      element.setAttribute('target', '_blank')
+      element.setAttribute('rel', 'noreferrer noopener')
+    }
+  })
+
+  return wrapper.innerHTML
+}
+
+const normalizedSkillContent = computed(() => {
+  return normalizeMarkdownSource(selectedSkillDetail.value?.content || '')
 })
 
 async function loadSkillList() {
@@ -344,7 +306,27 @@ onMounted(() => {
 .settings-skills__content {
   min-height: 0;
   overflow: auto;
-  padding: 18px;
+  padding: 22px;
+  color: #29455b;
+  font-size: 0.98rem;
+  line-height: 1.86;
+  word-break: break-word;
+}
+
+.settings-skills__markdown-preview {
+  background: transparent;
+}
+
+.settings-skills__markdown-preview :deep(.md-editor-preview-wrapper) {
+  padding: 0;
+  background: transparent;
+}
+
+.settings-skills__markdown-preview :deep(.md-editor-preview) {
+  --md-theme-code-block-color: #1f2937;
+  --md-theme-code-block-bg-color: #ffffff;
+  --md-theme-code-before-bg-color: #f8fafc;
+  --md-theme-code-active-color: #036aca;
 }
 
 .settings-skills__content :deep(h1),
@@ -353,24 +335,176 @@ onMounted(() => {
 .settings-skills__content :deep(h4),
 .settings-skills__content :deep(h5),
 .settings-skills__content :deep(h6) {
-  margin: 0 0 12px;
-  color: #171717;
+  margin: 1.2em 0 0.45em;
+  color: #12344e;
+  line-height: 1.2;
+}
+
+.settings-skills__content :deep(h1:first-child),
+.settings-skills__content :deep(h2:first-child),
+.settings-skills__content :deep(h3:first-child),
+.settings-skills__content :deep(h4:first-child),
+.settings-skills__content :deep(h5:first-child),
+.settings-skills__content :deep(h6:first-child) {
+  margin-top: 0;
 }
 
 .settings-skills__content :deep(p),
 .settings-skills__content :deep(ul),
+.settings-skills__content :deep(ol),
+.settings-skills__content :deep(blockquote),
+.settings-skills__content :deep(pre) {
+  margin: 0 0 1rem;
+}
+
+.settings-skills__content :deep(ul),
 .settings-skills__content :deep(ol) {
-  margin: 0 0 12px;
-  color: #30394b;
-  line-height: 1.75;
+  padding-left: 1.5rem;
+  color: #29455b;
+}
+
+.settings-skills__content :deep(li + li) {
+  margin-top: 0.35rem;
+}
+
+.settings-skills__content :deep(strong) {
+  color: #12344e;
+  font-weight: 700;
+}
+
+.settings-skills__content :deep(del) {
+  color: #667085;
 }
 
 .settings-skills__content :deep(code) {
-  padding: 0.1em 0.35em;
-  border-radius: 6px;
-  background: #f3f5f8;
+  padding: 0.16em 0.38em;
+  border-radius: 8px;
+  background: rgba(18, 52, 78, 0.08);
   font-family: Consolas, 'SFMono-Regular', Menlo, Monaco, monospace;
   font-size: 0.92em;
+}
+
+.settings-skills__content :deep(blockquote) {
+  border-left: 4px solid rgba(45, 144, 255, 0.3);
+  border-radius: 14px;
+  background: rgba(45, 144, 255, 0.08);
+  color: #475467;
+  line-height: 1.75;
+  padding: 12px 16px;
+}
+
+.settings-skills__content :deep(img) {
+  display: block;
+  max-width: 100%;
+  margin: 1rem 0;
+  border-radius: 16px;
+  box-shadow: 0 16px 30px rgba(18, 52, 78, 0.12);
+}
+
+.settings-skills__content :deep(hr) {
+  margin: 1.5rem 0;
+  border: 0;
+  border-top: 1px solid rgba(18, 52, 78, 0.14);
+}
+
+.settings-skills__content :deep(pre) {
+  margin: 0 0 1rem;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #1f2937;
+  font-family: Consolas, 'SFMono-Regular', Menlo, Monaco, monospace;
+  font-size: 0.84rem;
+  line-height: 1.7;
+}
+
+.settings-skills__content :deep(.md-editor-code) {
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.settings-skills__content :deep(.md-editor-code .md-editor-code-head) {
+  border-bottom: 1px solid #e5e7eb;
+  background: #f8fafc;
+  color: #475467;
+}
+
+.settings-skills__content :deep(.md-editor-code pre) {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: #ffffff;
+}
+
+.settings-skills__content :deep(pre code) {
+  display: block;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  white-space: pre;
+}
+
+.settings-skills__content :deep(.md-editor-code pre code),
+.settings-skills__content :deep(.md-editor-code pre code .md-editor-code-block) {
+  background: #ffffff;
+  color: #1f2937;
+}
+
+.settings-skills__content :deep(.md-editor-code span[rn-wrapper] > span::before) {
+  color: #94a3b8;
+}
+
+.settings-skills__content :deep(table) {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0 0 1rem;
+  border-collapse: collapse;
+  border-spacing: 0;
+  background: #ffffff;
+  font-size: 0.88rem;
+}
+
+.settings-skills__content :deep(th),
+.settings-skills__content :deep(td) {
+  border: 1px solid rgba(18, 52, 78, 0.12);
+  padding: 0.72rem 0.88rem;
+  color: #29455b;
+  line-height: 1.6;
+  text-align: left;
+  vertical-align: top;
+}
+
+.settings-skills__content :deep(th) {
+  background: rgba(45, 144, 255, 0.08);
+  color: #12344e;
+  font-weight: 800;
+}
+
+.settings-skills__content :deep(.settings-skills__task-item) {
+  list-style: none;
+}
+
+.settings-skills__content :deep(.settings-skills__task-paragraph) {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+.settings-skills__content :deep(.settings-skills__task-checkbox) {
+  width: 1rem;
+  height: 1rem;
+  margin: 0.28rem 0 0;
+  flex-shrink: 0;
+  accent-color: #2d90ff;
+  pointer-events: none;
 }
 
 .settings-skills__content :deep(a) {

@@ -1488,6 +1488,7 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
   .agent-home-panel__body h2 {
     font-size: 1.1rem;
   }
+
 }
 </style>
 
