@@ -1413,6 +1413,62 @@ async function handleListSkillFiles(response) {
   })
 }
 
+async function handleCreateSkillFile(request, response) {
+  const payload = await readJsonBody(request)
+  const fileName = normalizeTrimmedString(payload?.fileName)
+  const content = typeof payload?.content === 'string' ? payload.content : null
+
+  if (!fileName) {
+    sendJson(response, 400, {
+      message: 'Skill file name is required.'
+    })
+    return
+  }
+
+  if (content === null) {
+    sendJson(response, 400, {
+      message: 'Skill content must be a string.'
+    })
+    return
+  }
+
+  const result = skillLibrary.createSkillFile({
+    fileName,
+    content
+  })
+
+  if (result?.error === 'invalid_path') {
+    sendJson(response, 400, {
+      message: 'Skill file name must use letters, numbers, hyphen or underscore.'
+    })
+    return
+  }
+
+  if (result?.error === 'already_exists') {
+    sendJson(response, 409, {
+      message: 'Skill file already exists.'
+    })
+    return
+  }
+
+  const item = result?.item || null
+
+  if (!item) {
+    sendJson(response, 500, {
+      message: 'Failed to create skill file.'
+    })
+    return
+  }
+
+  skillRegistry.reload()
+  auditSystemAction('', 'skill_file_created', {
+    skillPath: item.skillPath,
+    sizeBytes: item.sizeBytes
+  })
+
+  sendJson(response, 201, { item })
+}
+
 async function handleGetSkillFileDetail(response, requestUrl) {
   const skillPath = normalizeTrimmedString(requestUrl.searchParams.get('path'))
 
@@ -2611,6 +2667,11 @@ async function handleRequest(request, response) {
 
   if (pathname === '/api/agent/skill-files' && request.method === 'GET') {
     await handleListSkillFiles(response)
+    return
+  }
+
+  if (pathname === '/api/agent/skill-files' && request.method === 'POST') {
+    await handleCreateSkillFile(request, response)
     return
   }
 

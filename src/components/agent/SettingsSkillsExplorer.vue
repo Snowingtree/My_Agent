@@ -3,9 +3,17 @@
     <aside class="settings-skills__sidebar">
       <div class="settings-skills__sidebar-head">
         <div>
-          <p class="settings-skills__eyebrow">项目 Skills 目录</p>
           <h3>技能文件</h3>
         </div>
+        <button
+          type="button"
+          class="settings-skills__add-button"
+          aria-label="新增 Skill"
+          title="新增 Skill"
+          @click="openCreateSkillDialog"
+        >
+          +
+        </button>
       </div>
 
       <p v-if="listError" class="settings-skills__status is-error">{{ listError }}</p>
@@ -117,6 +125,113 @@
         />
       </div>
     </section>
+
+    <Teleport to="body">
+      <div
+        v-if="isCreateSkillDialogVisible"
+        class="settings-skills__dialog"
+        @click.self="closeCreateSkillDialog"
+      >
+        <section
+          class="settings-skills__dialog-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settings-skills-create-title"
+        >
+          <div class="settings-skills__dialog-head">
+            <div>
+              <p class="settings-skills__eyebrow">新增 Skill</p>
+              <h3 id="settings-skills-create-title">创建技能文件</h3>
+            </div>
+            <button
+              type="button"
+              class="settings-skills__dialog-close"
+              aria-label="关闭"
+              @click="closeCreateSkillDialog"
+            >
+              ×
+            </button>
+          </div>
+
+          <form class="settings-skills__dialog-body" @submit.prevent="createSkillFile">
+            <label class="settings-skills__field">
+              <span>Skill ID</span>
+              <input
+                v-model.trim="createSkillForm.name"
+                type="text"
+                placeholder="例如 code_review"
+                autocomplete="off"
+                required
+              >
+            </label>
+
+            <label class="settings-skills__field">
+              <span>显示名称</span>
+              <input
+                v-model.trim="createSkillForm.title"
+                type="text"
+                placeholder="例如 代码审查"
+                autocomplete="off"
+              >
+            </label>
+
+            <label class="settings-skills__field">
+              <span>描述</span>
+              <input
+                v-model.trim="createSkillForm.description"
+                type="text"
+                placeholder="简单说明这个 Skill 适合什么任务"
+                autocomplete="off"
+              >
+            </label>
+
+            <div class="settings-skills__field is-wide">
+              <span>初始说明 Markdown</span>
+              <MdEditor
+                v-model="createSkillForm.body"
+                class="settings-skills__create-editor"
+                editor-id="settings-skills-create-markdown-editor"
+                language="zh-CN"
+                theme="light"
+                preview-theme="smart-blue"
+                code-theme="github"
+                placeholder="写下 Skill 的适用场景、执行流程和输出要求"
+                :preview="false"
+                :html-preview="false"
+                :no-mermaid="true"
+                :no-katex="true"
+                :no-echarts="true"
+                :no-upload-img="true"
+                :no-prettier="true"
+                :md-heading-id="resolveMarkdownHeadingId"
+                :sanitize="sanitizeSkillMarkdownHtml"
+                :style="{ height: '100%' }"
+              />
+            </div>
+
+            <p v-if="createSkillError" class="settings-skills__dialog-error">{{ createSkillError }}</p>
+
+            <div class="settings-skills__dialog-actions">
+              <button
+                type="button"
+                class="settings-skills__action-button"
+                :disabled="isCreatingSkill"
+                @click="closeCreateSkillDialog"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                class="settings-skills__action-button is-primary"
+                :disabled="isCreatingSkill"
+              >
+                {{ isCreatingSkill ? '创建中...' : '创建' }}
+              </button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -136,6 +251,15 @@ const detailError = ref('')
 const isEditingSkill = ref(false)
 const isSavingSkill = ref(false)
 const skillDraftContent = ref('')
+const isCreateSkillDialogVisible = ref(false)
+const isCreatingSkill = ref(false)
+const createSkillError = ref('')
+const createSkillForm = ref({
+  name: '',
+  title: '',
+  description: '',
+  body: ''
+})
 const FRONTMATTER_PATTERN = /^(?:\uFEFF)?(---|\+\+\+)\r?\n[\s\S]*?\r?\n\1\r?\n?/
 const ZERO_WIDTH_MARK_PATTERN = /[\u200B-\u200D\u2060\uFEFF]/g
 const HARD_SPACE_PATTERN = /[\u00A0\u202F]/g
@@ -195,6 +319,131 @@ const normalizedSkillContent = computed(() => {
 const hasUnsavedSkillEdit = computed(() => {
   return skillDraftContent.value !== String(selectedSkillDetail.value?.content || '')
 })
+
+const createSkillDefaultBody = `# 新 Skill
+
+## 适用场景
+
+- 
+
+## 执行流程
+
+1. 
+
+## 输出要求
+
+- 
+`
+
+function normalizeSkillName(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\.md$/i, '')
+}
+
+function normalizeMetadataValue(value) {
+  return String(value || '')
+    .replace(/\r?\n/g, ' ')
+    .trim()
+}
+
+function resetCreateSkillForm() {
+  createSkillForm.value = {
+    name: '',
+    title: '',
+    description: '',
+    body: createSkillDefaultBody
+  }
+  createSkillError.value = ''
+}
+
+function buildCreateSkillContent(skillName) {
+  const title = normalizeMetadataValue(createSkillForm.value.title) || skillName
+  const description = normalizeMetadataValue(createSkillForm.value.description)
+  const body = String(createSkillForm.value.body || '').trim() || `# ${title}
+
+## 适用场景
+
+- 
+
+## 执行要求
+
+- 
+`
+  const metadataLines = [
+    `name: ${skillName}`,
+    `title: ${title}`
+  ]
+
+  if (description) {
+    metadataLines.push(`description: ${description}`)
+  }
+
+  return [...metadataLines, '', body].join('\n')
+}
+
+function openCreateSkillDialog() {
+  if (
+    isEditingSkill.value
+    && hasUnsavedSkillEdit.value
+    && typeof window !== 'undefined'
+    && !window.confirm('当前技能说明有未保存修改，打开新增窗口会退出编辑，确定继续吗？')
+  ) {
+    return
+  }
+
+  isEditingSkill.value = false
+  skillDraftContent.value = String(selectedSkillDetail.value?.content || '')
+  resetCreateSkillForm()
+  isCreateSkillDialogVisible.value = true
+}
+
+function closeCreateSkillDialog() {
+  if (isCreatingSkill.value) {
+    return
+  }
+
+  isCreateSkillDialogVisible.value = false
+  resetCreateSkillForm()
+}
+
+async function createSkillFile() {
+  if (isCreatingSkill.value) {
+    return
+  }
+
+  const skillName = normalizeSkillName(createSkillForm.value.name)
+
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(skillName)) {
+    createSkillError.value = 'Skill ID 只能使用字母、数字、短横线或下划线，并且必须以字母或数字开头。'
+    return
+  }
+
+  isCreatingSkill.value = true
+  createSkillError.value = ''
+
+  try {
+    const response = await http.post('/api/agent/skill-files', {
+      fileName: `${skillName}.md`,
+      content: buildCreateSkillContent(skillName)
+    })
+    const nextItem = response?.item || null
+
+    if (!nextItem?.skillPath) {
+      throw new Error('创建成功但服务端没有返回 Skill 文件信息。')
+    }
+
+    const listResponse = await http.get('/api/agent/skill-files')
+    skills.value = Array.isArray(listResponse?.items) ? listResponse.items : []
+    isCreateSkillDialogVisible.value = false
+    resetCreateSkillForm()
+    await selectSkill(nextItem.skillPath)
+  } catch (error) {
+    createSkillError.value = error instanceof Error ? error.message : '创建 Skill 失败。'
+  } finally {
+    isCreatingSkill.value = false
+  }
+}
 
 function syncSkillListItem(nextItem) {
   if (!nextItem?.skillPath) {
@@ -336,21 +585,33 @@ onMounted(() => {
 <style scoped>
 .settings-skills {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 0;
   height: 100%;
-  min-height: 400px;
+  min-height: 0;
+  min-width: 0;
 }
 
 .settings-skills__sidebar,
 .settings-skills__detail {
   min-width: 0;
   border: 1px solid #e7ebf3;
-  border-radius: 20px;
+  border-radius: 22px;
   background: #ffffff;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+}
+
+.settings-skills__sidebar {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.settings-skills__detail {
+  border-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 
 .settings-skills__sidebar-head,
@@ -358,8 +619,8 @@ onMounted(() => {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 18px 18px 14px;
+  gap: 12px;
+  padding: 20px 20px 16px;
   border-bottom: 1px solid #eef1f6;
 }
 
@@ -375,15 +636,37 @@ onMounted(() => {
 .settings-skills__detail-head h3 {
   margin: 0;
   color: #171717;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.settings-skills__add-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 999px;
+  background: #171717;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
   font-size: 1.1rem;
   font-weight: 700;
+  line-height: 1;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.settings-skills__add-button:hover {
+  transform: translateY(-1px);
+  opacity: 0.88;
 }
 
 .settings-skills__list {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   align-content: start;
-  padding: 12px;
+  padding: 16px 20px 20px;
   overflow-y: auto;
 }
 
@@ -391,24 +674,25 @@ onMounted(() => {
   display: grid;
   gap: 4px;
   width: 100%;
-  padding: 12px 14px;
   border: 0;
   border-radius: 14px;
-  background: transparent;
-  color: #1d2a44;
+  background: #f8fafc;
+  padding: 12px 14px;
+  color: #171717;
   cursor: pointer;
   text-align: left;
   font: inherit;
-  transition: background-color 160ms ease;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
 }
 
 .settings-skills__item:hover {
-  background: #f4f7fc;
+  background: #f1f5f9;
+  transform: translateX(2px);
 }
 
 .settings-skills__item.is-active {
-  background: #eaf1ff;
-  color: #214dba;
+  background: #171717;
+  color: #ffffff;
 }
 
 .settings-skills__item strong {
@@ -423,8 +707,8 @@ onMounted(() => {
   word-break: break-word;
 }
 
-.settings-skills__detail {
-  grid-template-rows: auto auto minmax(0, 1fr);
+.settings-skills__item.is-active span {
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .settings-skills__meta {
@@ -446,31 +730,28 @@ onMounted(() => {
 .settings-skills__action-button {
   min-width: 64px;
   height: 34px;
-  border: 1px solid #d8deea;
-  border-radius: 10px;
-  background: #ffffff;
-  color: #344054;
+  border: 0;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #374151;
   cursor: pointer;
   font: inherit;
   font-size: 0.86rem;
   font-weight: 700;
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  transition: background-color 160ms ease, color 160ms ease, opacity 160ms ease;
 }
 
 .settings-skills__action-button:hover:not(:disabled) {
-  border-color: #b9c5d8;
-  background: #f8fafc;
+  background: #e5e7eb;
 }
 
 .settings-skills__action-button.is-primary {
-  border-color: #2757bf;
-  background: #2757bf;
+  background: #171717;
   color: #ffffff;
 }
 
 .settings-skills__action-button.is-primary:hover:not(:disabled) {
-  border-color: #1d4aad;
-  background: #1d4aad;
+  background: #000000;
 }
 
 .settings-skills__action-button:disabled {
@@ -478,10 +759,179 @@ onMounted(() => {
   opacity: 0.6;
 }
 
+.settings-skills__dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.32);
+  backdrop-filter: blur(8px);
+}
+
+.settings-skills__dialog-panel {
+  width: min(940px, 100%);
+  height: min(820px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+  border-radius: 24px;
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.22);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.settings-skills__dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 22px 16px;
+  border-bottom: 0;
+}
+
+.settings-skills__dialog-head h3 {
+  margin: 0;
+  color: #171717;
+  font-size: 1.08rem;
+}
+
+.settings-skills__dialog-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #374151;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.settings-skills__dialog-close:hover {
+  background: #e5e7eb;
+}
+
+.settings-skills__dialog-body {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(280px, 1fr) auto auto;
+  gap: 14px;
+  padding: 0 22px 22px;
+}
+
+.settings-skills__field {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  color: #5d667a;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.settings-skills__field.is-wide {
+  min-height: 0;
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.settings-skills__field input,
+.settings-skills__field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #d9dee9;
+  border-radius: 14px;
+  background: #ffffff;
+  color: #1f2937;
+  font: inherit;
+  font-weight: 500;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.settings-skills__field input {
+  height: 42px;
+  padding: 0 13px;
+}
+
+.settings-skills__field textarea {
+  height: 100%;
+  min-height: 300px;
+  resize: vertical;
+  padding: 10px 12px;
+  font-family: Consolas, 'SFMono-Regular', Menlo, Monaco, monospace;
+  line-height: 1.65;
+}
+
+.settings-skills__field input:focus,
+.settings-skills__field textarea:focus {
+  border-color: #171717;
+  box-shadow: 0 0 0 3px rgba(23, 23, 23, 0.09);
+}
+
+.settings-skills__create-editor {
+  min-height: 300px;
+  overflow: hidden;
+  border: 1px solid #d9dee9;
+  border-radius: 14px;
+}
+
+.settings-skills__create-editor :deep(.md-editor-toolbar-wrapper),
+.settings-skills__create-editor :deep(.md-editor-footer) {
+  background: #f8fafc;
+}
+
+.settings-skills__create-editor :deep(.cm-editor),
+.settings-skills__create-editor :deep(.md-editor-preview-wrapper) {
+  background: #ffffff;
+}
+
+.settings-skills__dialog-error {
+  margin: 0;
+  border-radius: 10px;
+  background: #fff4f2;
+  color: #b33d34;
+  padding: 10px 12px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.settings-skills__dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+@media (max-width: 720px) {
+  .settings-skills__dialog {
+    padding: 14px;
+  }
+
+  .settings-skills__dialog-panel {
+    height: min(760px, calc(100vh - 28px));
+  }
+
+  .settings-skills__field {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 8px;
+  }
+}
+
 .settings-skills__status {
   margin: 0;
   padding: 18px;
-  color: #6b7280;
+  color: #7a869f;
   font-size: 0.94rem;
   line-height: 1.6;
 }
@@ -494,7 +944,7 @@ onMounted(() => {
   min-height: 0;
   overflow: auto;
   padding: 22px;
-  color: #29455b;
+  color: #374151;
   font-size: 0.98rem;
   line-height: 1.86;
   word-break: break-word;
@@ -535,7 +985,7 @@ onMounted(() => {
   --md-theme-code-block-color: #1f2937;
   --md-theme-code-block-bg-color: #ffffff;
   --md-theme-code-before-bg-color: #f8fafc;
-  --md-theme-code-active-color: #036aca;
+  --md-theme-code-active-color: #171717;
 }
 
 .settings-skills__content :deep(h1),
@@ -545,7 +995,7 @@ onMounted(() => {
 .settings-skills__content :deep(h5),
 .settings-skills__content :deep(h6) {
   margin: 1.2em 0 0.45em;
-  color: #12344e;
+  color: #171717;
   line-height: 1.2;
 }
 
@@ -569,7 +1019,7 @@ onMounted(() => {
 .settings-skills__content :deep(ul),
 .settings-skills__content :deep(ol) {
   padding-left: 1.5rem;
-  color: #29455b;
+  color: #374151;
 }
 
 .settings-skills__content :deep(li + li) {
@@ -577,7 +1027,7 @@ onMounted(() => {
 }
 
 .settings-skills__content :deep(strong) {
-  color: #12344e;
+  color: #171717;
   font-weight: 700;
 }
 
@@ -594,9 +1044,9 @@ onMounted(() => {
 }
 
 .settings-skills__content :deep(blockquote) {
-  border-left: 4px solid rgba(45, 144, 255, 0.3);
+  border-left: 4px solid #d1d5db;
   border-radius: 14px;
-  background: rgba(45, 144, 255, 0.08);
+  background: #f8fafc;
   color: #475467;
   line-height: 1.75;
   padding: 12px 16px;
@@ -685,15 +1135,15 @@ onMounted(() => {
 .settings-skills__content :deep(td) {
   border: 1px solid rgba(18, 52, 78, 0.12);
   padding: 0.72rem 0.88rem;
-  color: #29455b;
+  color: #374151;
   line-height: 1.6;
   text-align: left;
   vertical-align: top;
 }
 
 .settings-skills__content :deep(th) {
-  background: rgba(45, 144, 255, 0.08);
-  color: #12344e;
+  background: #f8fafc;
+  color: #171717;
   font-weight: 800;
 }
 
@@ -717,7 +1167,7 @@ onMounted(() => {
 }
 
 .settings-skills__content :deep(a) {
-  color: #2757bf;
+  color: #171717;
   text-decoration: none;
 }
 

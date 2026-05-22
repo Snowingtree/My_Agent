@@ -53,6 +53,28 @@ function deriveTitleFromFile(filePath) {
   return parse(filePath).name
 }
 
+function normalizeSkillFileName(value) {
+  const rawValue = normalizeTrimmedString(value).replace(/\\/g, '/')
+
+  if (!rawValue) {
+    return ''
+  }
+
+  const fileName = rawValue.toLowerCase().endsWith('.md')
+    ? rawValue
+    : `${rawValue}.md`
+
+  if (
+    fileName.includes('/')
+    || fileName.includes('..')
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]*\.md$/.test(fileName)
+  ) {
+    return ''
+  }
+
+  return fileName
+}
+
 function createSkillFileItem(rootDir, absolutePath) {
   const content = readFileSync(absolutePath, 'utf8')
   const metadata = parseSkillMarkdownMetadata(content)
@@ -125,6 +147,37 @@ export function createSkillLibrary({ rootDir }) {
     }
   }
 
+  function createSkillFile({ fileName, content }) {
+    const normalizedFileName = normalizeSkillFileName(fileName)
+
+    if (!normalizedFileName) {
+      return {
+        error: 'invalid_path'
+      }
+    }
+
+    const absolutePath = resolve(resolvedRootDir, normalizedFileName)
+    const relativeToRoot = relative(resolvedRootDir, absolutePath)
+
+    if (relativeToRoot.startsWith('..') || resolve(absolutePath) === resolvedRootDir) {
+      return {
+        error: 'invalid_path'
+      }
+    }
+
+    if (existsSync(absolutePath)) {
+      return {
+        error: 'already_exists'
+      }
+    }
+
+    writeFileSync(absolutePath, String(content ?? '').replace(/\s+$/g, '') + '\n', 'utf8')
+
+    return {
+      item: getSkillFileDetail(normalizedFileName)
+    }
+  }
+
   function updateSkillFileDetail(skillPath, content) {
     const normalizedPath = normalizeTrimmedString(skillPath)
 
@@ -152,6 +205,7 @@ export function createSkillLibrary({ rootDir }) {
   return {
     rootDir: resolvedRootDir,
     listSkillFiles,
+    createSkillFile,
     getSkillFileDetail,
     updateSkillFileDetail
   }
