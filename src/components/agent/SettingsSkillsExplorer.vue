@@ -203,6 +203,8 @@
                 :no-echarts="true"
                 :no-upload-img="true"
                 :no-prettier="true"
+                :toolbars="createSkillToolbars"
+                :footers="createSkillFooters"
                 :md-heading-id="resolveMarkdownHeadingId"
                 :sanitize="sanitizeSkillMarkdownHtml"
                 :style="{ height: '100%' }"
@@ -260,6 +262,27 @@ const createSkillForm = ref({
   description: '',
   body: ''
 })
+const createSkillToolbars = [
+  'bold',
+  'italic',
+  'title',
+  'quote',
+  '-',
+  'unorderedList',
+  'orderedList',
+  'task',
+  '-',
+  'codeRow',
+  'code',
+  'link',
+  'table',
+  '-',
+  'revoke',
+  'next',
+  'preview',
+  'fullscreen'
+]
+const createSkillFooters = ['markdownTotal']
 const FRONTMATTER_PATTERN = /^(?:\uFEFF)?(---|\+\+\+)\r?\n[\s\S]*?\r?\n\1\r?\n?/
 const ZERO_WIDTH_MARK_PATTERN = /[\u200B-\u200D\u2060\uFEFF]/g
 const HARD_SPACE_PATTERN = /[\u00A0\u202F]/g
@@ -840,8 +863,14 @@ onMounted(() => {
 .settings-skills__field.is-wide {
   min-height: 0;
   grid-template-columns: 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
   align-items: stretch;
-  gap: 8px;
+  align-content: stretch;
+  gap: 6px;
+}
+
+.settings-skills__field.is-wide > span {
+  line-height: 1.2;
 }
 
 .settings-skills__field input,
@@ -879,10 +908,15 @@ onMounted(() => {
 }
 
 .settings-skills__create-editor {
+  margin-top: 0;
   min-height: 300px;
   overflow: hidden;
   border: 1px solid #d9dee9;
   border-radius: 14px;
+}
+
+.settings-skills__create-editor :deep(.md-editor-toolbar) {
+  flex-wrap: nowrap;
 }
 
 .settings-skills__create-editor :deep(.md-editor-toolbar-wrapper),
