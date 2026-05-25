@@ -1,6 +1,8 @@
+---
 name: task_planner
 title: 任务规划
 description: 用于在实施前拆解目标、规划步骤、识别风险和梳理依赖。
+---
 
 # 任务规划 Skill
 

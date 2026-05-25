@@ -1,5 +1,6 @@
 ---
 name: mcp_connector
+title: MCP 连接器
 description: CyberClaw 风格的 MCP 连接器。先读取本技能说明，再启用技能，然后通过统一的 mcp_gateway 命令入口访问已选择的 MCP 服务。
 ---
 

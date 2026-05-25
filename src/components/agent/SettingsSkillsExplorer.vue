@@ -154,61 +154,52 @@
           </div>
 
           <form class="settings-skills__dialog-body" @submit.prevent="createSkillFile">
-            <label class="settings-skills__field">
-              <span>Skill ID</span>
-              <input
-                v-model.trim="createSkillForm.name"
-                type="text"
-                placeholder="例如 code_review"
-                autocomplete="off"
-                required
-              >
-            </label>
+            <div class="settings-skills__create-split">
+              <section class="settings-skills__create-pane">
+                <div class="settings-skills__create-pane-head">编辑</div>
+                <MdEditor
+                  v-model="createSkillForm.body"
+                  class="settings-skills__create-editor"
+                  editor-id="settings-skills-create-markdown-editor"
+                  language="zh-CN"
+                  theme="light"
+                  preview-theme="smart-blue"
+                  code-theme="github"
+                  placeholder="写下 Skill 的适用场景、执行流程和输出要求"
+                  :preview="false"
+                  :html-preview="false"
+                  :no-mermaid="true"
+                  :no-katex="true"
+                  :no-echarts="true"
+                  :no-upload-img="true"
+                  :no-prettier="true"
+                  :toolbars="createSkillToolbars"
+                  :footers="createSkillFooters"
+                  :md-heading-id="resolveMarkdownHeadingId"
+                  :sanitize="sanitizeSkillMarkdownHtml"
+                  :style="{ height: '100%' }"
+                />
+              </section>
 
-            <label class="settings-skills__field">
-              <span>显示名称</span>
-              <input
-                v-model.trim="createSkillForm.title"
-                type="text"
-                placeholder="例如 代码审查"
-                autocomplete="off"
-              >
-            </label>
-
-            <label class="settings-skills__field">
-              <span>描述</span>
-              <input
-                v-model.trim="createSkillForm.description"
-                type="text"
-                placeholder="简单说明这个 Skill 适合什么任务"
-                autocomplete="off"
-              >
-            </label>
-
-            <div class="settings-skills__field is-wide">
-              <span>初始说明 Markdown</span>
-              <MdEditor
-                v-model="createSkillForm.body"
-                class="settings-skills__create-editor"
-                editor-id="settings-skills-create-markdown-editor"
-                language="zh-CN"
-                theme="light"
-                preview-theme="smart-blue"
-                code-theme="github"
-                placeholder="写下 Skill 的适用场景、执行流程和输出要求"
-                :preview="false"
-                :html-preview="false"
-                :no-mermaid="true"
-                :no-katex="true"
-                :no-echarts="true"
-                :no-upload-img="true"
-                :no-prettier="true"
-                :toolbars="createSkillToolbars"
-                :footers="createSkillFooters"
-                :md-heading-id="resolveMarkdownHeadingId"
-                :sanitize="sanitizeSkillMarkdownHtml"
-                :style="{ height: '100%' }"
-              />
+              <section class="settings-skills__create-pane">
+                <div class="settings-skills__create-pane-head">预览</div>
+                <div class="settings-skills__create-preview-shell">
+                  <MdPreview
+                    class="settings-skills__markdown-preview settings-skills__create-preview"
+                    editor-id="settings-skills-create-markdown-preview"
+                    language="zh-CN"
+                    theme="light"
+                    preview-theme="smart-blue"
+                    code-theme="github"
+                    :model-value="createSkillPreviewContent"
+                    :md-heading-id="resolveMarkdownHeadingId"
+                    :sanitize="sanitizeSkillMarkdownHtml"
+                    :no-mermaid="true"
+                    :no-katex="true"
+                    :no-echarts="true"
+                  />
+                </div>
+              </section>
             </div>
 
             <p v-if="createSkillError" class="settings-skills__dialog-error">{{ createSkillError }}</p>
@@ -257,9 +248,6 @@ const isCreateSkillDialogVisible = ref(false)
 const isCreatingSkill = ref(false)
 const createSkillError = ref('')
 const createSkillForm = ref({
-  name: '',
-  title: '',
-  description: '',
   body: ''
 })
 const createSkillToolbars = [
@@ -343,7 +331,13 @@ const hasUnsavedSkillEdit = computed(() => {
   return skillDraftContent.value !== String(selectedSkillDetail.value?.content || '')
 })
 
-const createSkillDefaultBody = `# 新 Skill
+const createSkillDefaultBody = `---
+name: new_skill
+title: 新 Skill
+description: 简单说明这个 Skill 适合什么任务
+---
+
+# 新 Skill
 
 ## 适用场景
 
@@ -364,46 +358,52 @@ function normalizeSkillName(value) {
     .replace(/\.md$/i, '')
 }
 
-function normalizeMetadataValue(value) {
-  return String(value || '')
-    .replace(/\r?\n/g, ' ')
-    .trim()
+function parseCreateSkillMetadata(markdown) {
+  const source = String(markdown || '').trimStart()
+  const metadata = {}
+  const frontmatterMatch = source.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+  const metadataSource = frontmatterMatch ? frontmatterMatch[1] : source
+  const lines = metadataSource.split(/\r?\n/)
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+
+    if (!trimmed) {
+      if (!frontmatterMatch) {
+        continue
+      }
+      continue
+    }
+
+    if (!frontmatterMatch && trimmed.startsWith('#')) {
+      break
+    }
+
+    const match = trimmed.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/)
+
+    if (!match) {
+      if (!frontmatterMatch) {
+        break
+      }
+      continue
+    }
+
+    metadata[match[1].toLowerCase()] = match[2].trim().replace(/^['"]|['"]$/g, '')
+  }
+
+  return metadata
 }
 
 function resetCreateSkillForm() {
   createSkillForm.value = {
-    name: '',
-    title: '',
-    description: '',
     body: createSkillDefaultBody
   }
   createSkillError.value = ''
 }
 
-function buildCreateSkillContent(skillName) {
-  const title = normalizeMetadataValue(createSkillForm.value.title) || skillName
-  const description = normalizeMetadataValue(createSkillForm.value.description)
-  const body = String(createSkillForm.value.body || '').trim() || `# ${title}
-
-## 适用场景
-
-- 
-
-## 执行要求
-
-- 
-`
-  const metadataLines = [
-    `name: ${skillName}`,
-    `title: ${title}`
-  ]
-
-  if (description) {
-    metadataLines.push(`description: ${description}`)
-  }
-
-  return [...metadataLines, '', body].join('\n')
-}
+const createSkillPreviewContent = computed(() => {
+  return normalizeMarkdownSource(createSkillForm.value.body || '')
+})
 
 function openCreateSkillDialog() {
   if (
@@ -435,10 +435,23 @@ async function createSkillFile() {
     return
   }
 
-  const skillName = normalizeSkillName(createSkillForm.value.name)
+  const metadata = parseCreateSkillMetadata(createSkillForm.value.body)
+  const skillName = normalizeSkillName(metadata.name)
+  const skillTitle = String(metadata.title || '').trim()
+  const skillDescription = String(metadata.description || '').trim()
 
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(skillName)) {
-    createSkillError.value = 'Skill ID 只能使用字母、数字、短横线或下划线，并且必须以字母或数字开头。'
+    createSkillError.value = '请在 Markdown 顶部的 name 字段中填写 Skill ID，只能使用字母、数字、短横线或下划线。'
+    return
+  }
+
+  if (!skillTitle) {
+    createSkillError.value = '请在 Markdown 顶部填写 title 字段，作为 Skill 的显示名称。'
+    return
+  }
+
+  if (!skillDescription) {
+    createSkillError.value = '请在 Markdown 顶部填写 description 字段，说明这个 Skill 的用途。'
     return
   }
 
@@ -448,7 +461,7 @@ async function createSkillFile() {
   try {
     const response = await http.post('/api/agent/skill-files', {
       fileName: `${skillName}.md`,
-      content: buildCreateSkillContent(skillName)
+      content: String(createSkillForm.value.body || '').trim()
     })
     const nextItem = response?.item || null
 
@@ -795,8 +808,8 @@ onMounted(() => {
 }
 
 .settings-skills__dialog-panel {
-  width: min(940px, 100%);
-  height: min(820px, calc(100vh - 48px));
+  width: min(1180px, calc(100vw - 48px));
+  height: min(860px, calc(100vh - 48px));
   max-height: calc(100vh - 48px);
   overflow: hidden;
   border-radius: 24px;
@@ -843,11 +856,33 @@ onMounted(() => {
 
 .settings-skills__dialog-body {
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   display: grid;
-  grid-template-rows: auto auto auto minmax(280px, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   gap: 14px;
   padding: 0 22px 22px;
+}
+
+.settings-skills__create-split {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.settings-skills__create-pane {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+}
+
+.settings-skills__create-pane-head {
+  color: #5d667a;
+  font-size: 0.88rem;
+  font-weight: 800;
+  line-height: 1.2;
 }
 
 .settings-skills__field {
@@ -909,7 +944,7 @@ onMounted(() => {
 
 .settings-skills__create-editor {
   margin-top: 0;
-  min-height: 300px;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid #d9dee9;
   border-radius: 14px;
@@ -927,6 +962,18 @@ onMounted(() => {
 .settings-skills__create-editor :deep(.cm-editor),
 .settings-skills__create-editor :deep(.md-editor-preview-wrapper) {
   background: #ffffff;
+}
+
+.settings-skills__create-preview-shell {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #d9dee9;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.settings-skills__create-preview {
+  min-height: 100%;
 }
 
 .settings-skills__dialog-error {
@@ -953,6 +1000,16 @@ onMounted(() => {
 
   .settings-skills__dialog-panel {
     height: min(760px, calc(100vh - 28px));
+    width: min(100%, calc(100vw - 28px));
+  }
+
+  .settings-skills__dialog-body {
+    overflow: auto;
+  }
+
+  .settings-skills__create-split {
+    grid-template-columns: 1fr;
+    grid-auto-rows: minmax(360px, 1fr);
   }
 
   .settings-skills__field {

@@ -13,7 +13,9 @@ function normalizeRelativePath(rootDir, filePath) {
 
 function parseSkillMarkdownMetadata(content) {
   const metadata = {}
-  const lines = String(content || '').split(/\r?\n/)
+  const source = String(content || '').trimStart()
+  const frontmatterMatch = source.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+  const lines = (frontmatterMatch ? frontmatterMatch[1] : source).split(/\r?\n/)
 
   for (const line of lines) {
     const trimmed = line.trim()
@@ -22,14 +24,17 @@ function parseSkillMarkdownMetadata(content) {
       continue
     }
 
-    if (trimmed.startsWith('#')) {
+    if (!frontmatterMatch && trimmed.startsWith('#')) {
       break
     }
 
     const match = trimmed.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/)
 
     if (!match) {
-      break
+      if (!frontmatterMatch) {
+        break
+      }
+      continue
     }
 
     metadata[match[1].toLowerCase()] = match[2].trim().replace(/^['"]|['"]$/g, '')

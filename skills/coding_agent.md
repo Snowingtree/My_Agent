@@ -1,6 +1,8 @@
+---
 name: coding_agent
 title: 编码助手
 description: 用于在当前会话工作区中读取、创建、修改、调试和验证代码文件。
+---
 
 # 编码助手 Skill
 

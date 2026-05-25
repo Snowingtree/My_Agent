@@ -1,6 +1,8 @@
+---
 name: superdesign-1.0.0
 title: 前端视觉设计
 description: 用于前端视觉设计和高质量 UI 实现，适合落地页、仪表盘、商品页和现代网页界面。
+---
 
 # 前端视觉设计 Skill
 

@@ -1,5 +1,6 @@
 ---
 name: frontend_quality
+title: 前端质量检查
 description: 用于检查前端页面、组件、样式和响应式布局质量。
 ---
 

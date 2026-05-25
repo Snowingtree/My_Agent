@@ -1,5 +1,6 @@
 ---
 name: code_quality
+title: 代码质量检查
 description: 用于检查代码修改质量、验证结果和潜在回归风险。
 ---
 

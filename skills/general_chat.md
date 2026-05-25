@@ -1,6 +1,8 @@
+---
 name: general_chat
 title: 通用对话
 description: 用于日常对话、直接问答、解释说明、总结和轻量头脑风暴。
+---
 
 # 通用对话 Skill
 
