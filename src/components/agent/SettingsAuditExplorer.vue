@@ -19,10 +19,14 @@
         <button
           v-for="item in auditSessions"
           :key="item.sessionId"
+          :ref="(element) => setAuditSessionItemRef(item.sessionId, element)"
           type="button"
           class="settings-audit__session"
           :class="{ 'is-active': item.sessionId === selectedSessionId }"
+          :tabindex="item.sessionId === selectedSessionId ? 0 : -1"
+          :aria-current="item.sessionId === selectedSessionId ? 'true' : undefined"
           @click="selectAuditSession(item.sessionId)"
+          @keydown="handleAuditSessionKeydown($event, item.sessionId)"
         >
           <strong>{{ item.sessionId }}</strong>
           <span>{{ item.eventCount || 0 }} 条事件 · {{ formatDateTime(item.updatedAt) }}</span>
@@ -128,7 +132,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref } from 'vue'
 import { createMessage } from 'snowingress-my-components'
 import http from '../../http.js'
 
@@ -142,6 +146,7 @@ const isLoadingSessions = ref(false)
 const isLoadingEvents = ref(false)
 const sessionError = ref('')
 const eventError = ref('')
+const auditSessionItemRefs = new Map()
 
 const EVENT_LABELS = {
   api_request: '接口请求',
@@ -594,6 +599,76 @@ async function copyEvent(event) {
   }
 }
 
+function setAuditSessionItemRef(sessionId, element) {
+  const normalizedSessionId = String(sessionId || '')
+
+  if (!normalizedSessionId) {
+    return
+  }
+
+  if (element) {
+    auditSessionItemRefs.set(normalizedSessionId, element)
+  } else {
+    auditSessionItemRefs.delete(normalizedSessionId)
+  }
+}
+
+function focusAuditSessionItem(sessionId) {
+  void nextTick(() => {
+    const element = auditSessionItemRefs.get(sessionId)
+
+    if (element && typeof element.focus === 'function') {
+      element.focus()
+    }
+  })
+}
+
+function resolveAuditSessionIndexForKeyboard(currentSessionId) {
+  const currentIndex = auditSessions.value.findIndex((item) => item.sessionId === currentSessionId)
+
+  if (currentIndex >= 0) {
+    return currentIndex
+  }
+
+  const selectedIndex = auditSessions.value.findIndex((item) => item.sessionId === selectedSessionId.value)
+  return selectedIndex >= 0 ? selectedIndex : 0
+}
+
+async function moveAuditSessionSelection(currentSessionId, direction) {
+  if (!auditSessions.value.length) {
+    return
+  }
+
+  const currentIndex = resolveAuditSessionIndexForKeyboard(currentSessionId)
+  const lastIndex = auditSessions.value.length - 1
+  const nextIndex = direction === 'previous'
+    ? (currentIndex <= 0 ? lastIndex : currentIndex - 1)
+    : (currentIndex >= lastIndex ? 0 : currentIndex + 1)
+  const nextSessionId = auditSessions.value[nextIndex]?.sessionId
+
+  if (!nextSessionId) {
+    return
+  }
+
+  await selectAuditSession(nextSessionId)
+  focusAuditSessionItem(nextSessionId)
+}
+
+function handleAuditSessionKeydown(event, sessionId) {
+  const directionMap = {
+    ArrowUp: 'previous',
+    ArrowDown: 'next'
+  }
+  const direction = directionMap[event.key]
+
+  if (!direction) {
+    return
+  }
+
+  event.preventDefault()
+  void moveAuditSessionSelection(sessionId, direction)
+}
+
 async function loadAuditSessions() {
   isLoadingSessions.value = true
   sessionError.value = ''
@@ -795,6 +870,8 @@ onMounted(() => {
   border: 0;
   border-radius: 14px;
   background: transparent;
+  cursor: pointer;
+  font: inherit;
   text-align: left;
 }
 
@@ -802,9 +879,22 @@ onMounted(() => {
   background: #f4f7fc;
 }
 
+.settings-audit__session:focus {
+  outline: none;
+}
+
+.settings-audit__session:focus-visible {
+  background: #f4f7fc;
+  box-shadow: inset 0 0 0 2px rgba(33, 77, 186, 0.18);
+}
+
 .settings-audit__session.is-active {
   background: #eaf1ff;
   color: #214dba;
+}
+
+.settings-audit__session.is-active:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(33, 77, 186, 0.24);
 }
 
 .settings-audit__session strong,

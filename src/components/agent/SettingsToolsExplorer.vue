@@ -16,10 +16,14 @@
         <button
           v-for="tool in tools"
           :key="tool.name"
+          :ref="(element) => setToolItemRef(tool.name, element)"
           type="button"
           class="settings-tools__item"
           :class="{ 'is-active': tool.name === selectedToolName }"
+          :tabindex="tool.name === selectedToolName ? 0 : -1"
+          :aria-current="tool.name === selectedToolName ? 'true' : undefined"
           @click="selectTool(tool.name)"
+          @keydown="handleToolItemKeydown($event, tool.name)"
         >
           <strong>{{ tool.name }}</strong>
           <span>{{ tool.source === 'mcp' ? 'MCP 工具' : (tool.displayPath || '未提供路径') }}</span>
@@ -52,7 +56,7 @@
 <script setup>
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import http from '../../http.js'
 
 const tools = ref([])
@@ -62,6 +66,7 @@ const isLoadingList = ref(false)
 const isLoadingDetail = ref(false)
 const listError = ref('')
 const detailError = ref('')
+const toolItemRefs = new Map()
 
 function isVisibleSettingsTool(tool) {
   return String(tool?.source || '').trim().toLowerCase() !== 'mcp'
@@ -81,6 +86,76 @@ const highlightedToolContent = computed(() => {
 
   return hljs.highlightAuto(content).value
 })
+
+function setToolItemRef(toolName, element) {
+  const normalizedName = String(toolName || '')
+
+  if (!normalizedName) {
+    return
+  }
+
+  if (element) {
+    toolItemRefs.set(normalizedName, element)
+  } else {
+    toolItemRefs.delete(normalizedName)
+  }
+}
+
+function focusToolItem(toolName) {
+  void nextTick(() => {
+    const element = toolItemRefs.get(toolName)
+
+    if (element && typeof element.focus === 'function') {
+      element.focus()
+    }
+  })
+}
+
+function resolveToolIndexForKeyboard(currentToolName) {
+  const currentIndex = tools.value.findIndex((item) => item.name === currentToolName)
+
+  if (currentIndex >= 0) {
+    return currentIndex
+  }
+
+  const selectedIndex = tools.value.findIndex((item) => item.name === selectedToolName.value)
+  return selectedIndex >= 0 ? selectedIndex : 0
+}
+
+async function moveToolSelection(currentToolName, direction) {
+  if (!tools.value.length) {
+    return
+  }
+
+  const currentIndex = resolveToolIndexForKeyboard(currentToolName)
+  const lastIndex = tools.value.length - 1
+  const nextIndex = direction === 'previous'
+    ? (currentIndex <= 0 ? lastIndex : currentIndex - 1)
+    : (currentIndex >= lastIndex ? 0 : currentIndex + 1)
+  const nextToolName = tools.value[nextIndex]?.name
+
+  if (!nextToolName) {
+    return
+  }
+
+  await selectTool(nextToolName)
+  focusToolItem(nextToolName)
+}
+
+function handleToolItemKeydown(event, toolName) {
+  const directionMap = {
+    ArrowUp: 'previous',
+    ArrowDown: 'next'
+  }
+  const direction = directionMap[event.key]
+
+  if (!direction) {
+    return
+  }
+
+  event.preventDefault()
+  void moveToolSelection(toolName, direction)
+}
 
 async function loadToolList() {
   isLoadingList.value = true
@@ -208,9 +283,22 @@ onMounted(() => {
   background: #f4f7fc;
 }
 
+.settings-tools__item:focus {
+  outline: none;
+}
+
+.settings-tools__item:focus-visible {
+  background: #f4f7fc;
+  box-shadow: inset 0 0 0 2px rgba(33, 77, 186, 0.18);
+}
+
 .settings-tools__item.is-active {
   background: #eaf1ff;
   color: #214dba;
+}
+
+.settings-tools__item.is-active:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(33, 77, 186, 0.24);
 }
 
 .settings-tools__item strong {

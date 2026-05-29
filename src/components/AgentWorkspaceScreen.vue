@@ -66,7 +66,7 @@
         </div>
       </div>
 
-      <div class="agent-sidebar-rail">
+      <div ref="settingsSidebarRailRef" class="agent-sidebar-rail">
         <div
           class="agent-sidebar-rail__track"
           :class="{
@@ -167,60 +167,18 @@
 
               <div class="agent-settings-nav">
                 <button
+                  v-for="item in SETTINGS_NAV_ITEMS"
+                  :key="item.sectionId"
+                  :ref="(element) => setSettingsNavItemRef(item.sectionId, element)"
                   type="button"
                   class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeSettingsSection === 'settings-ai' }"
-                  @click="selectSettingsSection('settings-ai')"
+                  :class="{ 'is-active': activeSettingsSection === item.sectionId }"
+                  :tabindex="activeSettingsSection === item.sectionId ? 0 : -1"
+                  :aria-current="activeSettingsSection === item.sectionId ? 'page' : undefined"
+                  @click="selectSettingsSection(item.sectionId)"
+                  @keydown="handleSettingsNavKeydown($event, item.sectionId)"
                 >
-                  AI 配置
-                </button>
-                <button
-                  type="button"
-                  class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeSettingsSection === 'settings-mcp' }"
-                  @click="selectSettingsSection('settings-mcp')"
-                >
-                  MCP
-                </button>
-                <button
-                  type="button"
-                  class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeSettingsSection === 'settings-agent-skills' }"
-                  @click="selectSettingsSection('settings-agent-skills')"
-                >
-                  Skills
-                </button>
-                <button
-                  type="button"
-                  class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeSettingsSection === 'settings-rag' }"
-                  @click="selectSettingsSection('settings-rag')"
-                >
-                  知识库
-                </button>
-                <button
-                  type="button"
-                  class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeSettingsSection === 'settings-tools' }"
-                  @click="selectSettingsSection('settings-tools')"
-                >
-                  工具
-                </button>
-                <button
-                  type="button"
-                  class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeSettingsSection === 'settings-audit' }"
-                  @click="selectSettingsSection('settings-audit')"
-                >
-                  审计监控
-                </button>
-                <button
-                  type="button"
-                  class="agent-settings-nav__item"
-                  :class="{ 'is-active': activeSettingsSection === 'settings-data-analysis' }"
-                  @click="selectSettingsSection('settings-data-analysis')"
-                >
-                  数据分析
+                  {{ item.label }}
                 </button>
               </div>
             </div>
@@ -402,7 +360,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { createMessage } from 'snowingress-my-components'
 import { getAgentUsername } from '../auth.js'
 import http from '../http.js'
@@ -417,6 +375,17 @@ const showModelConfig = computed(() => activeSurface.value === 'settings')
 const showHomePage = computed(() => activeSurface.value === 'home')
 const activeHomeSection = ref('home-profile')
 const activeSettingsSection = ref('settings-ai')
+const SETTINGS_NAV_ITEMS = [
+  { sectionId: 'settings-ai', label: 'AI 配置' },
+  { sectionId: 'settings-mcp', label: 'MCP' },
+  { sectionId: 'settings-agent-skills', label: 'Skills' },
+  { sectionId: 'settings-rag', label: '知识库' },
+  { sectionId: 'settings-tools', label: '工具' },
+  { sectionId: 'settings-audit', label: '审计监控' },
+  { sectionId: 'settings-data-analysis', label: '数据分析' }
+]
+const settingsNavItemRefs = new Map()
+const settingsSidebarRailRef = ref(null)
 const isLoadingUserProfile = ref(false)
 const userProfileError = ref('')
 const userProfileText = ref('')
@@ -582,6 +551,75 @@ function selectSettingsSection(sectionId) {
   activeSurface.value = 'settings'
 }
 
+function setSettingsNavItemRef(sectionId, element) {
+  const normalizedSectionId = String(sectionId || '')
+
+  if (!normalizedSectionId) {
+    return
+  }
+
+  if (element) {
+    settingsNavItemRefs.set(normalizedSectionId, element)
+  } else {
+    settingsNavItemRefs.delete(normalizedSectionId)
+  }
+}
+
+function focusSettingsNavItem(sectionId) {
+  void nextTick(() => {
+    if (settingsSidebarRailRef.value) {
+      settingsSidebarRailRef.value.scrollLeft = 0
+    }
+
+    const element = settingsNavItemRefs.get(sectionId)
+
+    if (element && typeof element.focus === 'function') {
+      try {
+        element.focus({ preventScroll: true })
+      } catch {
+        element.focus()
+      }
+    }
+
+    if (settingsSidebarRailRef.value) {
+      settingsSidebarRailRef.value.scrollLeft = 0
+    }
+  })
+}
+
+function moveSettingsNavSelection(currentSectionId, direction) {
+  const currentIndex = SETTINGS_NAV_ITEMS.findIndex((item) => item.sectionId === currentSectionId)
+  const fallbackIndex = SETTINGS_NAV_ITEMS.findIndex((item) => item.sectionId === activeSettingsSection.value)
+  const resolvedIndex = currentIndex >= 0 ? currentIndex : Math.max(fallbackIndex, 0)
+  const lastIndex = SETTINGS_NAV_ITEMS.length - 1
+  const nextIndex = direction === 'previous'
+    ? (resolvedIndex <= 0 ? lastIndex : resolvedIndex - 1)
+    : (resolvedIndex >= lastIndex ? 0 : resolvedIndex + 1)
+  const nextSectionId = SETTINGS_NAV_ITEMS[nextIndex]?.sectionId
+
+  if (!nextSectionId) {
+    return
+  }
+
+  selectSettingsSection(nextSectionId)
+  focusSettingsNavItem(nextSectionId)
+}
+
+function handleSettingsNavKeydown(event, sectionId) {
+  const directionMap = {
+    ArrowUp: 'previous',
+    ArrowDown: 'next'
+  }
+  const direction = directionMap[event.key]
+
+  if (!direction) {
+    return
+  }
+
+  event.preventDefault()
+  moveSettingsNavSelection(sectionId, direction)
+}
+
 function selectHomeSection(sectionId) {
   activeHomeSection.value = sectionId
   activeSurface.value = 'home'
@@ -606,6 +644,15 @@ watch(
   ([isHomeOpen, section]) => {
     if (isHomeOpen && section === 'home-profile') {
       void loadUserProfile()
+    }
+  }
+)
+
+watch(
+  () => showModelConfig.value,
+  (isSettingsOpen) => {
+    if (isSettingsOpen) {
+      focusSettingsNavItem(activeSettingsSection.value || 'settings-ai')
     }
   }
 )
@@ -1087,10 +1134,23 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
     transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.agent-settings-nav__item:focus {
+  outline: none;
+}
+
+.agent-settings-nav__item:focus-visible {
+  background: #ececec;
+  box-shadow: inset 0 0 0 2px rgba(23, 23, 23, 0.18);
+}
+
 .agent-settings-nav__item.is-active {
   background: #e7e7e7;
   color: #202020;
   animation: sidebar-nav-active-pop 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agent-settings-nav__item.is-active:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(23, 23, 23, 0.22);
 }
 
 .agent-page__content {

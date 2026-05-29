@@ -26,10 +26,14 @@
         <button
           v-for="item in skills"
           :key="item.skillPath"
+          :ref="(element) => setSkillItemRef(item.skillPath, element)"
           type="button"
           class="settings-skills__item"
           :class="{ 'is-active': item.skillPath === selectedSkillPath }"
+          :tabindex="item.skillPath === selectedSkillPath ? 0 : -1"
+          :aria-current="item.skillPath === selectedSkillPath ? 'true' : undefined"
           @click="selectSkill(item.skillPath)"
+          @keydown="handleSkillItemKeydown($event, item.skillPath)"
         >
           <strong>{{ item.title }}</strong>
           <span>{{ item.skillPath }}</span>
@@ -229,7 +233,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { MdEditor, MdPreview } from 'md-editor-v3'
 import 'md-editor-v3/lib/style.css'
 import http from '../../http.js'
@@ -250,6 +254,7 @@ const createSkillError = ref('')
 const createSkillForm = ref({
   body: ''
 })
+const skillItemRefs = new Map()
 const createSkillToolbars = [
   'bold',
   'italic',
@@ -404,6 +409,93 @@ function resetCreateSkillForm() {
 const createSkillPreviewContent = computed(() => {
   return normalizeMarkdownSource(createSkillForm.value.body || '')
 })
+
+function setSkillItemRef(skillPath, element) {
+  const normalizedPath = String(skillPath || '')
+
+  if (!normalizedPath) {
+    return
+  }
+
+  if (element) {
+    skillItemRefs.set(normalizedPath, element)
+  } else {
+    skillItemRefs.delete(normalizedPath)
+  }
+}
+
+function focusSkillItem(skillPath) {
+  void nextTick(() => {
+    const element = skillItemRefs.get(skillPath)
+
+    if (element && typeof element.focus === 'function') {
+      element.focus()
+    }
+  })
+}
+
+function getSkillIndex(skillPath) {
+  return skills.value.findIndex((item) => item.skillPath === skillPath)
+}
+
+function resolveSkillIndexForKeyboard(currentSkillPath) {
+  const currentIndex = getSkillIndex(currentSkillPath)
+
+  if (currentIndex >= 0) {
+    return currentIndex
+  }
+
+  const selectedIndex = getSkillIndex(selectedSkillPath.value)
+
+  return selectedIndex >= 0 ? selectedIndex : 0
+}
+
+async function moveSkillSelection(currentSkillPath, direction) {
+  if (!skills.value.length) {
+    return
+  }
+
+  const currentIndex = resolveSkillIndexForKeyboard(currentSkillPath)
+  const lastIndex = skills.value.length - 1
+  let nextIndex = currentIndex
+
+  if (direction === 'previous') {
+    nextIndex = currentIndex <= 0 ? lastIndex : currentIndex - 1
+  } else if (direction === 'next') {
+    nextIndex = currentIndex >= lastIndex ? 0 : currentIndex + 1
+  } else if (direction === 'first') {
+    nextIndex = 0
+  } else if (direction === 'last') {
+    nextIndex = lastIndex
+  }
+
+  const nextSkillPath = skills.value[nextIndex]?.skillPath
+
+  if (!nextSkillPath) {
+    return
+  }
+
+  const didSelect = await selectSkill(nextSkillPath)
+
+  if (didSelect !== false) {
+    focusSkillItem(nextSkillPath)
+  }
+}
+
+function handleSkillItemKeydown(event, skillPath) {
+  const keyDirectionMap = {
+    ArrowUp: 'previous',
+    ArrowDown: 'next'
+  }
+  const direction = keyDirectionMap[event.key]
+
+  if (!direction) {
+    return
+  }
+
+  event.preventDefault()
+  void moveSkillSelection(skillPath, direction)
+}
 
 function openCreateSkillDialog() {
   if (
@@ -579,7 +671,7 @@ async function loadSkillList() {
 
 async function selectSkill(skillPath) {
   if (isEditingSkill.value && selectedSkillPath.value === skillPath) {
-    return
+    return false
   }
 
   if (
@@ -589,7 +681,7 @@ async function selectSkill(skillPath) {
     && typeof window !== 'undefined'
     && !window.confirm('当前技能说明有未保存修改，确定切换文件吗？')
   ) {
-    return
+    return false
   }
 
   selectedSkillPath.value = skillPath
@@ -611,6 +703,8 @@ async function selectSkill(skillPath) {
   } finally {
     isLoadingDetail.value = false
   }
+
+  return true
 }
 
 onMounted(() => {
