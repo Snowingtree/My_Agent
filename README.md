@@ -18,7 +18,7 @@
 - Frontend: Vue 3, Vite, Axios, highlight.js
 - Backend: Node.js HTTP server, mysql2, pg, mammoth
 - Storage: JSON session files, PostgreSQL + pgvector, MySQL model config table
-- Integrations: MCP stdio client, Feishu/Lark MCP
+- Integrations: MCP stdio/HTTP client, Feishu/Lark MCP
 
 ## 目录结构
 

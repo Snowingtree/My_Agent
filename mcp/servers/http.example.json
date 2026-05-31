@@ -1,0 +1,13 @@
+{
+  "serverId": "example_http",
+  "name": "Example HTTP MCP",
+  "enabled": false,
+  "transport": "http",
+  "url": "${EXAMPLE_MCP_URL}",
+  "headers": {
+    "Authorization": "Bearer ${EXAMPLE_MCP_TOKEN}"
+  },
+  "toolNamePrefix": "mcp.example",
+  "includeTools": [],
+  "excludeTools": []
+}

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
-import { StdioMcpClient } from './mcp/client.js'
+import { HttpMcpClient, StdioMcpClient } from './mcp/client.js'
 import { normalizeTrimmedString } from './utils.js'
 
 function readJsonFile(filePath) {
@@ -37,6 +37,28 @@ function normalizeStringArray(value) {
       .map((item) => normalizeTrimmedString(item))
       .filter(Boolean)
   )]
+}
+
+function normalizeTransport(value) {
+  const normalized = normalizeTrimmedString(value).toLowerCase().replace(/_/g, '-')
+
+  if (['http', 'streamable-http', 'http-stream'].includes(normalized)) {
+    return 'http'
+  }
+
+  return normalized || 'stdio'
+}
+
+function normalizeHeaderRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, rawValue]) => [String(key || '').trim(), expandEnvTemplate(rawValue).trim()])
+      .filter(([key, rawValue]) => Boolean(key) && Boolean(rawValue))
+  )
 }
 
 function truncateText(value, maxChars = 1200) {
@@ -93,10 +115,41 @@ function expandEnvTemplate(value) {
   ))
 }
 
+function joinUrlPath(baseUrl, pathValue) {
+  const normalizedBase = normalizeTrimmedString(baseUrl)
+  const normalizedPath = normalizeTrimmedString(pathValue)
+
+  if (!normalizedBase) {
+    return ''
+  }
+
+  if (!normalizedPath) {
+    return normalizedBase
+  }
+
+  return `${normalizedBase.replace(/\/+$/, '')}/${normalizedPath.replace(/^\/+/, '')}`
+}
+
+function normalizeHttpUrl(item) {
+  const directUrl = [item?.url, item?.endpoint]
+    .map((candidate) => normalizeTrimmedString(expandEnvTemplate(candidate)))
+    .find(Boolean)
+
+  if (directUrl) {
+    return directUrl
+  }
+
+  return joinUrlPath(
+    expandEnvTemplate(item?.baseUrl),
+    expandEnvTemplate(item?.path)
+  )
+}
+
 function normalizeServerDefinition(item, index, configPath, mcpConfig) {
   const serverId = normalizeTrimmedString(item?.serverId) || `mcp_server_${index + 1}`
-  const transport = normalizeTrimmedString(item?.transport).toLowerCase() || 'stdio'
+  const transport = normalizeTransport(item?.transport)
   const command = normalizeTrimmedString(expandEnvTemplate(item?.command))
+  const url = normalizeHttpUrl(item)
   const rawArgs = Array.isArray(item?.args)
     ? item.args.map((arg) => expandEnvTemplate(arg)).map((arg) => String(arg ?? '')).filter(Boolean)
     : []
@@ -115,9 +168,12 @@ function normalizeServerDefinition(item, index, configPath, mcpConfig) {
     enabled: normalizeBoolean(item?.enabled, false),
     transport,
     command,
+    url,
     args: rawArgs,
     cwd: resolvedCwd,
     env: rawEnv,
+    headers: normalizeHeaderRecord(item?.headers),
+    closeSessionOnClose: normalizeBoolean(item?.closeSessionOnClose, true),
     toolNamePrefix: normalizeTrimmedString(item?.toolNamePrefix) || `mcp.${serverId}`,
     includeTools: normalizeStringArray(item?.includeTools),
     excludeTools: normalizeStringArray(item?.excludeTools),
@@ -153,7 +209,7 @@ function collectServerDefinitions(rawValue, configPath) {
     })
     : []
 
-  if (rawValue.serverId || rawValue.command) {
+  if (rawValue.serverId || rawValue.command || rawValue.url || rawValue.endpoint || rawValue.baseUrl) {
     return [
       {
         item: rawValue,
@@ -168,6 +224,34 @@ function collectServerDefinitions(rawValue, configPath) {
     ...inlineItems,
     ...referencedItems
   ]
+}
+
+function createClientForDefinition(definition, mcpConfig) {
+  if (definition.transport === 'stdio') {
+    return new StdioMcpClient({
+      command: definition.command,
+      args: definition.args,
+      cwd: definition.cwd,
+      env: {
+        ...process.env,
+        ...definition.env
+      },
+      timeoutMs: definition.timeoutMs,
+      protocolVersion: mcpConfig.protocolVersion
+    })
+  }
+
+  if (definition.transport === 'http') {
+    return new HttpMcpClient({
+      url: definition.url,
+      headers: definition.headers,
+      timeoutMs: definition.timeoutMs,
+      protocolVersion: mcpConfig.protocolVersion,
+      closeSessionOnClose: definition.closeSessionOnClose
+    })
+  }
+
+  throw new Error(`Unsupported MCP transport: ${definition.transport}`)
 }
 
 function normalizeMcpTool(definition, rawTool) {
@@ -597,24 +681,8 @@ export function createMcpRegistry({
         continue
       }
 
-      if (definition.transport !== 'stdio') {
-        state.status = 'error'
-        state.error = `Unsupported MCP transport: ${definition.transport}`
-        continue
-      }
-
       try {
-        const client = new StdioMcpClient({
-          command: definition.command,
-          args: definition.args,
-          cwd: definition.cwd,
-          env: {
-            ...process.env,
-            ...definition.env
-          },
-          timeoutMs: definition.timeoutMs,
-          protocolVersion: mcpConfig.protocolVersion
-        })
+        const client = createClientForDefinition(definition, mcpConfig)
 
         await client.start()
         const tools = await client.listTools()

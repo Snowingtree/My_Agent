@@ -90,6 +90,7 @@ mcp/servers/*.json
 ```
 
 Each MCP server contributes tools to the same tool catalog as built-in tools. The Agent can call them through the structured tool execution path.
+The MCP registry supports stdio servers and Streamable HTTP-style MCP endpoints configured with `transport: "http"` or `transport: "streamable-http"`.
 
 ## RAG
 

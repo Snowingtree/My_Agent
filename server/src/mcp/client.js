@@ -13,6 +13,241 @@ function truncateText(value, maxChars = 400) {
     : normalized
 }
 
+function normalizeHeaderRecord(headers = {}) {
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(headers)
+      .map(([key, value]) => [String(key || '').trim(), String(value ?? '').trim()])
+      .filter(([key, value]) => Boolean(key) && Boolean(value))
+  )
+}
+
+function parseSseMessages(rawText) {
+  const messages = []
+  let eventName = ''
+  let dataLines = []
+
+  function commitEvent() {
+    const data = dataLines.join('\n').trim()
+
+    if (!data || data === '[DONE]') {
+      eventName = ''
+      dataLines = []
+      return
+    }
+
+    try {
+      const parsed = JSON.parse(data)
+      messages.push({
+        event: eventName,
+        data: parsed
+      })
+    } catch {
+      messages.push({
+        event: eventName,
+        data
+      })
+    }
+
+    eventName = ''
+    dataLines = []
+  }
+
+  for (const line of String(rawText || '').split(/\r?\n/)) {
+    if (!line) {
+      commitEvent()
+      continue
+    }
+
+    if (line.startsWith(':')) {
+      continue
+    }
+
+    const separatorIndex = line.indexOf(':')
+    const field = separatorIndex === -1 ? line : line.slice(0, separatorIndex)
+    const rawValue = separatorIndex === -1 ? '' : line.slice(separatorIndex + 1)
+    const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue
+
+    if (field === 'event') {
+      eventName = value
+    } else if (field === 'data') {
+      dataLines.push(value)
+    }
+  }
+
+  commitEvent()
+
+  return messages
+}
+
+function selectJsonRpcResponse(messages, expectedId) {
+  const normalizedExpectedId = String(expectedId ?? '')
+  const messageList = Array.isArray(messages) ? messages : [messages]
+
+  if (!normalizedExpectedId) {
+    return messageList.find((message) => message && typeof message === 'object') || null
+  }
+
+  return messageList.find((message) => (
+    message
+    && typeof message === 'object'
+    && Object.prototype.hasOwnProperty.call(message, 'id')
+    && String(message.id) === normalizedExpectedId
+  )) || null
+}
+
+function normalizeJsonRpcMessages(parsedValue) {
+  if (Array.isArray(parsedValue)) {
+    return parsedValue
+  }
+
+  return parsedValue ? [parsedValue] : []
+}
+
+function parseSseData(eventName, dataLines) {
+  const data = dataLines.join('\n').trim()
+
+  if (!data || data === '[DONE]') {
+    return null
+  }
+
+  try {
+    return {
+      event: eventName,
+      data: JSON.parse(data)
+    }
+  } catch {
+    return {
+      event: eventName,
+      data
+    }
+  }
+}
+
+async function readStreamingSseJsonRpcResponse(response, expectedId) {
+  const reader = response.body?.getReader?.()
+
+  if (!reader) {
+    const rawText = await response.text()
+    return selectJsonRpcResponse(
+      parseSseMessages(rawText).map((item) => item.data),
+      expectedId
+    )
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let eventName = ''
+  let dataLines = []
+
+  function commitEvent() {
+    const parsedEvent = parseSseData(eventName, dataLines)
+
+    eventName = ''
+    dataLines = []
+
+    if (!parsedEvent) {
+      return null
+    }
+
+    return selectJsonRpcResponse([parsedEvent.data], expectedId)
+  }
+
+  function processLine(line) {
+    if (!line) {
+      return commitEvent()
+    }
+
+    if (line.startsWith(':')) {
+      return null
+    }
+
+    const separatorIndex = line.indexOf(':')
+    const field = separatorIndex === -1 ? line : line.slice(0, separatorIndex)
+    const rawValue = separatorIndex === -1 ? '' : line.slice(separatorIndex + 1)
+    const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue
+
+    if (field === 'event') {
+      eventName = value
+    } else if (field === 'data') {
+      dataLines.push(value)
+    }
+
+    return null
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+
+      if (done) {
+        buffer += decoder.decode()
+
+        if (buffer) {
+          const matched = processLine(buffer)
+
+          if (matched) {
+            return matched
+          }
+        }
+
+        return commitEvent()
+      }
+
+      buffer += decoder.decode(value, { stream: true })
+
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const matched = processLine(line)
+
+        if (matched) {
+          await reader.cancel().catch(() => {})
+          return matched
+        }
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {})
+  }
+}
+
+async function readHttpJsonRpcResponse(response, expectedId) {
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase()
+
+  if (contentType.includes('text/event-stream')) {
+    return readStreamingSseJsonRpcResponse(response, expectedId)
+  }
+
+  const rawText = await response.text()
+  const normalizedText = rawText.trim()
+
+  if (!normalizedText) {
+    return null
+  }
+
+  if (normalizedText.startsWith('event:') || normalizedText.startsWith('data:')) {
+    return selectJsonRpcResponse(
+      parseSseMessages(normalizedText).map((item) => item.data),
+      expectedId
+    )
+  }
+
+  const parsedValue = JSON.parse(normalizedText)
+
+  return selectJsonRpcResponse(normalizeJsonRpcMessages(parsedValue), expectedId)
+}
+
+function createAbortError(message, code = 'TASK_CANCELLED') {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
 export class StdioMcpClient {
   constructor({
     command,
@@ -286,6 +521,238 @@ export class StdioMcpClient {
 
     if (this.child && !this.child.killed) {
       this.child.kill('SIGTERM')
+    }
+  }
+}
+
+export class HttpMcpClient {
+  constructor({
+    url,
+    headers = {},
+    timeoutMs = 30000,
+    protocolVersion = '2025-11-25',
+    closeSessionOnClose = true,
+    clientInfo = {
+      name: 'agent-api',
+      version: '0.1.0'
+    }
+  } = {}) {
+    this.url = String(url || '').trim()
+    this.headers = normalizeHeaderRecord(headers)
+    this.timeoutMs = timeoutMs
+    this.protocolVersion = protocolVersion
+    this.closeSessionOnClose = closeSessionOnClose !== false
+    this.clientInfo = clientInfo
+    this.nextRequestId = 1
+    this.started = false
+    this.closed = false
+    this.sessionId = ''
+  }
+
+  async start() {
+    if (this.started) {
+      return
+    }
+
+    if (!this.url) {
+      throw new Error('MCP HTTP client requires a URL.')
+    }
+
+    const initializeResult = await this.request('initialize', {
+      protocolVersion: this.protocolVersion,
+      capabilities: {},
+      clientInfo: this.clientInfo
+    })
+
+    const negotiatedProtocol = String(initializeResult?.protocolVersion || '').trim()
+
+    if (negotiatedProtocol) {
+      this.protocolVersion = negotiatedProtocol
+    }
+
+    await this.notify('notifications/initialized', {})
+    this.started = true
+  }
+
+  createHeaders() {
+    const headers = new Headers({
+      Accept: 'application/json, text/event-stream',
+      'Content-Type': 'application/json',
+      ...this.headers
+    })
+
+    if (this.protocolVersion) {
+      headers.set('MCP-Protocol-Version', this.protocolVersion)
+    }
+
+    if (this.sessionId) {
+      headers.set('Mcp-Session-Id', this.sessionId)
+    }
+
+    return headers
+  }
+
+  async postJsonRpc(payload, {
+    signal,
+    expectResponse = true,
+    methodLabel = ''
+  } = {}) {
+    if (this.closed) {
+      throw new Error('MCP client is not available.')
+    }
+
+    if (signal?.aborted) {
+      throw createAbortError(`MCP request was cancelled: ${methodLabel || payload?.method || 'request'}`)
+    }
+
+    const controller = new AbortController()
+    let timeoutTriggered = false
+    const timeoutId = setTimeout(() => {
+      timeoutTriggered = true
+      controller.abort()
+    }, this.timeoutMs)
+    const abortListener = () => {
+      controller.abort()
+    }
+
+    if (signal) {
+      signal.addEventListener('abort', abortListener, { once: true })
+    }
+
+    try {
+      const response = await fetch(this.url, {
+        method: 'POST',
+        headers: this.createHeaders(),
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      })
+
+      const nextSessionId = String(response.headers.get('mcp-session-id') || '').trim()
+
+      if (nextSessionId) {
+        this.sessionId = nextSessionId
+      }
+
+      if (!response.ok) {
+        const rawText = await response.text().catch(() => '')
+        throw createJsonRpcError(
+          `MCP HTTP request failed: ${response.status} ${response.statusText}${rawText.trim() ? ` - ${truncateText(rawText, 800)}` : ''}`,
+          response.status
+        )
+      }
+
+      if (!expectResponse) {
+        await response.text().catch(() => '')
+        return null
+      }
+
+      const responseMessage = await readHttpJsonRpcResponse(response, payload.id)
+
+      if (!responseMessage) {
+        throw createJsonRpcError(`MCP HTTP response did not include a JSON-RPC result for ${methodLabel || payload?.method || 'request'}.`)
+      }
+
+      if (responseMessage.error) {
+        throw createJsonRpcError(
+          typeof responseMessage.error.message === 'string'
+            ? responseMessage.error.message
+            : 'MCP request failed.',
+          Number.isInteger(responseMessage.error.code) ? responseMessage.error.code : -32000
+        )
+      }
+
+      return responseMessage.result
+    } catch (error) {
+      if (timeoutTriggered) {
+        throw new Error(`MCP request timed out: ${methodLabel || payload?.method || 'request'}`)
+      }
+
+      if (signal?.aborted) {
+        throw createAbortError(`MCP request was cancelled: ${methodLabel || payload?.method || 'request'}`)
+      }
+
+      throw error
+    } finally {
+      clearTimeout(timeoutId)
+
+      if (signal) {
+        signal.removeEventListener('abort', abortListener)
+      }
+    }
+  }
+
+  async request(method, params = {}, { signal } = {}) {
+    const id = this.nextRequestId++
+    const payload = {
+      jsonrpc: '2.0',
+      id,
+      method,
+      params
+    }
+
+    return this.postJsonRpc(payload, {
+      signal,
+      expectResponse: true,
+      methodLabel: method
+    })
+  }
+
+  async notify(method, params = {}) {
+    const payload = {
+      jsonrpc: '2.0',
+      method,
+      params
+    }
+
+    await this.postJsonRpc(payload, {
+      expectResponse: false,
+      methodLabel: method
+    })
+  }
+
+  async listTools() {
+    const tools = []
+    let cursor = ''
+
+    while (true) {
+      const result = await this.request('tools/list', cursor ? { cursor } : {})
+      const nextTools = Array.isArray(result?.tools) ? result.tools : []
+
+      tools.push(...nextTools)
+
+      cursor = String(result?.nextCursor || '').trim()
+
+      if (!cursor) {
+        break
+      }
+    }
+
+    return tools
+  }
+
+  async callTool(name, args = {}, { signal } = {}) {
+    return this.request('tools/call', {
+      name,
+      arguments: args && typeof args === 'object' && !Array.isArray(args) ? args : {}
+    }, {
+      signal
+    })
+  }
+
+  async close() {
+    this.closed = true
+
+    if (!this.closeSessionOnClose || !this.sessionId || !this.url) {
+      return
+    }
+
+    try {
+      await fetch(this.url, {
+        method: 'DELETE',
+        headers: this.createHeaders()
+      })
+    } catch {
+      // Ignore close errors; the server may not implement session deletion.
     }
   }
 }
