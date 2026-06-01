@@ -1,5 +1,12 @@
 <template>
-  <main class="agent-page" :class="{ 'is-sidebar-collapsed': isSidebarCollapsed }">
+  <main
+    class="agent-page"
+    :class="{
+      'is-sidebar-collapsed': isSidebarCollapsed,
+      'is-sidebar-expanding': sidebarMotion === 'expand',
+      'is-sidebar-collapsing': sidebarMotion === 'collapse'
+    }"
+  >
     <aside class="agent-page__sidebar">
       <div class="agent-sidebar__top">
         <button
@@ -449,6 +456,8 @@ defineEmits(['logout'])
 
 const activeSurface = ref('chat')
 const isSidebarCollapsed = ref(false)
+const sidebarMotion = ref('')
+let sidebarMotionTimer = null
 const showModelConfig = computed(() => activeSurface.value === 'settings')
 const showHomePage = computed(() => activeSurface.value === 'home')
 const activeHomeSection = ref('home-profile')
@@ -625,7 +634,14 @@ function toggleSettings() {
 }
 
 function toggleSidebar() {
-  isSidebarCollapsed.value = !isSidebarCollapsed.value
+  const nextCollapsed = !isSidebarCollapsed.value
+
+  window.clearTimeout(sidebarMotionTimer)
+  sidebarMotion.value = nextCollapsed ? 'collapse' : 'expand'
+  isSidebarCollapsed.value = nextCollapsed
+  sidebarMotionTimer = window.setTimeout(() => {
+    sidebarMotion.value = ''
+  }, 240)
 }
 
 function selectSettingsSection(sectionId) {
@@ -846,6 +862,7 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
 }
 
 .agent-page__sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -861,6 +878,7 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  min-height: 61px;
   padding: 6px 6px 8px;
 }
 
@@ -911,10 +929,13 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
 
 .agent-user-card__avatar {
   display: inline-flex;
+  flex: 0 0 30px;
   align-items: center;
   justify-content: center;
   width: 30px;
+  min-width: 30px;
   height: 30px;
+  min-height: 30px;
   border-radius: 50%;
   background: #171717;
   color: #ffffff;
@@ -952,6 +973,9 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
 }
 
 .agent-sidebar__top-actions {
+  position: absolute;
+  top: 20px;
+  right: 12px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1541,16 +1565,20 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
 }
 
 @media (min-width: 921px) {
-  .agent-page {
-    transition: grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  .agent-page__sidebar {
+    z-index: 3;
+    width: 280px;
+    transform: translateX(0);
+    transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
   }
 
   .agent-sidebar-rail {
     width: 259px;
     min-width: 259px;
-  opacity: 1;
-  visibility: visible;
-  transition:
+    opacity: 1;
+    visibility: visible;
+    transition:
       opacity 180ms ease 20ms,
       visibility 0ms linear;
   }
@@ -1560,12 +1588,7 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
   }
 
   .agent-page.is-sidebar-collapsed .agent-page__sidebar {
-    padding: 10px 6px;
-  }
-
-  .agent-page.is-sidebar-collapsed .agent-sidebar__top {
-    justify-content: center;
-    padding: 6px 0 8px;
+    transform: translateX(-222px);
   }
 
   .agent-page.is-sidebar-collapsed .agent-sidebar__brand,
@@ -1576,8 +1599,9 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
 
   .agent-page.is-sidebar-collapsed .agent-sidebar__collapsed-logout {
     display: inline-flex;
-    flex: 0 0 auto;
-    align-self: center;
+    position: absolute;
+    right: 12px;
+    bottom: 10px;
   }
 
   .agent-page.is-sidebar-collapsed .agent-sidebar-rail {
@@ -1587,6 +1611,34 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
     transition:
       opacity 100ms ease,
       visibility 0ms linear 100ms;
+  }
+
+  .agent-page.is-sidebar-expanding .agent-page__content {
+    animation: sidebar-content-expand 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .agent-page.is-sidebar-collapsing .agent-page__content {
+    animation: sidebar-content-collapse 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+}
+
+@keyframes sidebar-content-expand {
+  from {
+    transform: translateX(-222px);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes sidebar-content-collapse {
+  from {
+    transform: translateX(222px);
+  }
+
+  to {
+    transform: translateX(0);
   }
 }
 
