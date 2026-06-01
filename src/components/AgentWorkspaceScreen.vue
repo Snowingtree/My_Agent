@@ -1,5 +1,5 @@
 <template>
-  <main class="agent-page">
+  <main class="agent-page" :class="{ 'is-sidebar-collapsed': isSidebarCollapsed }">
     <aside class="agent-page__sidebar">
       <div class="agent-sidebar__top">
         <button
@@ -59,6 +59,57 @@
                 r="3.25"
                 fill="none"
                 stroke="currentColor"
+                stroke-width="1.6"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="agent-sidebar__icon-button agent-sidebar__collapse-button"
+            :aria-expanded="!isSidebarCollapsed"
+            :aria-label="isSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'"
+            :title="isSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'"
+            @click="toggleSidebar"
+          >
+            <svg v-if="isSidebarCollapsed" viewBox="0 0 24 24" aria-hidden="true">
+              <rect
+                x="3.5"
+                y="4"
+                width="17"
+                height="16"
+                rx="2.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+              />
+              <path d="M8 4V20" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="M12.5 9L15.5 12L12.5 15"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.6"
+              />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+              <rect
+                x="3.5"
+                y="4"
+                width="17"
+                height="16"
+                rx="2.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+              />
+              <path d="M8 4V20" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path
+                d="M15.5 9L12.5 12L15.5 15"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
                 stroke-width="1.6"
               />
             </svg>
@@ -185,6 +236,32 @@
           </section>
         </div>
       </div>
+
+      <button
+        type="button"
+        class="agent-sidebar__icon-button agent-sidebar__collapsed-logout"
+        aria-label="退出登录"
+        title="退出登录"
+        @click="$emit('logout')"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            d="M10 5H6.75C5.784 5 5 5.784 5 6.75V17.25C5 18.216 5.784 19 6.75 19H10"
+            fill="none"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-width="1.7"
+          />
+          <path
+            d="M14 8L18 12L14 16M18 12H9"
+            fill="none"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="1.7"
+          />
+        </svg>
+      </button>
     </aside>
 
     <section
@@ -371,6 +448,7 @@ import ModelConfigPage from './agent/ModelConfigPage.vue'
 defineEmits(['logout'])
 
 const activeSurface = ref('chat')
+const isSidebarCollapsed = ref(false)
 const showModelConfig = computed(() => activeSurface.value === 'settings')
 const showHomePage = computed(() => activeSurface.value === 'home')
 const activeHomeSection = ref('home-profile')
@@ -544,6 +622,10 @@ function toggleSettings() {
   }
 
   openModelConfig()
+}
+
+function toggleSidebar() {
+  isSidebarCollapsed.value = !isSidebarCollapsed.value
 }
 
 function selectSettingsSection(sectionId) {
@@ -876,6 +958,10 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
   flex: 0 0 auto;
 }
 
+.agent-sidebar__collapsed-logout {
+  display: none;
+}
+
 .agent-sidebar__icon-button:hover,
 .agent-sidebar__icon-button.is-active,
 .agent-sidebar__new-chat:hover,
@@ -1096,11 +1182,13 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
   width: 100%;
   min-height: 40px;
   padding: 0 10px;
+  overflow: hidden;
   border-radius: 10px;
   background: transparent;
   color: #3a3a3a;
   cursor: pointer;
   text-align: left;
+  white-space: nowrap;
 }
 
 .agent-settings-sidebar__offset {
@@ -1452,6 +1540,56 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
   flex-direction: column;
 }
 
+@media (min-width: 921px) {
+  .agent-page {
+    transition: grid-template-columns 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .agent-sidebar-rail {
+    width: 259px;
+    min-width: 259px;
+  opacity: 1;
+  visibility: visible;
+  transition:
+      opacity 180ms ease 20ms,
+      visibility 0ms linear;
+  }
+
+  .agent-page.is-sidebar-collapsed {
+    grid-template-columns: 58px minmax(0, 1fr);
+  }
+
+  .agent-page.is-sidebar-collapsed .agent-page__sidebar {
+    padding: 10px 6px;
+  }
+
+  .agent-page.is-sidebar-collapsed .agent-sidebar__top {
+    justify-content: center;
+    padding: 6px 0 8px;
+  }
+
+  .agent-page.is-sidebar-collapsed .agent-sidebar__brand,
+  .agent-page.is-sidebar-collapsed
+    .agent-sidebar__icon-button:not(.agent-sidebar__collapse-button):not(.agent-sidebar__collapsed-logout) {
+    display: none;
+  }
+
+  .agent-page.is-sidebar-collapsed .agent-sidebar__collapsed-logout {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-self: center;
+  }
+
+  .agent-page.is-sidebar-collapsed .agent-sidebar-rail {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+      opacity 100ms ease,
+      visibility 0ms linear 100ms;
+  }
+}
+
 @keyframes sidebar-nav-active-pop {
   0% {
     opacity: 0.72;
@@ -1480,6 +1618,10 @@ const activeSessionTurnCount = computed(() => countConversationTurns(activeSessi
     max-height: 42dvh;
     border-right: 0;
     border-bottom: 1px solid #ececec;
+  }
+
+  .agent-sidebar__collapse-button {
+    display: none;
   }
 
   .agent-sidebar-rail {
