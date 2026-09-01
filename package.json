@@ -8,6 +8,7 @@
     "server:install": "npm --prefix server install",
     "server:dev": "node --watch server/src/index.js",
     "server:start": "node server/src/index.js",
+    "server:test": "node server/test/llmClient.test.js",
     "build": "vite build",
     "preview": "vite preview"
   },

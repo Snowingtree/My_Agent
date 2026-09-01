@@ -5,6 +5,7 @@ import { parseList, normalizeTrimmedString } from './utils.js'
 
 const VALID_AI_CONFIG_SOURCE_MODES = new Set(['env', 'file', 'mysql'])
 const VALID_AI_CONFIG_TYPES = new Set(['ai', 'embedding'])
+const VALID_AI_PROTOCOLS = new Set(['auto', 'openai', 'anthropic'])
 const DEFAULT_FILE_AI_ID = 'primary'
 let mysqlPoolPromise = null
 
@@ -24,6 +25,20 @@ function normalizeAiConfigType(value) {
   }
 
   return normalized === 'embed' || normalized === 'vector' ? 'embedding' : 'ai'
+}
+
+function normalizeAiProtocol(value) {
+  const normalized = normalizeTrimmedString(value).toLowerCase()
+
+  if (['openai-compatible', 'chat-completions', 'chat'].includes(normalized)) {
+    return 'openai'
+  }
+
+  if (['anthropic-messages', 'messages', 'claude'].includes(normalized)) {
+    return 'anthropic'
+  }
+
+  return VALID_AI_PROTOCOLS.has(normalized) ? normalized : 'auto'
 }
 
 function normalizeAiVersions(value) {
@@ -209,6 +224,9 @@ function normalizeAiConfig(item, index) {
     models: models.length ? models : [defaultModel],
     defaultModel,
     type,
+    apiProtocol: normalizeAiProtocol(item?.apiProtocol || item?.protocol || item?.provider),
+    anthropicVersion: normalizeTrimmedString(item?.anthropicVersion),
+    maxOutputTokens: normalizeOptionalPositiveInteger(item?.maxOutputTokens || item?.maxTokens),
     chunkMaxChars,
     chunkOverlapChars,
     systemPrompt: normalizeTrimmedString(item?.systemPrompt),
@@ -254,6 +272,9 @@ function readSingleEnvConfig() {
     apiKey,
     models: models.length ? models : [defaultModel],
     defaultModel,
+    apiProtocol: normalizeAiProtocol(process.env.AGENT_AI_PROTOCOL),
+    anthropicVersion: normalizeTrimmedString(process.env.AGENT_ANTHROPIC_VERSION),
+    maxOutputTokens: normalizeOptionalPositiveInteger(process.env.AGENT_ANTHROPIC_MAX_TOKENS),
     source: 'env'
   }]
 }
@@ -548,6 +569,7 @@ export function toPublicAiConfig(aiConfig) {
     aiBaseUrl: aiConfig.baseURL,
     aiVersions: aiConfig.models.join(','),
     type: aiConfig.type || 'ai',
+    apiProtocol: aiConfig.apiProtocol || 'auto',
     source: aiConfig.source || '',
     chunkMaxChars: aiConfig.chunkMaxChars || null,
     chunkOverlapChars: aiConfig.chunkOverlapChars || null,

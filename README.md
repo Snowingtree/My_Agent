@@ -10,7 +10,7 @@
 - Skills：通过 `skills/<skill-name>/SKILL.md` 扩展 Agent 行为。
 - MCP：通过 `mcp/mcp-servers.json` 和 `mcp/servers/*.json` 接入外部 MCP 服务。
 - RAG：基于 PostgreSQL + pgvector 的知识库，支持多知识库、文档上传、向量化和检索注入。
-- 模型配置：普通对话模型和 embedding 模型统一配置，支持按会话选择。
+- 模型配置：普通对话模型和 embedding 模型统一配置，支持按会话选择；对话模型可自动识别 OpenAI Chat Completions 和 Anthropic Messages 协议。
 - 数据分析：统计 AI 和 embedding 的 token 使用情况。
 
 ## 技术栈
@@ -127,6 +127,18 @@ location ^~ /agent-api/ {
     proxy_send_timeout 3600s;
 }
 ```
+
+## AI 接口协议
+
+对话模型默认使用 `auto` 协议识别：
+
+1. 配置中显式声明的 `apiProtocol`（`openai` 或 `anthropic`）。
+2. 接口路径和域名，例如 `/chat/completions`、`/messages` 或 `api.anthropic.com`。
+3. 已知 OpenAI 兼容网关域名。
+4. 模型名，例如 `claude-*`。
+5. 无法判断时默认使用 OpenAI 兼容协议。
+
+文件配置可以使用 `apiProtocol: "auto"`，环境变量配置可以使用 `AGENT_AI_PROTOCOL=auto`。直连 Anthropic 时还可以通过 `AGENT_ANTHROPIC_VERSION` 和 `AGENT_ANTHROPIC_MAX_TOKENS` 调整协议版本及最大输出 Token。
 
 ## 公开仓库安全要求
 

@@ -77,6 +77,13 @@ pm2 start src/index.js --name agent-api
 
 通过 `AGENT_AI_CONFIG_SOURCE` 控制。
 
+普通对话模型支持两种 API 协议：
+
+- `openai`：OpenAI Chat Completions 及兼容接口。
+- `anthropic`：Anthropic Messages API。
+
+默认 `apiProtocol=auto`。服务会依次根据显式配置、接口域名/路径、已知兼容网关和模型名自动识别。文件配置可以增加 `"apiProtocol": "auto"`；使用环境变量配置时可以设置 `AGENT_AI_PROTOCOL=auto`。当自建网关的地址和模型名不足以判断协议时，可以显式设置为 `openai` 或 `anthropic`。
+
 ## MCP 配置
 
 MCP 入口文件：

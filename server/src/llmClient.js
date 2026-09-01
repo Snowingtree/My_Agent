@@ -1,14 +1,277 @@
 import { setTimeout as delay } from 'node:timers/promises'
 
-function resolveEndpoint(baseURL) {
-  if (baseURL.endsWith('/chat/completions')) {
-    return baseURL
+const AI_PROTOCOL_OPENAI = 'openai'
+const AI_PROTOCOL_ANTHROPIC = 'anthropic'
+const DEFAULT_ANTHROPIC_VERSION = '2023-06-01'
+const DEFAULT_ANTHROPIC_MAX_TOKENS = 8192
+
+function normalizeAiProtocol(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+
+  if (['anthropic', 'anthropic-messages', 'messages', 'claude'].includes(normalized)) {
+    return AI_PROTOCOL_ANTHROPIC
   }
 
-  return `${baseURL}/chat/completions`
+  if (['openai', 'openai-compatible', 'chat-completions', 'chat'].includes(normalized)) {
+    return AI_PROTOCOL_OPENAI
+  }
+
+  return ''
+}
+
+function normalizeUrlPathname(baseURL) {
+  try {
+    return new URL(baseURL).pathname.replace(/\/+$/, '').toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+function isKnownOpenAiCompatibleHost(hostname) {
+  return [
+    'openai.com',
+    'siliconflow.cn',
+    'bigmodel.cn',
+    'api.mimo.ai',
+    'xiaomi.com',
+    'openrouter.ai',
+    'deepseek.com',
+    'moonshot.cn',
+    'dashscope.aliyuncs.com',
+    'volces.com',
+    'groq.com',
+    'together.xyz'
+  ].some((suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`))
+}
+
+export function resolveAiProtocol({ aiConfig, model } = {}) {
+  const explicitProtocol = normalizeAiProtocol(
+    aiConfig?.apiProtocol || aiConfig?.protocol || aiConfig?.provider
+  )
+
+  if (explicitProtocol) {
+    return explicitProtocol
+  }
+
+  const baseURL = String(aiConfig?.baseURL || '').trim()
+  const hostname = normalizeHostname(baseURL)
+  const pathname = normalizeUrlPathname(baseURL)
+  const normalizedModel = String(model || '').trim().toLowerCase()
+
+  if (pathname.endsWith('/messages')) {
+    return AI_PROTOCOL_ANTHROPIC
+  }
+
+  if (pathname.endsWith('/chat/completions')) {
+    return AI_PROTOCOL_OPENAI
+  }
+
+  if (
+    hostname === 'anthropic.com'
+    || hostname.endsWith('.anthropic.com')
+    || hostname.includes('anthropic')
+    || pathname.includes('/anthropic/')
+  ) {
+    return AI_PROTOCOL_ANTHROPIC
+  }
+
+  // Known gateways expose Claude models through the OpenAI-compatible schema.
+  // Check their hostnames before using the model name as a protocol hint.
+  if (isKnownOpenAiCompatibleHost(hostname)) {
+    return AI_PROTOCOL_OPENAI
+  }
+
+  if (
+    normalizedModel === 'claude'
+    || normalizedModel.startsWith('claude-')
+    || normalizedModel.startsWith('anthropic/')
+    || normalizedModel.includes('/claude-')
+  ) {
+    return AI_PROTOCOL_ANTHROPIC
+  }
+
+  return AI_PROTOCOL_OPENAI
+}
+
+function resolveOpenAiEndpoint(baseURL) {
+  const normalizedBaseURL = String(baseURL || '').trim().replace(/\/+$/, '')
+
+  if (normalizedBaseURL.endsWith('/chat/completions')) {
+    return normalizedBaseURL
+  }
+
+  return `${normalizedBaseURL}/chat/completions`
+}
+
+function resolveAnthropicEndpoint(baseURL) {
+  const normalizedBaseURL = String(baseURL || '').trim().replace(/\/+$/, '')
+
+  if (normalizedBaseURL.endsWith('/messages')) {
+    return normalizedBaseURL
+  }
+
+  try {
+    const parsedUrl = new URL(normalizedBaseURL)
+    const pathname = parsedUrl.pathname.replace(/\/+$/, '')
+
+    parsedUrl.pathname = pathname && pathname !== '/'
+      ? `${pathname}/messages`
+      : '/v1/messages'
+
+    return parsedUrl.toString()
+  } catch {
+    return `${normalizedBaseURL}/messages`
+  }
+}
+
+function resolveEndpoint(baseURL, protocol) {
+  return protocol === AI_PROTOCOL_ANTHROPIC
+    ? resolveAnthropicEndpoint(baseURL)
+    : resolveOpenAiEndpoint(baseURL)
+}
+
+function resolveAnthropicVersion(aiConfig) {
+  return String(
+    aiConfig?.anthropicVersion
+    || process.env.AGENT_ANTHROPIC_VERSION
+    || DEFAULT_ANTHROPIC_VERSION
+  ).trim() || DEFAULT_ANTHROPIC_VERSION
+}
+
+function resolveAnthropicMaxTokens(aiConfig) {
+  const parsedValue = Number.parseInt(
+    aiConfig?.maxOutputTokens
+    || aiConfig?.maxTokens
+    || process.env.AGENT_ANTHROPIC_MAX_TOKENS,
+    10
+  )
+
+  return Number.isInteger(parsedValue) && parsedValue > 0
+    ? parsedValue
+    : DEFAULT_ANTHROPIC_MAX_TOKENS
+}
+
+function buildRequestHeaders(aiConfig, protocol, streamResponses) {
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: streamResponses ? 'text/event-stream, application/json' : 'application/json'
+  }
+
+  if (protocol === AI_PROTOCOL_ANTHROPIC) {
+    headers['x-api-key'] = aiConfig.apiKey
+    headers['anthropic-version'] = resolveAnthropicVersion(aiConfig)
+
+    if (aiConfig.anthropicBeta) {
+      headers['anthropic-beta'] = String(aiConfig.anthropicBeta).trim()
+    }
+
+    return headers
+  }
+
+  headers.Authorization = `Bearer ${aiConfig.apiKey}`
+  return headers
+}
+
+function normalizeMessageText(content) {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (!Array.isArray(content)) {
+    return content == null ? '' : String(content)
+  }
+
+  return content
+    .map((item) => {
+      if (typeof item === 'string') {
+        return item
+      }
+
+      if (typeof item?.text === 'string') {
+        return item.text
+      }
+
+      if (typeof item?.content === 'string') {
+        return item.content
+      }
+
+      return ''
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+function toAnthropicMessages(messages = []) {
+  const systemParts = []
+  const normalizedMessages = []
+
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const role = String(message?.role || '').trim().toLowerCase()
+    const content = normalizeMessageText(message?.content).trim()
+
+    if (!content) {
+      continue
+    }
+
+    if (role === 'system' || role === 'developer') {
+      systemParts.push(content)
+      continue
+    }
+
+    const anthropicRole = role === 'assistant' ? 'assistant' : 'user'
+    const previousMessage = normalizedMessages[normalizedMessages.length - 1]
+
+    if (previousMessage?.role === anthropicRole) {
+      previousMessage.content = `${previousMessage.content}\n\n${content}`
+      continue
+    }
+
+    normalizedMessages.push({
+      role: anthropicRole,
+      content
+    })
+  }
+
+  return {
+    system: systemParts.join('\n\n'),
+    messages: normalizedMessages
+  }
+}
+
+function buildAnthropicRequestBody({ aiConfig, model, messages, streamResponses } = {}) {
+  const normalizedMessages = toAnthropicMessages(messages)
+  const body = {
+    model,
+    max_tokens: resolveAnthropicMaxTokens(aiConfig),
+    temperature: 0.4,
+    messages: normalizedMessages.messages
+  }
+
+  if (normalizedMessages.system) {
+    body.system = normalizedMessages.system
+  }
+
+  if (streamResponses) {
+    body.stream = true
+  }
+
+  return body
 }
 
 function extractTextContent(payload) {
+  if (Array.isArray(payload?.content)) {
+    return payload.content
+      .map((item) => (
+        typeof item?.text === 'string'
+          ? item.text
+          : typeof item === 'string'
+            ? item
+            : ''
+      ))
+      .join('\n')
+      .trim()
+  }
+
   if (typeof payload?.choices?.[0]?.message?.content === 'string') {
     return payload.choices[0].message.content
   }
@@ -34,14 +297,39 @@ function extractTextContent(payload) {
       .trim()
   }
 
+  if (typeof payload?.completion === 'string') {
+    return payload.completion
+  }
+
   return ''
 }
 
 function extractUsage(payload) {
+  const usage = payload?.usage || payload?.message?.usage || {}
+  const inputTokens = usage.prompt_tokens ?? usage.input_tokens ?? null
+  const outputTokens = usage.completion_tokens ?? usage.output_tokens ?? null
+  const derivedTotal = inputTokens !== null && outputTokens !== null
+    ? Number(inputTokens || 0) + Number(outputTokens || 0)
+    : null
+
   return {
-    inputTokens: payload?.usage?.prompt_tokens ?? null,
-    outputTokens: payload?.usage?.completion_tokens ?? null,
-    totalTokens: payload?.usage?.total_tokens ?? null
+    inputTokens,
+    outputTokens,
+    totalTokens: usage.total_tokens ?? derivedTotal
+  }
+}
+
+function mergeUsage(currentUsage, nextUsage) {
+  const inputTokens = nextUsage?.inputTokens ?? currentUsage?.inputTokens ?? null
+  const outputTokens = nextUsage?.outputTokens ?? currentUsage?.outputTokens ?? null
+  const derivedTotal = inputTokens !== null && outputTokens !== null
+    ? Number(inputTokens || 0) + Number(outputTokens || 0)
+    : null
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: nextUsage?.totalTokens ?? derivedTotal ?? currentUsage?.totalTokens ?? null
   }
 }
 
@@ -72,6 +360,10 @@ function shouldPreferJsonResponseFormat({ aiConfig, model } = {}) {
 }
 
 function buildRequestBodies({ aiConfig, model, messages, streamResponses } = {}) {
+  if (resolveAiProtocol({ aiConfig, model }) === AI_PROTOCOL_ANTHROPIC) {
+    return [buildAnthropicRequestBody({ aiConfig, model, messages, streamResponses })]
+  }
+
   const baseBody = {
     model,
     temperature: 0.4,
@@ -97,7 +389,11 @@ function buildRequestBodies({ aiConfig, model, messages, streamResponses } = {})
   ]
 }
 
-function buildTextRequestBody({ model, messages, streamResponses } = {}) {
+function buildTextRequestBody({ aiConfig, model, messages, streamResponses } = {}) {
+  if (resolveAiProtocol({ aiConfig, model }) === AI_PROTOCOL_ANTHROPIC) {
+    return buildAnthropicRequestBody({ aiConfig, model, messages, streamResponses })
+  }
+
   const body = {
     model,
     temperature: 0.4,
@@ -168,7 +464,7 @@ function createHtmlErrorPageMessage(aiConfig, responseText, statusCode) {
     : ''
 
   if (looksLikeHtmlErrorPage(responseText)) {
-    return `AI 接口返回了 HTML 错误页（${statusCode}）。这通常表示 AI Base URL 配置错误，应该填写 OpenAI 兼容接口根路径，而不是网页地址或错误的完整路径。${suffix}`
+    return `AI 接口返回了 HTML 错误页（${statusCode}）。这通常表示 AI Base URL 配置错误，应该填写模型服务的 API 根路径，而不是网页地址或错误的完整路径。${suffix}`
   }
 
   return ''
@@ -641,6 +937,14 @@ function createIdleTimeoutController(controller, idleTimeoutMs = 0) {
 function extractStreamDeltaText(payload) {
   const choice = payload?.choices?.[0]
 
+  if (typeof payload?.delta?.text === 'string') {
+    return payload.delta.text
+  }
+
+  if (typeof payload?.content_block?.text === 'string') {
+    return payload.content_block.text
+  }
+
   if (typeof choice?.delta?.content === 'string') {
     return choice.delta.content
   }
@@ -735,8 +1039,8 @@ async function readStreamedResponseBody(response, {
       }
     }
 
-    if (payload?.usage) {
-      usage = extractUsage(payload)
+    if (payload?.usage || payload?.message?.usage) {
+      usage = mergeUsage(usage, extractUsage(payload))
     }
   }
 
@@ -825,6 +1129,7 @@ async function runStructuredCompletionAttempt({
   }
 
   try {
+    const apiProtocol = resolveAiProtocol({ aiConfig, model })
     const requestBodies = buildRequestBodies({
       aiConfig,
       model,
@@ -837,13 +1142,9 @@ async function runStructuredCompletionAttempt({
       const requestBody = requestBodies[index]
       const usedStructuredMode = Boolean(requestBody.response_format)
 
-      const response = await fetch(resolveEndpoint(aiConfig.baseURL), {
+      const response = await fetch(resolveEndpoint(aiConfig.baseURL, apiProtocol), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: streamResponses ? 'text/event-stream, application/json' : 'application/json',
-          Authorization: `Bearer ${aiConfig.apiKey}`
-        },
+        headers: buildRequestHeaders(aiConfig, apiProtocol, streamResponses),
         body: JSON.stringify(requestBody),
         signal: controller.signal
       })
@@ -1011,14 +1312,12 @@ async function runTextCompletionAttempt({
   }
 
   try {
-    const response = await fetch(resolveEndpoint(aiConfig.baseURL), {
+    const apiProtocol = resolveAiProtocol({ aiConfig, model })
+    const response = await fetch(resolveEndpoint(aiConfig.baseURL, apiProtocol), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: streamResponses ? 'text/event-stream, application/json' : 'application/json',
-        Authorization: `Bearer ${aiConfig.apiKey}`
-      },
+      headers: buildRequestHeaders(aiConfig, apiProtocol, streamResponses),
       body: JSON.stringify(buildTextRequestBody({
+        aiConfig,
         model,
         messages,
         streamResponses
