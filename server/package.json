@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@langchain/core": "^1.2.9",
+    "@langchain/langgraph": "^1.4.13",
     "langchain": "^1.5.10",
     "mammoth": "^1.11.0",
     "mysql2": "^3.20.0",
@@ -17,6 +18,6 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test"
   }
 }

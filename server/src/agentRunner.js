@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { analyzeCommandPolicy } from './commandPolicy.js'
-import { runLangChainAgent } from './langChainRuntime.js'
+import { runLangGraphAgent } from './langChainRuntime.js'
+import { createAgentTaskGraph } from './langGraphRuntime.js'
 import { createStructuredCompletion, createTextCompletion } from './llmClient.js'
 import {
   createToolApprovalFingerprint,
@@ -3440,7 +3441,7 @@ export function createAgentRunner({
       return result.ok
     }
 
-    async function runLangChainTask() {
+    async function runLangGraphTask() {
       const allSkills = skillRegistry && typeof skillRegistry.listSkills === 'function'
         ? skillRegistry.listSkills()
         : activeSkills
@@ -3450,53 +3451,70 @@ export function createAgentRunner({
         skills: allSkills,
         memoryEnabled: Boolean(aiRuntimeConfig?.userProfileMemoryEnabled)
       })
-      let remainingToolIterations = Math.max(1, runtimeConfig.maxToolIterations)
-      let lastDecision = null
-      let lastUsage = null
 
-      for (let guardRound = 0; guardRound < 3; guardRound += 1) {
-        throwIfCancelled()
-        throwIfTaskTimedOut()
-        const workspaceContextText = await buildWorkspaceSnapshotText({
-          sessionId,
-          latestGoal,
-          changedFiles: executionState.changedFiles,
-          sessionRepository,
-          sessionWorkspaces
-        })
-        const loopMessages = buildAgentLoopMessages({
-          latestGoal,
-          conversationHistory,
-          requireFileChanges: fileChangesRequired,
-          toolMessages,
-          toolPromptText: getAvailableToolPromptText(),
-          systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-          remainingIterations: remainingToolIterations,
-          workspaceContextText,
-          attachmentContextText,
-          ragContextText,
-          conversationMemoryText,
-          userProfileText,
-          currentDateContextText
-        })
+      const taskGraph = createAgentTaskGraph({
+        maxGuardRounds: 3,
+        prepareAgent: async ({ guardRound, remainingToolIterations }) => {
+          throwIfCancelled()
+          throwIfTaskTimedOut()
 
-        audit(sessionId, 'llm_input', {
-          stage: 'langchain_agent',
-          guardRound,
-          model: selectedModel,
-          messageCount: loopMessages.length,
-          toolMessageCount: toolMessages.length,
-          toolCount: langChainToolCatalog.length,
-          ragContext: Boolean(ragContextText),
-          memoryContext: Boolean(conversationMemoryText),
-          userProfileMemoryContext: Boolean(userProfileText)
-        })
+          const workspaceContextText = await buildWorkspaceSnapshotText({
+            sessionId,
+            latestGoal,
+            changedFiles: executionState.changedFiles,
+            sessionRepository,
+            sessionWorkspaces
+          })
+          const loopMessages = buildAgentLoopMessages({
+            latestGoal,
+            conversationHistory,
+            requireFileChanges: fileChangesRequired,
+            toolMessages,
+            toolPromptText: getAvailableToolPromptText(),
+            systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+            remainingIterations: remainingToolIterations,
+            workspaceContextText,
+            attachmentContextText,
+            ragContextText,
+            conversationMemoryText,
+            userProfileText,
+            currentDateContextText
+          })
 
-        const langChainResult = await runLangChainAgent({
-          aiConfig,
-          model: selectedModel,
-          messages: loopMessages,
-          toolCatalog: langChainToolCatalog,
+          audit(sessionId, 'llm_input', {
+            stage: 'langgraph_agent',
+            node: 'agent',
+            guardRound,
+            model: selectedModel,
+            messageCount: loopMessages.length,
+            toolMessageCount: toolMessages.length,
+            toolCount: langChainToolCatalog.length,
+            ragContext: Boolean(ragContextText),
+            memoryContext: Boolean(conversationMemoryText),
+            userProfileMemoryContext: Boolean(userProfileText)
+          })
+
+          return {
+            aiConfig,
+            model: selectedModel,
+            messages: loopMessages,
+            toolCatalog: langChainToolCatalog,
+            maxToolIterations: remainingToolIterations,
+            guardRound
+          }
+        },
+        runAgent: async ({
+          aiConfig: agentAiConfig,
+          model,
+          messages,
+          toolCatalog,
+          maxToolIterations,
+          guardRound
+        }) => runLangGraphAgent({
+          aiConfig: agentAiConfig,
+          model,
+          messages,
+          toolCatalog,
           executeTool: executeToolRequest,
           requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
           idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
@@ -3504,19 +3522,18 @@ export function createAgentRunner({
           timeoutRetries: aiRuntimeConfig.timeoutRetries,
           timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
           signal: abortSignal,
-          maxToolIterations: remainingToolIterations,
+          maxToolIterations,
           onDecision: async (decision) => {
-            lastDecision = decision
-            lastUsage = decision.usage || lastUsage
             const decisionSummary = getDecisionProgressSummary({
               summary: decision.summary,
               thought_summary: decision.thoughtSummary
             })
 
             audit(sessionId, 'llm_decision', {
-              stage: 'langchain_agent',
+              stage: 'langgraph_agent',
+              node: 'agent',
               guardRound,
-              model: selectedModel,
+              model,
               modelCall: decision.modelCall,
               action: decision.action,
               thoughtSummary: decision.thoughtSummary,
@@ -3532,33 +3549,155 @@ export function createAgentRunner({
               )
             }
           }
-        })
+        }),
+        inspectResult: async ({
+          agentResult,
+          lastDecision,
+          lastUsage,
+          guardRound,
+          remainingToolIterations
+        }) => {
+          throwIfCancelled()
+          throwIfTaskTimedOut()
 
-        if (langChainResult.stopped) {
-          return
-        }
+          if (agentResult?.stopped) {
+            return {
+              phase: 'stop',
+              terminalReason: 'stopped'
+            }
+          }
 
-        remainingToolIterations = Math.max(
-          0,
-          remainingToolIterations - Number(langChainResult.toolCalls || 0)
-        )
-        lastDecision = langChainResult.decision || lastDecision
-        lastUsage = langChainResult.usage.at(-1) || lastUsage
+          if (lastDecision?.action === 'ask_user') {
+            const reply = normalizeTrimmedString(lastDecision.reply) || '我还缺少一项关键信息，你可以再补充一点吗？'
+            const waitingSummary = getDecisionProgressSummary({
+              summary: lastDecision.summary,
+              thought_summary: lastDecision.thoughtSummary
+            }) || '当前目标还需要补充信息。'
+            const finalizedSteps = finalizeRunningSteps(taskSteps, waitingSummary)
 
-        if (lastDecision?.action === 'ask_user') {
-          const reply = normalizeTrimmedString(lastDecision.reply) || '我还缺少一项关键信息，你可以再补充一点吗？'
-          const waitingSummary = getDecisionProgressSummary({
-            summary: lastDecision.summary,
-            thought_summary: lastDecision.thoughtSummary
-          }) || '当前目标还需要补充信息。'
-          const finalizedSteps = finalizeRunningSteps(taskSteps, waitingSummary)
+            await sessionRepository.updateSession(sessionId, (draftSession) => {
+              draftSession.task = {
+                ...draftSession.task,
+                taskId,
+                status: 'waiting_for_user',
+                summary: waitingSummary,
+                steps: finalizedSteps,
+                completedAt: nowIso(),
+                updatedAt: nowIso()
+              }
+
+              return draftSession
+            })
+
+            publishTaskProgress(sessionId, waitingSummary, selectedModel)
+            await appendAssistantReplyWithStreaming(sessionId, {
+              content: reply,
+              model: selectedModel,
+              usage: lastUsage
+            })
+            return {
+              phase: 'stop',
+              terminalReason: 'waiting_for_user'
+            }
+          }
+
+          const autoVerification = await maybeRunAutoVerification()
+
+          if (autoVerification.failedTask || autoVerification.waitingForApproval) {
+            return {
+              phase: 'stop',
+              terminalReason: 'stopped',
+              verificationResult: autoVerification
+            }
+          }
+
+          const manualSkillsNeedingRun = manualSkillIds.filter((skillId) => (
+            !skillRuntimeState.get(skillId)?.running
+          ))
+          let correctionMessage = ''
+
+          if (manualSkillsNeedingRun.length) {
+            correctionMessage = [
+              `The user manually selected Skill(s): ${manualSkillsNeedingRun.join(', ')}.`,
+              'Do not finish yet. For each selected Skill, call "skill" with mode="help" and then mode="run".'
+            ].join('\n')
+          } else if (
+            aiRuntimeConfig?.userProfileMemoryEnabled
+            && looksLikeUserProfileMemoryRequest(latestGoal)
+            && !executionState.updatedUserProfileMemory
+          ) {
+            correctionMessage = [
+              'The latest user message contains an explicit durable memory or preference request.',
+              'Do not finish yet. Call "memory" with action="save_user_profile" and a complete merged profile.'
+            ].join('\n')
+          } else if (
+            executionState.modifiedWorkspace
+            && verificationCommands.length
+            && executionState.verificationFailed
+            && !executionState.verifiedAfterModification
+          ) {
+            correctionMessage = [
+              'The latest verification command failed after the workspace change.',
+              'Inspect the previous tool result, apply the smallest fix, and verify again before finishing.'
+            ].join('\n')
+          } else if (fileChangesRequired && !executionState.modifiedWorkspace) {
+            correctionMessage = [
+              'The user asked for real file changes, but no file has been changed.',
+              'Inspect the workspace and use a write tool now, or ask one blocking clarification question.'
+            ].join('\n')
+          } else if (
+            executionState.modifiedWorkspace
+            && requiredCompanionExtensions.length
+            && !hasRequiredCompanionChanges(requiredCompanionExtensions, executionState.changedFiles)
+          ) {
+            correctionMessage = [
+              `The task requires companion files: ${requiredCompanionExtensions.join(', ')}.`,
+              'Create or update the missing companion file before finishing.'
+            ].join('\n')
+          }
+
+          if (correctionMessage && guardRound < 2 && remainingToolIterations > 0) {
+            toolMessages.push({
+              role: 'user',
+              content: correctionMessage
+            })
+            publishTaskProgress(sessionId, 'LangGraph 正在根据执行约束继续处理任务。', selectedModel)
+            await sleep(runtimeConfig.stepDelayMs)
+            return {
+              phase: 'continue',
+              terminalReason: 'continue',
+              correctionMessage
+            }
+          }
+
+          if (correctionMessage) {
+            throw new Error(`LangGraph agent stopped before satisfying the task guard: ${correctionMessage}`)
+          }
+
+          return {
+            phase: 'stop',
+            terminalReason: 'complete',
+            verificationResult: autoVerification
+          }
+        },
+        finalize: async ({ phase, lastDecision }) => {
+          if (phase !== 'complete') {
+            return
+          }
+
+          const completionSummary = getDecisionProgressSummary({
+            summary: lastDecision?.summary,
+            thought_summary: lastDecision?.thoughtSummary
+          }) || (executionState.modifiedWorkspace ? '已基于当前工作区结果完成答复。' : '任务已完成。')
+          const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
+          finalizedSteps.push(createFinalReplyStep(completionSummary))
 
           await sessionRepository.updateSession(sessionId, (draftSession) => {
             draftSession.task = {
               ...draftSession.task,
               taskId,
-              status: 'waiting_for_user',
-              summary: waitingSummary,
+              status: 'completed',
+              summary: completionSummary,
               steps: finalizedSteps,
               completedAt: nowIso(),
               updatedAt: nowIso()
@@ -3566,144 +3705,54 @@ export function createAgentRunner({
 
             return draftSession
           })
-
-          publishTaskProgress(sessionId, waitingSummary, selectedModel)
-          await appendAssistantReplyWithStreaming(sessionId, {
-            content: reply,
-            model: selectedModel,
-            usage: lastUsage
-          })
-          return
-        }
-
-        const autoVerification = await maybeRunAutoVerification()
-
-        if (autoVerification.failedTask || autoVerification.waitingForApproval) {
-          return
-        }
-
-        const manualSkillsNeedingRun = manualSkillIds.filter((skillId) => (
-          !skillRuntimeState.get(skillId)?.running
-        ))
-        let correctionMessage = ''
-
-        if (manualSkillsNeedingRun.length) {
-          correctionMessage = [
-            `The user manually selected Skill(s): ${manualSkillsNeedingRun.join(', ')}.`,
-            'Do not finish yet. For each selected Skill, call "skill" with mode="help" and then mode="run".'
-          ].join('\n')
-        } else if (
-          aiRuntimeConfig?.userProfileMemoryEnabled
-          && looksLikeUserProfileMemoryRequest(latestGoal)
-          && !executionState.updatedUserProfileMemory
-        ) {
-          correctionMessage = [
-            'The latest user message contains an explicit durable memory or preference request.',
-            'Do not finish yet. Call "memory" with action="save_user_profile" and a complete merged profile.'
-          ].join('\n')
-        } else if (
-          executionState.modifiedWorkspace
-          && verificationCommands.length
-          && executionState.verificationFailed
-          && !executionState.verifiedAfterModification
-        ) {
-          correctionMessage = [
-            'The latest verification command failed after the workspace change.',
-            'Inspect the previous tool result, apply the smallest fix, and verify again before finishing.'
-          ].join('\n')
-        } else if (fileChangesRequired && !executionState.modifiedWorkspace) {
-          correctionMessage = [
-            'The user asked for real file changes, but no file has been changed.',
-            'Inspect the workspace and use a write tool now, or ask one blocking clarification question.'
-          ].join('\n')
-        } else if (
-          executionState.modifiedWorkspace
-          && requiredCompanionExtensions.length
-          && !hasRequiredCompanionChanges(requiredCompanionExtensions, executionState.changedFiles)
-        ) {
-          correctionMessage = [
-            `The task requires companion files: ${requiredCompanionExtensions.join(', ')}.`,
-            'Create or update the missing companion file before finishing.'
-          ].join('\n')
-        }
-
-        if (correctionMessage && guardRound < 2 && remainingToolIterations > 0) {
-          toolMessages.push({
-            role: 'user',
-            content: correctionMessage
-          })
-          publishTaskProgress(sessionId, 'LangChain 正在根据执行约束继续处理任务。', selectedModel)
-          await sleep(runtimeConfig.stepDelayMs)
-          continue
-        }
-
-        if (correctionMessage) {
-          throw new Error(`LangChain agent stopped before satisfying the task guard: ${correctionMessage}`)
-        }
-
-        const completionSummary = getDecisionProgressSummary({
-          summary: lastDecision?.summary,
-          thought_summary: lastDecision?.thoughtSummary
-        }) || (executionState.modifiedWorkspace ? '已基于当前工作区结果完成答复。' : '任务已完成。')
-        const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
-        finalizedSteps.push(createFinalReplyStep(completionSummary))
-
-        await sessionRepository.updateSession(sessionId, (draftSession) => {
-          draftSession.task = {
-            ...draftSession.task,
+          audit(sessionId, 'system_action', {
+            action: 'task_completed',
+            runtime: 'langgraph',
             taskId,
-            status: 'completed',
             summary: completionSummary,
-            steps: finalizedSteps,
-            completedAt: nowIso(),
-            updatedAt: nowIso()
-          }
+            changedFiles: executionState.changedFiles,
+            verifiedAfterModification: executionState.verifiedAfterModification
+          })
 
-          return draftSession
-        })
-        audit(sessionId, 'system_action', {
-          action: 'task_completed',
-          runtime: 'langchain',
-          taskId,
-          summary: completionSummary,
-          changedFiles: executionState.changedFiles,
-          verifiedAfterModification: executionState.verifiedAfterModification
-        })
-
-        publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
-
-        const finalWorkspaceContextText = await buildWorkspaceSnapshotText({
-          sessionId,
-          latestGoal,
-          changedFiles: executionState.changedFiles,
-          sessionRepository,
-          sessionWorkspaces
-        })
-        await appendAssistantReplyFromTextCompletion(sessionId, {
-          aiConfig,
-          model: selectedModel,
-          signal: abortSignal,
-          messages: buildFinalTextMessages({
+          publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
+          const finalWorkspaceContextText = await buildWorkspaceSnapshotText({
+            sessionId,
             latestGoal,
-            conversationHistory,
+            changedFiles: executionState.changedFiles,
+            sessionRepository,
+            sessionWorkspaces
+          })
+          await appendAssistantReplyFromTextCompletion(sessionId, {
+            aiConfig,
+            model: selectedModel,
+            signal: abortSignal,
+            messages: buildFinalTextMessages({
+              latestGoal,
+              conversationHistory,
+              fileChangesRequired,
+              modifiedWorkspace: executionState.modifiedWorkspace,
+              toolMessages,
+              systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+              workspaceContextText: finalWorkspaceContextText,
+              attachmentContextText,
+              ragContextText,
+              conversationMemoryText,
+              userProfileText,
+              currentDateContextText
+            }),
             fileChangesRequired,
             modifiedWorkspace: executionState.modifiedWorkspace,
-            toolMessages,
-            systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-            workspaceContextText: finalWorkspaceContextText,
-            attachmentContextText,
-            ragContextText,
-            conversationMemoryText,
-            userProfileText,
-            currentDateContextText
-          }),
-          fileChangesRequired,
-          modifiedWorkspace: executionState.modifiedWorkspace,
-          changedFiles: executionState.changedFiles,
-          verifiedAfterModification: executionState.verifiedAfterModification
-        })
-        return
-      }
+            changedFiles: executionState.changedFiles,
+            verifiedAfterModification: executionState.verifiedAfterModification
+          })
+        }
+      })
+
+      await taskGraph.invoke({
+        guardRound: 0,
+        remainingToolIterations: Math.max(1, runtimeConfig.maxToolIterations),
+        terminalReason: 'continue'
+      }, { signal: abortSignal })
     }
 
     await sleep(runtimeConfig.stepDelayMs)
@@ -3711,401 +3760,9 @@ export function createAgentRunner({
     throwIfTaskTimedOut()
 
     try {
-      if (runtimeConfig.agentMode !== 'legacy') {
-        await runLangChainTask()
-        return
-      }
-
-      for (let iteration = 0; iteration < runtimeConfig.maxToolIterations; iteration += 1) {
-        throwIfCancelled()
-        throwIfTaskTimedOut()
-        const workspaceContextText = await buildWorkspaceSnapshotText({
-          sessionId,
-          latestGoal,
-          changedFiles: executionState.changedFiles,
-          sessionRepository,
-          sessionWorkspaces
-        })
-
-        const loopMessages = buildAgentLoopMessages({
-          latestGoal,
-          conversationHistory,
-          requireFileChanges: fileChangesRequired,
-          toolMessages,
-          toolPromptText: getAvailableToolPromptText(),
-          systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-          remainingIterations: runtimeConfig.maxToolIterations - iteration,
-          workspaceContextText,
-          attachmentContextText,
-          ragContextText,
-          conversationMemoryText,
-          userProfileText,
-          currentDateContextText
-        })
-        audit(sessionId, 'llm_input', {
-          stage: 'decision',
-          iteration,
-          model: selectedModel,
-          messageCount: loopMessages.length,
-          toolMessageCount: toolMessages.length,
-          ragContext: Boolean(ragContextText),
-          memoryContext: Boolean(conversationMemoryText),
-          userProfileMemoryContext: Boolean(userProfileText)
-        })
-
-        let decision = null
-
-        try {
-          decision = await createStructuredCompletion({
-            aiConfig,
-            model: selectedModel,
-            requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
-            idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
-            streamResponses: aiRuntimeConfig.streamResponses,
-            timeoutRetries: aiRuntimeConfig.timeoutRetries,
-            timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
-            signal: abortSignal,
-            messages: loopMessages
-          })
-        } catch (error) {
-          if (isMalformedJsonModelResponseError(error) && iteration < runtimeConfig.maxToolIterations - 1) {
-            const retrySummary = '模型返回的工具决策 JSON 格式无效，正在要求模型重新输出合法 JSON。'
-            audit(sessionId, 'error', {
-              scope: 'llm_decision',
-              taskId,
-              iteration,
-              message: normalizeTrimmedString(error?.message)
-            })
-            toolMessages.push({
-              role: 'user',
-              content: [
-                'The previous decision was rejected because it was malformed JSON. No tool was executed.',
-                'Retry now with strict valid JSON only.',
-                'If you need write_file, args.content must be one valid JSON string with all line breaks escaped as \\n and quotes escaped as \\".',
-                'Do not put raw multiline code outside the JSON string. If the edit is small, prefer apply_patch.'
-              ].join('\n')
-            })
-            publishTaskProgress(sessionId, retrySummary, selectedModel)
-            await sleep(runtimeConfig.stepDelayMs)
-            continue
-          }
-
-          throw error
-        }
-        throwIfCancelled()
-        throwIfTaskTimedOut()
-
-        const decisionJson = normalizeDecisionJson(decision.json)
-        const action = normalizeAction(decisionJson.action)
-        if (action === 'final') {
-          decisionJson.reply = ''
-        }
-        const thoughtSummary = getDecisionThoughtSummary(decisionJson)
-        const decisionSummary = getDecisionProgressSummary(decisionJson)
-        audit(sessionId, 'llm_decision', {
-          stage: 'decision',
-          iteration,
-          model: selectedModel,
-          action,
-          thoughtSummary,
-          summary: decisionSummary,
-          tool: decisionJson.tool
-            ? {
-                name: decisionJson.tool.name,
-                args: decisionJson.tool.args
-              }
-            : null,
-          usage: decision.usage
-        })
-
-        if (action === 'tool') {
-          taskSteps[0] = completeStep(
-            taskSteps[0],
-            decisionSummary || '已分析目标，开始检查工作区。'
-          )
-
-          const result = await executeToolRequest(decisionJson.tool, {
-            summary: decisionSummary || `正在执行工具 ${normalizeTrimmedString(decisionJson.tool?.name) || ''}。`,
-            thoughtSummary
-          })
-
-          if (!result.ok) {
-            return
-          }
-
-          await sleep(runtimeConfig.stepDelayMs)
-          continue
-        }
-
-        if (action === 'ask_user') {
-          const reply = normalizeTrimmedString(decisionJson.reply || decisionJson.question) || '我还缺少一项关键信息，你可以再补充一点吗？'
-          const waitingSummary = decisionSummary || '当前目标还需要补充信息。'
-          const finalizedSteps = finalizeRunningSteps(taskSteps, waitingSummary)
-
-          await sessionRepository.updateSession(sessionId, (draftSession) => {
-            draftSession.task = {
-              ...draftSession.task,
-              taskId,
-              status: 'waiting_for_user',
-              summary: waitingSummary,
-              steps: finalizedSteps,
-              completedAt: nowIso(),
-              updatedAt: nowIso()
-            }
-
-            return draftSession
-          })
-
-          publishTaskProgress(sessionId, waitingSummary, selectedModel)
-
-          await appendAssistantReplyWithStreaming(sessionId, {
-            content: reply,
-            model: selectedModel,
-            usage: decision.usage
-          })
-          return
-        }
-
-        const autoVerification = await maybeRunAutoVerification()
-
-        if (autoVerification.failedTask || autoVerification.waitingForApproval) {
-          return
-        }
-
-        if (autoVerification.ranVerification) {
-          await sleep(runtimeConfig.stepDelayMs)
-          continue
-        }
-
-        const manualSkillsNeedingRun = manualSkillIds.filter((skillId) => (
-          !skillRuntimeState.get(skillId)?.running
-        ))
-
-        if (manualSkillsNeedingRun.length) {
-          toolMessages.push({
-            role: 'user',
-            content: [
-              `The user manually selected Skill(s): ${manualSkillsNeedingRun.join(', ')}.`,
-              'A manually selected Skill is not active until the two-phase Skill protocol completes.',
-              'Do not finish yet.',
-              'For each needed selected Skill, first call tool "skill" with mode="help", then call tool "skill" with mode="run".',
-              'After run succeeds, continue the task or provide the final answer.'
-            ].join('\n')
-          })
-
-          await sleep(runtimeConfig.stepDelayMs)
-          continue
-        }
-
-        if (
-          aiRuntimeConfig?.userProfileMemoryEnabled
-          && looksLikeUserProfileMemoryRequest(latestGoal)
-          && !executionState.updatedUserProfileMemory
-        ) {
-          toolMessages.push({
-            role: 'user',
-            content: [
-              'The latest user message appears to contain an explicit durable memory or preference request.',
-              'Do not finish yet.',
-              'Call tool "memory" with action="save_user_profile" and a complete concise Markdown profile that merges the existing profile with this durable preference.',
-              'Do not store secrets, temporary task details, or file contents.'
-            ].join('\n')
-          })
-
-          await sleep(runtimeConfig.stepDelayMs)
-          continue
-        }
-
-        if (
-          executionState.modifiedWorkspace
-          && verificationCommands.length
-          && executionState.verificationFailed
-          && !executionState.verifiedAfterModification
-        ) {
-          toolMessages.push({
-            role: 'user',
-            content: [
-              'The latest verification command failed after the workspace change.',
-              'Do not finish yet.',
-              'Inspect the verification output in the previous tool result, make the smallest necessary fix, and then allow verification to run again.',
-              'If the failure is impossible to fix from the available information, ask one concise clarification question instead of claiming success.'
-            ].join('\n')
-          })
-
-          await sleep(runtimeConfig.stepDelayMs)
-          continue
-        }
-
-        if (fileChangesRequired && !executionState.modifiedWorkspace) {
-          toolMessages.push({
-            role: 'user',
-            content: [
-              'The user asked for real file changes.',
-              'No file has been changed yet.',
-              'Call a workspace tool to create, modify, or delete files, or ask one brief clarification question if required information is missing.',
-              'Do not finish with a reply-only answer yet.'
-            ].join('\n')
-          })
-
-          await sleep(runtimeConfig.stepDelayMs)
-          continue
-        }
-
-        if (
-          executionState.modifiedWorkspace
-          && requiredCompanionExtensions.length
-          && !hasRequiredCompanionChanges(requiredCompanionExtensions, executionState.changedFiles)
-        ) {
-          toolMessages.push({
-            role: 'user',
-            content: [
-              `The task explicitly requires companion files: ${requiredCompanionExtensions.join(', ')}.`,
-              'Those companion files have not been created or updated yet.',
-              'Do not finish yet. Continue modifying the existing files in the current session workspace and create or update the missing companion file.'
-            ].join('\n')
-          })
-
-          await sleep(runtimeConfig.stepDelayMs)
-          continue
-        }
-
-        const completionSummary = decisionSummary || '任务已完成。'
-        const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
-        finalizedSteps.push(createFinalReplyStep(completionSummary))
-
-        await sessionRepository.updateSession(sessionId, (draftSession) => {
-          draftSession.task = {
-            ...draftSession.task,
-            taskId,
-            status: 'completed',
-            summary: completionSummary,
-            steps: finalizedSteps,
-            completedAt: nowIso(),
-            updatedAt: nowIso()
-          }
-
-          return draftSession
-        })
-        audit(sessionId, 'system_action', {
-          action: 'task_completed',
-          taskId,
-          summary: completionSummary,
-          changedFiles: executionState.changedFiles,
-          verifiedAfterModification: executionState.verifiedAfterModification
-        })
-
-        publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
-
-        await appendAssistantReplyFromTextCompletion(sessionId, {
-          aiConfig,
-          model: selectedModel,
-          signal: abortSignal,
-          messages: buildFinalTextMessages({
-            latestGoal,
-            conversationHistory,
-            fileChangesRequired,
-            modifiedWorkspace: executionState.modifiedWorkspace,
-            toolMessages,
-            systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-            workspaceContextText,
-            attachmentContextText,
-            ragContextText,
-            conversationMemoryText,
-            userProfileText,
-            currentDateContextText
-          }),
-          fileChangesRequired,
-          modifiedWorkspace: executionState.modifiedWorkspace,
-          changedFiles: executionState.changedFiles,
-          verifiedAfterModification: executionState.verifiedAfterModification
-        })
-        return
-      }
-
-      const autoVerification = await maybeRunAutoVerification()
-
-      if (autoVerification.failedTask || autoVerification.waitingForApproval) {
-        return
-      }
-
-      const workspaceContextText = await buildWorkspaceSnapshotText({
-        sessionId,
-        latestGoal,
-        changedFiles: executionState.changedFiles,
-        sessionRepository,
-        sessionWorkspaces
-      })
-
-      if (
-        executionState.modifiedWorkspace
-        && requiredCompanionExtensions.length
-        && !hasRequiredCompanionChanges(requiredCompanionExtensions, executionState.changedFiles)
-      ) {
-        throw new Error(`The requested file split is incomplete. Missing companion file update for: ${requiredCompanionExtensions.join(', ')}`)
-      }
-
-      if (
-        executionState.modifiedWorkspace
-        && verificationCommands.length
-        && executionState.verificationFailed
-        && !executionState.verifiedAfterModification
-      ) {
-        throw new Error('The workspace was modified, but the available verification command failed and the issue was not fixed before the iteration limit.')
-      }
-
-      const completionSummary = executionState.modifiedWorkspace
-        ? '已基于当前工作区结果完成答复。'
-        : '已基于已收集的信息完成答复。'
-      const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
-      finalizedSteps.push(createFinalReplyStep(completionSummary))
-
-      await sessionRepository.updateSession(sessionId, (draftSession) => {
-        draftSession.task = {
-          ...draftSession.task,
-          taskId,
-          status: 'completed',
-          summary: completionSummary,
-          steps: finalizedSteps,
-          completedAt: nowIso(),
-          updatedAt: nowIso()
-        }
-
-        return draftSession
-      })
-      audit(sessionId, 'system_action', {
-        action: 'task_completed',
-        taskId,
-        summary: completionSummary,
-        changedFiles: executionState.changedFiles,
-        verifiedAfterModification: executionState.verifiedAfterModification
-      })
-
-      publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
-
-      await appendAssistantReplyFromTextCompletion(sessionId, {
-        aiConfig,
-        model: selectedModel,
-        signal: abortSignal,
-        messages: buildFinalTextMessages({
-          latestGoal,
-          conversationHistory,
-          fileChangesRequired,
-          modifiedWorkspace: executionState.modifiedWorkspace,
-          toolMessages,
-          systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
-          workspaceContextText,
-          attachmentContextText,
-          ragContextText,
-          conversationMemoryText,
-          userProfileText,
-          currentDateContextText
-        }),
-        fileChangesRequired,
-        modifiedWorkspace: executionState.modifiedWorkspace,
-        changedFiles: executionState.changedFiles,
-        verifiedAfterModification: executionState.verifiedAfterModification
-      })
+      await runLangGraphTask()
       return
+
     } catch (error) {
       if (isCancellationError(error) || abortSignal?.aborted) {
         const cancelledSummary = '已停止当前处理。'

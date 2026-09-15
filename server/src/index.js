@@ -1530,7 +1530,7 @@ async function handleUpdateSkillFileDetail(request, response) {
 
 async function handleGetCapabilities(response) {
   sendJson(response, 200, {
-    agentRuntime: config.runtime.agentMode,
+    agentRuntime: 'langgraph',
     skills: skillRegistry.listSkills(),
     tools: toolRunner.getToolCatalog(),
     mcpServers: mcpRegistry.getServerSummaries(),
@@ -2557,7 +2557,7 @@ async function handleRequest(request, response) {
     sendJson(response, 200, {
       status: 'ok',
       now: new Date().toISOString(),
-      agentRuntime: config.runtime.agentMode,
+      agentRuntime: 'langgraph',
       sessionStore: config.storage.sessionsDir,
       legacySessionStore: config.storage.legacySessionsFile,
       auditStore: config.storage.auditDir,

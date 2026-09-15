@@ -86,12 +86,6 @@ function normalizeWorkspaceWriteMode(value) {
   return 'session'
 }
 
-function normalizeAgentRuntimeMode(value) {
-  const normalized = String(value || '').trim().toLowerCase()
-
-  return normalized === 'legacy' ? 'legacy' : 'langchain'
-}
-
 function normalizeCommandSpec(item) {
   const command = String(item?.command || '').trim()
   const args = Array.isArray(item?.args)
@@ -258,7 +252,6 @@ export function createConfig() {
         .toLowerCase() === 'true'
     },
     runtime: {
-      agentMode: normalizeAgentRuntimeMode(process.env.AGENT_RUNTIME_MODE),
       stepDelayMs: readNumberEnv('AGENT_STEP_DELAY_MS', 350),
       taskTimeoutMs: readNumberEnv('AGENT_TASK_TIMEOUT_MS', 15 * 60 * 1000),
       commandTimeoutMs: readNumberEnv('AGENT_COMMAND_TIMEOUT_MS', 120000),

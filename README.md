@@ -44,7 +44,8 @@ Browser UI
   ▼
 Agent API
   ├─ Session store
-  ├─ LangChain createAgent runtime
+  ├─ LangGraph task runtime
+  │  └─ LangChain Agent model/tool nodes
   ├─ Tool safety harness
   ├─ Built-in file tools
   ├─ Skill loader
@@ -154,12 +155,3 @@ location ^~ /agent-api/ {
 
 更多检查项见 [SECURITY.md](SECURITY.md)。
 
-## 简历项目描述参考
-
-可以写成：
-
-> Agent Workspace：一个基于 LangChain.js 的 Web Agent 平台，支持多模型配置、会话级文件读写、Skills 扩展、MCP 工具调用和 RAG 知识库检索。项目使用 `createAgent` 组织模型与工具循环，并保留审批、文件隔离、审计、token 使用统计和 PostgreSQL pgvector 向量检索等工程化能力。
-
-## License
-
-当前项目用于个人学习和展示。如需开源发布，建议补充明确的 LICENSE 文件。

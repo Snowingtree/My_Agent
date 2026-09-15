@@ -25,14 +25,15 @@ src/components/agent/
 
 ## Backend
 
-The backend is a Node.js HTTP service. LangChain.js owns the model/tool Agent loop, while the existing application modules remain the execution and security harness.
+The backend is a Node.js HTTP service. LangGraph owns the explicit task graph and the `agent -> tools -> agent` loop; LangChain provides the model/tool abstractions used by Agent nodes, while the existing application modules remain the execution and security harness.
 
 Important modules:
 
 ```text
 server/src/index.js              # HTTP routes and bootstrap
 server/src/agentRunner.js        # Session orchestration and safety harness
-server/src/langChainRuntime.js   # LangChain model adapter, tools, and createAgent loop
+server/src/langChainRuntime.js   # LangChain model adapter, tools, and explicit agent/tools graph
+server/src/langGraphRuntime.js   # Task-level LangGraph graph and guard/finalize nodes
 server/src/llmClient.js          # OpenAI/Anthropic compatible model gateway
 server/src/toolRunner.js         # Built-in and MCP tool execution
 server/src/workspace.js          # Workspace file operations
@@ -52,16 +53,17 @@ User message
   -> frontend sends selected aiId/model/skills/mcp/rag/embedding
   -> backend loads session and workspace state
   -> optional RAG retrieval injects knowledge context
-  -> LangChain createAgent asks the model for a structured tool call
-  -> LangChain Tool adapters delegate to the existing safety harness
+  -> LangGraph agent node asks the LangChain model for a structured tool call
+  -> LangGraph tools node executes LangChain Tool adapters
+  -> Tool adapters delegate to the existing safety harness
   -> tool runner executes built-in or MCP tools
-  -> LangChain feeds the tool observation back to the model
+  -> LangGraph routes the tool observation back to the agent node
   -> file changes update the session workspace
   -> final response and tool events stream to frontend
   -> session, token usage, and workspace metadata persist
 ```
 
-`AGENT_RUNTIME_MODE=langchain` is the default. `legacy` keeps the previous custom loop as a temporary rollback path. The LangChain-compatible chat model intentionally reuses `llmClient.js`, so existing OpenAI-compatible gateways and Anthropic Messages configurations continue to work without provider-specific rewrites.
+The runtime is an explicit LangGraph state graph. The LangChain-compatible chat model intentionally reuses `llmClient.js`, so existing OpenAI-compatible gateways and Anthropic Messages configurations continue to work without provider-specific rewrites. The task graph leaves extension points for supervisor routing and sub-agent subgraphs.
 
 ## Storage
 

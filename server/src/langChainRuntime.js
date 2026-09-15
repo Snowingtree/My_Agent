@@ -1,11 +1,8 @@
 import { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { AIMessage } from '@langchain/core/messages'
 import { DynamicStructuredTool } from '@langchain/core/tools'
-import {
-  createAgent,
-  modelCallLimitMiddleware,
-  toolCallLimitMiddleware
-} from 'langchain'
+import { END, START, MessagesAnnotation, StateGraph } from '@langchain/langgraph'
+import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt'
 import { createStructuredCompletion } from './llmClient.js'
 
 const DEFAULT_TOOL_SCHEMA = {
@@ -404,7 +401,7 @@ function createLangChainTools(toolCatalog, executeTool, runtimeState) {
   ))
 }
 
-export async function runLangChainAgent({
+export async function runLangGraphAgent({
   aiConfig,
   model,
   messages = [],
@@ -421,7 +418,7 @@ export async function runLangChainAgent({
   structuredCompletion
 } = {}) {
   if (typeof executeTool !== 'function') {
-    throw new TypeError('runLangChainAgent requires an executeTool function.')
+    throw new TypeError('runLangGraphAgent requires an executeTool function.')
   }
 
   const normalizedMaxIterations = Math.max(1, Number(maxToolIterations || 1))
@@ -431,7 +428,8 @@ export async function runLangChainAgent({
     toolCalls: 0,
     toolCallSequence: 0,
     usage: [],
-    stopped: null
+    stopped: null,
+    limitReached: false
   }
   const tools = createLangChainTools(toolCatalog, executeTool, runtimeState)
   const chatModel = new CompatibleLangChainChatModel({
@@ -447,26 +445,47 @@ export async function runLangChainAgent({
     onDecision,
     structuredCompletion
   })
-  const agent = createAgent({
-    model: chatModel,
-    tools,
-    middleware: [
-      modelCallLimitMiddleware({
-        runLimit: normalizedMaxIterations + 1,
-        exitBehavior: 'end'
-      }),
-      toolCallLimitMiddleware({
-        runLimit: normalizedMaxIterations,
-        exitBehavior: 'end'
-      })
-    ]
-  })
-  const result = await agent.invoke({ messages }, { signal })
+  const boundModel = chatModel.bindTools(tools)
+  const toolNode = new ToolNode(tools)
+  const workflow = new StateGraph(MessagesAnnotation)
+    .addNode('agent', async (state) => {
+      if (runtimeState.stopped) {
+        return {
+          messages: [new AIMessage({
+            content: 'Agent execution paused by the existing tool safety harness.',
+            additional_kwargs: { agent_action: 'halted' }
+          })]
+        }
+      }
+
+      if (runtimeState.modelCalls >= normalizedMaxIterations + 1) {
+        runtimeState.limitReached = true
+        return {
+          messages: [new AIMessage({
+            content: 'Agent reached its configured execution limit.',
+            additional_kwargs: { agent_action: 'limit_reached' }
+          })]
+        }
+      }
+
+      const response = await boundModel.invoke(state.messages, { signal })
+      return { messages: [response] }
+    })
+    .addNode('tools', toolNode)
+    .addEdge(START, 'agent')
+    .addConditionalEdges('agent', toolsCondition, {
+      tools: 'tools',
+      __end__: END
+    })
+    .addEdge('tools', 'agent')
+    .compile()
+  const result = await workflow.invoke({ messages }, { signal })
 
   return {
     messages: Array.isArray(result?.messages) ? result.messages : [],
     decision: runtimeState.lastDecision,
     stopped: runtimeState.stopped,
+    limitReached: Boolean(runtimeState.limitReached),
     modelCalls: runtimeState.modelCalls,
     toolCalls: runtimeState.toolCalls,
     usage: runtimeState.usage

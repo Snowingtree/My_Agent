@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { runLangChainAgent } from '../src/langChainRuntime.js'
+import { runLangGraphAgent } from '../src/langChainRuntime.js'
 
 function createCompletionSequence(decisions) {
   const queue = [...decisions]
@@ -25,7 +25,7 @@ function createCompletionSequence(decisions) {
 
 test('LangChain agent executes a bound tool and continues to a final decision', async () => {
   const calls = []
-  const result = await runLangChainAgent({
+  const result = await runLangGraphAgent({
     aiConfig: { aiId: 'test' },
     model: 'test-model',
     messages: [{ role: 'user', content: 'Read the project file.' }],
@@ -85,7 +85,7 @@ test('LangChain agent executes a bound tool and continues to a final decision', 
 })
 
 test('LangChain agent exposes an ask_user decision without calling a tool', async () => {
-  const result = await runLangChainAgent({
+  const result = await runLangGraphAgent({
     aiConfig: { aiId: 'test' },
     model: 'test-model',
     messages: [{ role: 'user', content: 'Update the unspecified file.' }],
@@ -107,7 +107,7 @@ test('LangChain agent exposes an ask_user decision without calling a tool', asyn
 })
 
 test('LangChain agent stops when the existing tool harness waits for approval', async () => {
-  const result = await runLangChainAgent({
+  const result = await runLangGraphAgent({
     aiConfig: { aiId: 'test' },
     model: 'test-model',
     messages: [{ role: 'user', content: 'Run a protected command.' }],
