@@ -92,6 +92,18 @@
                 <dt>动作</dt>
                 <dd>{{ actionLabel(event.action) }}</dd>
               </div>
+              <div v-if="event.parentTaskId">
+                <dt>父任务</dt>
+                <dd>{{ event.parentTaskId }}</dd>
+              </div>
+              <div v-if="event.subAgentId">
+                <dt>子任务</dt>
+                <dd>{{ event.subAgentId }}</dd>
+              </div>
+              <div v-if="event.subAgentType">
+                <dt>子 Agent</dt>
+                <dd>{{ event.subAgentType }}</dd>
+              </div>
               <div v-if="event.status">
                 <dt>状态</dt>
                 <dd>{{ statusLabel(event.status) }}</dd>
@@ -185,6 +197,9 @@ const ACTION_LABELS = {
   task_failed: '任务失败',
   task_cancelled: '任务取消',
   task_cancel_requested: '请求停止任务',
+  subagent_started: '启动子 Agent',
+  subagent_completed: '子 Agent 完成',
+  subagent_failed: '子 Agent 失败',
   skill_help: '读取 Skill 说明',
   skill_run: '激活 Skill',
   skill_run_blocked: 'Skill 激活被阻止',
@@ -216,6 +231,9 @@ const ACTION_EXPLANATIONS = {
   task_failed: '这轮任务执行失败，错误原因会记录在事件详情里。',
   task_cancelled: '任务被取消，后续工具和模型调用不会继续执行。',
   task_cancel_requested: '用户或前端发出了停止当前任务的请求。',
+  subagent_started: '主 Agent 创建了一个具有独立上下文和只读工具权限的子 Agent。',
+  subagent_completed: '子 Agent 已返回专项报告，主 Agent 可以把它作为后续决策依据。',
+  subagent_failed: '子 Agent 没有完成委派；主 Agent 会收到失败原因并继续决定如何处理。',
   skill_help: 'Agent 读取了 Skill 的详细说明，但这一步还没有正式启用该 Skill。',
   skill_run: 'Agent 正式启用了这个 Skill，后续会按它的规则执行。',
   skill_run_blocked: 'Agent 想启用 Skill，但还没有先读取说明，所以被系统拦截。',
@@ -395,6 +413,7 @@ function createReadableEventTitle(event) {
   if (type === 'workspace_write') return `写入工作区文件：${event?.path || '(未记录路径)'}`
   if (type === 'rag_search' && status === 'started') return `开始检索知识库：${formatList(event?.collectionIds) || '默认'}`
   if (type === 'rag_search') return `知识库检索完成，命中 ${event?.hitCount ?? 0} 条`
+  if (type === 'llm_input' && event?.stage === 'subagent_report') return '子 Agent 正在整理专项报告'
   if (type === 'llm_input') return event?.stage === 'final_text' ? '把上下文发送给模型生成最终回复' : '把上下文发送给模型判断下一步'
   if (type === 'llm_decision') return `模型决定：${actionLabel(event?.action)}`
   if (type === 'tool_approval_requested') return `等待你确认受保护工具：${formatToolName(event?.tool)}`
@@ -418,6 +437,9 @@ function createReadableEventTitle(event) {
   if (type === 'system_action' && action === 'protected_tool_run_blocked') return `受保护工具被阻止：${formatToolName(event?.tool)}`
   if (type === 'system_action' && action === 'memory_compacted') return `短期记忆已压缩：压缩 ${event?.compressedTurnCount ?? event?.compressedMessageCount ?? 0} 轮，保留 ${event?.keptTurnCount ?? event?.keptMessageCount ?? 0} 轮`
   if (type === 'system_action' && action === 'user_profile_memory_updated') return '长期记忆已更新'
+  if (type === 'system_action' && action === 'subagent_started') return `启动子 Agent：${event?.subAgentType || 'unknown'}`
+  if (type === 'system_action' && action === 'subagent_completed') return `子 Agent 已完成：${event?.subAgentType || 'unknown'}`
+  if (type === 'system_action' && action === 'subagent_failed') return `子 Agent 失败：${event?.subAgentType || 'unknown'}`
   if (type === 'system_action' && ACTION_LABELS[action]) return actionLabelText
   if (type === 'error') return `发生错误：${event?.scope || '系统'}`
 
@@ -1106,4 +1128,3 @@ onMounted(() => {
   }
 }
 </style>
-

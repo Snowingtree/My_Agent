@@ -164,8 +164,21 @@ export function createToolRunner({
     )
   }
 
-  function getToolCatalog({ skill = null, mcpToolPrefixes = [] } = {}) {
-    return getFilteredTools(workspace, { skill, mcpToolPrefixes }).map((tool) => ({
+  function filterToolsByNames(tools, allowedToolNames = []) {
+    const allowedNames = normalizeStringArray(allowedToolNames)
+
+    if (!allowedNames.length) {
+      return tools
+    }
+
+    return tools.filter((tool) => allowedNames.includes(tool.name))
+  }
+
+  function getToolCatalog({ skill = null, mcpToolPrefixes = [], allowedToolNames = [] } = {}) {
+    return filterToolsByNames(
+      getFilteredTools(workspace, { skill, mcpToolPrefixes }),
+      allowedToolNames
+    ).map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
@@ -173,8 +186,8 @@ export function createToolRunner({
     }))
   }
 
-  function getPromptText({ skill = null, mcpToolPrefixes = [] } = {}) {
-    return getToolCatalog({ skill, mcpToolPrefixes })
+  function getPromptText({ skill = null, mcpToolPrefixes = [], allowedToolNames = [] } = {}) {
+    return getToolCatalog({ skill, mcpToolPrefixes, allowedToolNames })
       .map((tool) => [
         `- ${tool.name}: ${tool.description}`,
         `  Source: ${tool.source}`,
@@ -183,11 +196,21 @@ export function createToolRunner({
       .join('\n')
   }
 
-  async function executeToolCall({ name, args } = {}, { skill = null, mcpToolPrefixes = [], signal = null, sessionId = '', onProgress = null } = {}) {
+  async function executeToolCall({ name, args } = {}, {
+    skill = null,
+    mcpToolPrefixes = [],
+    allowedToolNames = [],
+    signal = null,
+    sessionId = '',
+    onProgress = null
+  } = {}) {
     const normalizedName = String(name || '').trim()
     const activeWorkspace = getWorkspaceForSession(sessionId)
     const allToolsByName = new Map(getAllTools(activeWorkspace).map((tool) => [tool.name, tool]))
-    const toolCatalog = getFilteredTools(activeWorkspace, { skill, mcpToolPrefixes })
+    const toolCatalog = filterToolsByNames(
+      getFilteredTools(activeWorkspace, { skill, mcpToolPrefixes }),
+      allowedToolNames
+    )
     const toolsByName = new Map(toolCatalog.map((tool) => [tool.name, tool]))
     const tool = toolsByName.get(normalizedName)
 

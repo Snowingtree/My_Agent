@@ -17,6 +17,7 @@
 - LangGraph SQLite Checkpoint 会话记忆：按 `thread_id` 持久化消息、滚动摘要和压缩状态；Checkpoint 是短期记忆的权威来源，应用会话记录仅用于界面、审计和首次迁移
 - 动态 Skill 两阶段凭证：`help` 读取当前说明并签发绑定会话、Skill 和说明版本的一次性 `help_token`，`run` 必须通过有效凭证校验
 - 5 类行为审计：`llm_input`、`tool_call`、`tool_result`、`ai_message`、`system_action`，JSONL 持久化由 Node Worker 线程异步写盘，并提供终端监控
+- 子 Agent 委派：主 Agent 可通过 `delegate_task` 交给代码审查或文档整理子 Agent；子 Agent 使用独立上下文、只读工具和独立预算，审计事件通过父任务 ID、执行 ID 和子 Agent ID 关联
 
 ## 主要接口
 
@@ -67,6 +68,15 @@ npm run audit:monitor -- session-id
 ```
 
 日志记录会保留原始 `event` 名称，同时增加统一的 `category` 字段，因此现有审计页面仍能显示更细的事件，终端监控按 5 类行为聚合显示。
+
+## 子 Agent 委派
+
+主 Agent 可在需要独立审查或整理时调用 `delegate_task`：
+
+- `code_reviewer`：读取工作区后报告代码风险、回归和可维护性问题。
+- `document_curator`：读取文档后报告重复、缺失、过期内容和建议结构。
+
+子 Agent 只接收主 Agent 提供的委派简报，不共享主会话消息、长期记忆、Skills、MCP 或写入权限。默认每个主任务最多委派 3 次，每个子 Agent 最多 4 次工具调用、180 秒；均可通过 `AGENT_SUBAGENT_*` 环境变量调整。
 
 生产环境建议使用 PM2 或 systemd：
 

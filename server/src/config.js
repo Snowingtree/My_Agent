@@ -258,6 +258,12 @@ export function createConfig() {
       commandTimeoutMs: readNumberEnv('AGENT_COMMAND_TIMEOUT_MS', 120000),
       maxToolIterations: readNumberEnv('AGENT_MAX_TOOL_ITERATIONS', 6),
       timezone: String(process.env.AGENT_TIMEZONE || 'Asia/Shanghai').trim() || 'Asia/Shanghai'
+    },
+    subagents: {
+      enabled: normalizeBooleanEnv(process.env.AGENT_SUBAGENTS_ENABLED, true),
+      maxDelegationsPerTask: readNumberEnv('AGENT_SUBAGENT_MAX_DELEGATIONS_PER_TASK', 3),
+      maxToolIterations: readNumberEnv('AGENT_SUBAGENT_MAX_TOOL_ITERATIONS', 4),
+      timeoutMs: readNumberEnv('AGENT_SUBAGENT_TIMEOUT_MS', 180000)
     }
   }
 }

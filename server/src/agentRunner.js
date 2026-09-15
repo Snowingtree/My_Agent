@@ -25,6 +25,7 @@ import {
   sleep,
   truncateText
 } from './utils.js'
+import { DELEGATE_TASK_TOOL_NAME } from './subAgentRuntime.js'
 
 const WRITE_TOOL_NAMES = new Set(['write_file', 'apply_patch'])
 const READ_TOOL_NAMES = new Set(['read_file', 'list_files', 'search_text'])
@@ -559,7 +560,8 @@ function buildLangChainToolCatalog({
   toolRunner,
   mcpToolPrefixes = [],
   skills = [],
-  memoryEnabled = false
+  memoryEnabled = false,
+  delegationTool = null
 } = {}) {
   const catalog = toolRunner.getToolCatalog({
     skill: null,
@@ -623,6 +625,10 @@ function buildLangChainToolCatalog({
         additionalProperties: false
       }
     })
+  }
+
+  if (delegationTool) {
+    catalog.unshift(delegationTool)
   }
 
   return catalog
@@ -1163,6 +1169,7 @@ function buildAgentLoopMessages({
     'Do not ask clarifying questions unless the missing detail truly blocks a useful next response.',
     'Long-term memory rule: when the user states a durable preference, stable personal/project context, or explicitly asks you to remember something, call the memory tool to update the user profile before the final answer.',
     'Do not store temporary task details, secrets, API keys, passwords, tokens, or file contents in long-term memory.',
+    'Delegation rule: use delegate_task only when a focused code review or documentation organization investigation would materially improve the answer. Give the sub-agent a self-contained brief. Its report is evidence for you to synthesize, not a final answer to forward blindly.',
     'When the user asks for the current date, weekday, or time, use the provided current date context directly.',
     'When the request is about the codebase or file changes, prefer inspecting the workspace before making code claims.',
     'Coding quality rule: before calling write_file or apply_patch for code changes, inspect the workspace with list_files, search_text, or read_file in this task. Understand the existing structure before editing.',
@@ -1468,6 +1475,10 @@ function createToolStepTitle(toolName, args) {
     return '更新长期记忆'
   }
 
+  if (toolName === DELEGATE_TASK_TOOL_NAME) {
+    return `委派 ${truncateText(args?.agent || '子 Agent', 24)}`
+  }
+
   if (toolName === 'write_file') {
     return `写入文件 ${truncateText(args?.path || '', 36) || ''}`.trim()
   }
@@ -1508,6 +1519,11 @@ function summarizeToolTarget(toolExecution) {
     const skillId = normalizeTrimmedString(args?.skillId || toolExecution?.result?.skillId)
     const mode = normalizeTrimmedString(args?.mode || toolExecution?.result?.mode)
     return skillId ? `Skill：${skillId}${mode ? ` (${mode})` : ''}` : ''
+  }
+
+  if (toolName === DELEGATE_TASK_TOOL_NAME) {
+    const agent = normalizeTrimmedString(args?.agent || toolExecution?.result?.agent)
+    return agent ? `子 Agent：${agent}` : ''
   }
 
   return ''
@@ -1909,7 +1925,8 @@ export function createAgentRunner({
   ragStore,
   memoryStore,
   conversationMemoryRuntime,
-  auditLogger
+  auditLogger,
+  subAgentRuntime = null
 } = {}) {
   const activeRuns = new Map()
 
@@ -2541,6 +2558,7 @@ export function createAgentRunner({
       inspectedWorkspace: Boolean(approvedExecutionState.inspectedWorkspace),
       updatedUserProfileMemory: Boolean(approvedExecutionState.updatedUserProfileMemory)
     }
+    let subAgentDelegationCount = 0
     const analysisStep = createTaskStep({
       title: '理解目标',
       status: 'in_progress',
@@ -2692,6 +2710,24 @@ export function createAgentRunner({
       )
       let executableRequest = normalizedRequest
       let virtualProtectedToolExecution = null
+
+      if (normalizedRequest.name === DELEGATE_TASK_TOOL_NAME) {
+        if (!subAgentRuntime?.enabled) {
+          virtualProtectedToolExecution = createBlockedToolExecution({
+            tool: normalizedRequest.name,
+            args: normalizedRequest.args,
+            reason: 'subagent_disabled',
+            message: 'Sub-agent delegation is not enabled.'
+          })
+        } else if (subAgentDelegationCount >= subAgentRuntime.maxDelegationsPerTask) {
+          virtualProtectedToolExecution = createBlockedToolExecution({
+            tool: normalizedRequest.name,
+            args: normalizedRequest.args,
+            reason: 'subagent_budget_exhausted',
+            message: `This task has reached its sub-agent delegation budget of ${subAgentRuntime.maxDelegationsPerTask}.`
+          })
+        }
+      }
 
       if (protectedTool) {
         const protectedToolStartedAt = Date.now()
@@ -2847,6 +2883,55 @@ export function createAgentRunner({
       try {
         if (virtualProtectedToolExecution) {
           toolExecution = virtualProtectedToolExecution
+        } else if (executableRequest.name === DELEGATE_TASK_TOOL_NAME) {
+          subAgentDelegationCount += 1
+          try {
+            const delegatedResult = await subAgentRuntime.delegate({
+              sessionId,
+              parentTaskId: taskId,
+              parentExecutionId: toolExecutionId,
+              agent: executableRequest.args?.agent,
+              task: executableRequest.args?.task,
+              aiConfig,
+              model: selectedModel,
+              requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+              idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
+              streamResponses: aiRuntimeConfig.streamResponses,
+              timeoutRetries: aiRuntimeConfig.timeoutRetries,
+              timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
+              signal: abortSignal,
+              audit: (event, payload) => audit(sessionId, event, payload)
+            })
+            toolExecution = {
+              tool: DELEGATE_TASK_TOOL_NAME,
+              args: executableRequest.args,
+              result: delegatedResult,
+              summary: `${delegatedResult.label} 已完成：${truncateText(delegatedResult.report, 160)}`,
+              message: [
+                `子 Agent：${delegatedResult.label}`,
+                `子任务 ID：${delegatedResult.subAgentId}`,
+                '',
+                delegatedResult.report
+              ].join('\n'),
+              status: 'success',
+              durationMs: delegatedResult.durationMs
+            }
+          } catch (error) {
+            const errorMessage = normalizeTrimmedString(error?.message) || '子 Agent 未能完成委派任务。'
+            toolExecution = {
+              tool: DELEGATE_TASK_TOOL_NAME,
+              args: executableRequest.args,
+              result: {
+                agent: normalizeTrimmedString(executableRequest.args?.agent),
+                failed: true,
+                message: errorMessage
+              },
+              summary: `子 Agent 委派失败：${errorMessage}`,
+              message: `子 Agent 未能完成：${errorMessage}`,
+              status: 'failed',
+              durationMs: Date.now() - toolStartedAt
+            }
+          }
         } else if (executableRequest.name === SKILL_TOOL_NAME) {
           const skillId = normalizeTrimmedString(executableRequest.args?.skillId)
           const mode = normalizeTrimmedString(executableRequest.args?.mode).toLowerCase()
@@ -3456,7 +3541,8 @@ export function createAgentRunner({
         toolRunner,
         mcpToolPrefixes: activeMcpToolPrefixes,
         skills: allSkills,
-        memoryEnabled: Boolean(aiRuntimeConfig?.userProfileMemoryEnabled)
+        memoryEnabled: Boolean(aiRuntimeConfig?.userProfileMemoryEnabled),
+        delegationTool: subAgentRuntime?.getToolDefinition?.()
       })
 
       const taskGraph = createAgentTaskGraph({

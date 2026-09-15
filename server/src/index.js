@@ -17,6 +17,7 @@ import { createSessionWorkspacesRepository } from './sessionWorkspaces.js'
 import { createSkillLibrary } from './skillLibrary.js'
 import { SessionRepository } from './sessionStore.js'
 import { createSkillRegistry } from './skillRegistry.js'
+import { createSubAgentRuntime } from './subAgentRuntime.js'
 import { createTokenUsageStore } from './tokenUsageStore.js'
 import { getToolDetailItem, listToolPreviewItems } from './toolCatalogDetails.js'
 import {
@@ -281,6 +282,10 @@ const toolRunner = createToolRunner({
     () => mcpRegistry.getGatewayToolDefinitions()
   ]
 })
+const subAgentRuntime = createSubAgentRuntime({
+  toolRunner,
+  config: config.subagents
+})
 
 const agentRunner = createAgentRunner({
   sessionRepository,
@@ -300,7 +305,8 @@ const agentRunner = createAgentRunner({
   ragStore,
   memoryStore,
   conversationMemoryRuntime,
-  auditLogger
+  auditLogger,
+  subAgentRuntime
 })
 
 function setBaseHeaders(response) {
