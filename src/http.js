@@ -11,6 +11,22 @@ const EXPLICIT_API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').tr
 const EXPLICIT_PRIVATE_APP_BASE_URL = String(import.meta.env.VITE_PRIVATE_APP_BASE_URL || '')
   .trim()
   .replace(/\/$/, '')
+const API_PATH_PREFIX = String(
+  import.meta.env.VITE_API_PATH_PREFIX
+    || (import.meta.env.DEV || EXPLICIT_API_BASE_URL ? '' : '/agent-api')
+)
+  .trim()
+  .replace(/\/$/, '')
+
+function resolveApiPath(pathname) {
+  const normalizedPath = String(pathname || '').trim()
+
+  if (!normalizedPath || !API_PATH_PREFIX || !normalizedPath.startsWith('/api')) {
+    return normalizedPath
+  }
+
+  return `${API_PATH_PREFIX}${normalizedPath}`
+}
 
 function resolveApiBaseUrl() {
   if (EXPLICIT_API_BASE_URL) {
@@ -29,7 +45,7 @@ function resolveApiBaseUrl() {
 }
 
 export function buildApiUrl(pathname) {
-  const normalizedPath = String(pathname || '').trim()
+  const normalizedPath = resolveApiPath(pathname)
   const baseURL = resolveApiBaseUrl()
 
   if (!normalizedPath) {
@@ -182,6 +198,8 @@ http.interceptors.request.use(
     if (!config.baseURL) {
       config.baseURL = resolveApiBaseUrl()
     }
+
+    config.url = resolveApiPath(config.url)
 
     const headers = axios.AxiosHeaders.from(config.headers)
 

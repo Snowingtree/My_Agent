@@ -75,7 +75,7 @@ function printBuildSizePlugin() {
 export default defineConfig(({ mode }) => {
   const projectRoot = process.cwd()
   const env = loadEnv(mode, projectRoot, '')
-  const apiProxyTarget = env.API_PROXY_TARGET || 'http://127.0.0.1:3001'
+  const apiProxyTarget = env.API_PROXY_TARGET || 'http://127.0.0.1:3002'
 
   return {
     base: '/agent/',
