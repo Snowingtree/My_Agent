@@ -15,6 +15,7 @@ const MAX_EVIDENCE_CHARS = 12000
 const SUB_AGENT_PROFILES = Object.freeze({
   code_reviewer: {
     label: '代码审查子 Agent',
+    description: '独立检查代码正确性、安全性、回归风险和可维护性，并返回带证据的审查报告。',
     instructions: [
       'Review the requested code or workspace area for concrete correctness, security, regression, and maintainability risks.',
       'Use the read-only tools to gather evidence before making claims.',
@@ -24,6 +25,7 @@ const SUB_AGENT_PROFILES = Object.freeze({
   },
   document_curator: {
     label: '文档整理子 Agent',
+    description: '独立检查文档结构、缺失说明、重复内容和过时引用，并给出整理建议。',
     instructions: [
       'Inspect the requested documents or workspace area and produce a concise, structured organization or documentation recommendation.',
       'Use the read-only tools to gather evidence before making claims.',
@@ -162,6 +164,15 @@ export function createSubAgentRuntime({
 
   function getToolDefinition() {
     return enabled ? createDelegationToolDefinition() : null
+  }
+
+  function getProfiles() {
+    return Object.entries(SUB_AGENT_PROFILES).map(([agent, profile]) => ({
+      agent,
+      label: profile.label,
+      description: profile.description,
+      allowedTools: READ_ONLY_SUB_AGENT_TOOL_NAMES
+    }))
   }
 
   async function delegate({
@@ -425,6 +436,7 @@ export function createSubAgentRuntime({
     enabled,
     maxDelegationsPerTask,
     getToolDefinition,
+    getProfiles,
     delegate
   }
 }

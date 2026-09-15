@@ -1965,9 +1965,36 @@ function resolveMcpToolPrefixes(serverIds = []) {
   return prefixes.length ? prefixes : ['__no_selected_mcp_server__']
 }
 
+function getAgentDirectoryToolCatalog() {
+  const delegationTool = subAgentRuntime.getToolDefinition()
+
+  return delegationTool
+    ? [delegationTool, ...toolRunner.getToolCatalog()]
+    : toolRunner.getToolCatalog()
+}
+
+function getAgentDirectorySubAgents() {
+  if (!subAgentRuntime.enabled || typeof subAgentRuntime.getProfiles !== 'function') {
+    return []
+  }
+
+  return subAgentRuntime.getProfiles().map((profile) => ({
+    kind: 'subagent',
+    name: profile.agent,
+    label: profile.label,
+    description: profile.description,
+    source: 'subagent',
+    displayPath: '通过 delegate_task 调用',
+    allowedTools: Array.isArray(profile.allowedTools) ? profile.allowedTools : []
+  }))
+}
+
 async function handleListAgentTools(response) {
   sendJson(response, 200, {
-    items: listToolPreviewItems(toolRunner.getToolCatalog())
+    items: [
+      ...listToolPreviewItems(getAgentDirectoryToolCatalog()),
+      ...getAgentDirectorySubAgents()
+    ]
   })
 }
 
@@ -1981,7 +2008,8 @@ async function handleGetAgentToolDetail(response, requestUrl) {
     return
   }
 
-  const item = await getToolDetailItem(toolRunner.getToolCatalog(), toolName)
+  const subAgent = getAgentDirectorySubAgents().find((item) => item.name === toolName)
+  const item = subAgent || await getToolDetailItem(getAgentDirectoryToolCatalog(), toolName)
 
   if (!item) {
     sendJson(response, 404, {

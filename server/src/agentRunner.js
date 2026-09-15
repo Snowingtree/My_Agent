@@ -556,6 +556,24 @@ function buildToolPromptWithSkillLoader(toolPromptText, skillCatalogPrompt, memo
   ].filter(Boolean).join('\n')
 }
 
+function getExplicitDelegationProfile(value) {
+  const normalized = normalizeTrimmedString(value)
+
+  if (!normalized || !/(?:委派|派遣|委托|分派|delegate|delegat)/i.test(normalized)) {
+    return ''
+  }
+
+  if (/(?:代码|编码|c\s*码|code|review|审查|检查)[\s\S]{0,32}(?:子\s*agent|sub[\s-]*agent|agent)|(?:子\s*agent|sub[\s-]*agent|agent)[\s\S]{0,32}(?:代码|编码|c\s*码|code|review|审查|检查)/i.test(normalized)) {
+    return 'code_reviewer'
+  }
+
+  if (/(?:文档|document)[\s\S]{0,32}(?:子\s*agent|sub[\s-]*agent|agent)|(?:子\s*agent|sub[\s-]*agent|agent)[\s\S]{0,32}(?:文档|document)/i.test(normalized)) {
+    return 'document_curator'
+  }
+
+  return ''
+}
+
 function buildLangChainToolCatalog({
   toolRunner,
   mcpToolPrefixes = [],
@@ -1133,7 +1151,8 @@ function buildAgentLoopMessages({
   attachmentContextText = '',
   ragContextText = '',
   userProfileText = '',
-  currentDateContextText = ''
+  currentDateContextText = '',
+  requiredDelegationProfile = ''
 }) {
   const promptSections = [
     'You are a coding agent running inside a server workspace.',
@@ -1170,6 +1189,12 @@ function buildAgentLoopMessages({
     'Long-term memory rule: when the user states a durable preference, stable personal/project context, or explicitly asks you to remember something, call the memory tool to update the user profile before the final answer.',
     'Do not store temporary task details, secrets, API keys, passwords, tokens, or file contents in long-term memory.',
     'Delegation rule: use delegate_task only when a focused code review or documentation organization investigation would materially improve the answer. Give the sub-agent a self-contained brief. Its report is evidence for you to synthesize, not a final answer to forward blindly.',
+    ...(requiredDelegationProfile
+      ? [
+          `The user explicitly requested a sub-agent delegation. You must call delegate_task with agent="${requiredDelegationProfile}" before choosing final.`,
+          'Do not answer that delegation is unavailable, and do not substitute a self-written review for the requested sub-agent report.'
+        ]
+      : []),
     'When the user asks for the current date, weekday, or time, use the provided current date context directly.',
     'When the request is about the codebase or file changes, prefer inspecting the workspace before making code claims.',
     'Coding quality rule: before calling write_file or apply_patch for code changes, inspect the workspace with list_files, search_text, or read_file in this task. Understand the existing structure before editing.',
@@ -2484,6 +2509,7 @@ export function createAgentRunner({
       : String(latestUserMessage.content)
     const fileChangesRequired = looksLikeFileChangeRequestSafe(latestGoal)
     const requiredCompanionExtensions = getRequiredCompanionExtensionsSafe(latestGoal)
+    const explicitDelegationProfile = getExplicitDelegationProfile(latestGoal)
     const currentDateContextText = buildCurrentDateContext(runtimeConfig?.timezone)
     const attachmentContextText = buildAttachmentContextText(requestedAttachments)
     let ragContextText = ''
@@ -3534,6 +3560,25 @@ export function createAgentRunner({
     }
 
     async function runLangGraphTask() {
+      // An explicit delegation request is a command, not a suggestion for the model.
+      // Run it first so the parent Agent receives the child report as tool evidence.
+      if (explicitDelegationProfile && subAgentDelegationCount === 0) {
+        await executeToolRequest({
+          name: DELEGATE_TASK_TOOL_NAME,
+          args: {
+            agent: explicitDelegationProfile,
+            task: [
+              'Inspect the current session workspace and provide a focused specialist report.',
+              `User request: ${latestGoal}`,
+              'Gather evidence with the available read-only tools before reporting findings.'
+            ].join('\n')
+          }
+        }, {
+          summary: `正在委派 ${explicitDelegationProfile} 子 Agent。`,
+          stepTitle: `委派 ${explicitDelegationProfile} 子 Agent`
+        })
+      }
+
       const allSkills = skillRegistry && typeof skillRegistry.listSkills === 'function'
         ? skillRegistry.listSkills()
         : activeSkills
@@ -3570,7 +3615,8 @@ export function createAgentRunner({
             attachmentContextText,
             ragContextText,
             userProfileText,
-            currentDateContextText
+            currentDateContextText,
+            requiredDelegationProfile: explicitDelegationProfile
           })
 
           audit(sessionId, 'llm_input', {
