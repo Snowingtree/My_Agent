@@ -3977,6 +3977,7 @@ onBeforeUnmount(() => {
   align-content: start;
   gap: 26px;
   overflow-y: auto;
+  overflow-x: hidden;
   padding:
     34px
     max(24px, calc((100% - var(--agent-content-width)) / 2))
@@ -4069,6 +4070,7 @@ onBeforeUnmount(() => {
 .agent-message {
   display: grid;
   gap: 6px;
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -4092,6 +4094,7 @@ onBeforeUnmount(() => {
 }
 
 .agent-message__bubble {
+  min-width: 0;
   border: 0;
   box-shadow: none;
 }
@@ -4179,8 +4182,11 @@ onBeforeUnmount(() => {
 }
 
 .agent-markdown-content {
+  min-width: 0;
+  max-width: 100%;
   color: var(--agent-text);
   line-height: 1.75;
+  overflow-wrap: anywhere;
 }
 
 .agent-markdown-content :deep(> :first-child) {
@@ -4253,6 +4259,8 @@ onBeforeUnmount(() => {
   color: #334155;
   font-size: 0.92em;
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .agent-markdown-content :deep(.agent-markdown-code-block) {
@@ -4317,7 +4325,7 @@ onBeforeUnmount(() => {
 }
 
 .agent-markdown-content :deep(pre) {
-  overflow: auto;
+  overflow: hidden;
   margin: 0;
   border: 0;
   border-radius: 0;
@@ -4333,11 +4341,13 @@ onBeforeUnmount(() => {
   color: #111827;
   font-size: 0.9rem;
   line-height: 1.65;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .agent-markdown-content :deep(.agent-markdown-table-wrap) {
-  overflow-x: auto;
+  overflow: hidden;
   margin: 0.7rem 0 1.15rem;
   border: 1px solid #e6e9ef;
   border-radius: 12px;
@@ -4346,8 +4356,9 @@ onBeforeUnmount(() => {
 
 .agent-markdown-content :deep(table) {
   width: 100%;
-  min-width: 420px;
+  min-width: 0;
   border-collapse: collapse;
+  table-layout: fixed;
   font-size: 0.92rem;
   line-height: 1.65;
 }
@@ -4358,6 +4369,8 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .agent-markdown-content :deep(th) {
@@ -5690,9 +5703,9 @@ onBeforeUnmount(() => {
 
   .agent-mainbar__actions {
     width: 100%;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     justify-content: flex-start;
-    overflow-x: auto;
+    overflow: visible;
     padding-bottom: 2px;
     scrollbar-width: none;
   }
