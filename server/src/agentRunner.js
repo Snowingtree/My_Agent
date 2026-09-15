@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { analyzeCommandPolicy } from './commandPolicy.js'
+import { toConversationHistory } from './conversationMemoryRuntime.js'
 import { runLangGraphAgent } from './langChainRuntime.js'
 import { createAgentTaskGraph } from './langGraphRuntime.js'
 import { createStructuredCompletion, createTextCompletion } from './llmClient.js'
@@ -124,49 +125,6 @@ function normalizeMemorySummary(value, maxChars = 6000) {
   }
 
   return normalizedValue.length > maxChars ? normalizedValue.slice(0, maxChars).trim() : normalizedValue
-}
-
-function groupMessagesIntoConversationTurns(messages = []) {
-  const turns = []
-  let currentTurn = null
-
-  ;(Array.isArray(messages) ? messages : []).forEach((message, index) => {
-    const role = normalizeTrimmedString(message?.role).toLowerCase()
-
-    if (role === 'user' || !currentTurn) {
-      currentTurn = {
-        startIndex: index,
-        endIndex: index,
-        messages: [message]
-      }
-      turns.push(currentTurn)
-      return
-    }
-
-    currentTurn.endIndex = index
-    currentTurn.messages.push(message)
-  })
-
-  return turns
-}
-
-function findConversationTurnIndexByMessageId(turns = [], messageId = '') {
-  const normalizedMessageId = normalizeTrimmedString(messageId)
-
-  if (!normalizedMessageId) {
-    return -1
-  }
-
-  return turns.findIndex((turn) => (
-    Array.isArray(turn?.messages)
-    && turn.messages.some((message) => normalizeTrimmedString(message?.messageId) === normalizedMessageId)
-  ))
-}
-
-function flattenConversationTurns(turns = []) {
-  return (Array.isArray(turns) ? turns : []).flatMap((turn) => (
-    Array.isArray(turn?.messages) ? turn.messages : []
-  ))
 }
 
 function looksLikeUserProfileMemoryRequest(value) {
@@ -1158,7 +1116,6 @@ function buildAgentLoopMessages({
   workspaceContextText = '',
   attachmentContextText = '',
   ragContextText = '',
-  conversationMemoryText = '',
   userProfileText = '',
   currentDateContextText = ''
 }) {
@@ -1262,12 +1219,6 @@ function buildAgentLoopMessages({
       ? [{
           role: 'user',
           content: `RAG knowledge context:\n${ragContextText}`
-        }]
-      : []),
-    ...(conversationMemoryText
-      ? [{
-          role: 'user',
-          content: `Short-term session summary:\n${conversationMemoryText}`
         }]
       : []),
     ...(userProfileText
@@ -1906,6 +1857,7 @@ export function createAgentRunner({
   toolRunner,
   ragStore,
   memoryStore,
+  conversationMemoryRuntime,
   auditLogger
 } = {}) {
   const activeRuns = new Map()
@@ -1931,6 +1883,30 @@ export function createAgentRunner({
       type,
       ...payload
     })
+  }
+
+  async function persistConversationMemoryMessage(sessionId, message) {
+    const candidate = Array.isArray(message?.messages) ? message.messages.at(-1) : message
+
+    if (!conversationMemoryRuntime || !candidate) {
+      return
+    }
+
+    try {
+      await conversationMemoryRuntime.appendMessage(sessionId, candidate)
+    } catch (error) {
+      audit(sessionId, 'error', {
+        scope: 'conversation_memory_checkpoint_append',
+        message: error instanceof Error ? error.message : String(error || '')
+      })
+      console.warn('[agent-runner] failed to append conversation checkpoint:', error instanceof Error ? error.message : error)
+    }
+  }
+
+  async function appendConversationToolMessage(sessionId, content) {
+    const message = await sessionRepository.appendToolMessage(sessionId, { content })
+    await persistConversationMemoryMessage(sessionId, message)
+    return message
   }
 
   function publishTaskProgress(sessionId, summary, model = '') {
@@ -1982,6 +1958,7 @@ export function createAgentRunner({
       model,
       usage
     })
+    await persistConversationMemoryMessage(sessionId, message)
 
     audit(sessionId, 'ai_message', {
       source: 'buffered',
@@ -2100,6 +2077,7 @@ export function createAgentRunner({
       model,
       usage: completion.usage
     })
+    await persistConversationMemoryMessage(sessionId, message)
 
     audit(sessionId, 'llm_final_text', {
       model,
@@ -2135,181 +2113,102 @@ export function createAgentRunner({
     })
   }
 
-  async function readConversationMemoryState(sessionId, session, maxChars) {
-    const fallbackState = {
-      summary: normalizeMemorySummary(session?.memorySummary, maxChars),
-      updatedAt: session?.memoryUpdatedAt || null,
-      compressedThroughMessageId: normalizeTrimmedString(session?.memoryCompressedThroughMessageId),
-      compressedMessageCount: 0,
-      keptMessageCount: 0
-    }
-
-    if (!memoryStore || typeof memoryStore.readConversationMemory !== 'function') {
-      return fallbackState
-    }
-
-    try {
-      const storedState = await memoryStore.readConversationMemory(sessionId, { maxChars })
-      const storedSummary = normalizeMemorySummary(storedState?.summary, maxChars)
-
-      if (!storedSummary && !storedState?.updatedAt) {
-        return fallbackState
-      }
-
-      return {
-        summary: storedSummary || fallbackState.summary,
-        updatedAt: storedState?.updatedAt || fallbackState.updatedAt,
-        compressedThroughMessageId: normalizeTrimmedString(storedState?.compressedThroughMessageId)
-          || fallbackState.compressedThroughMessageId,
-        compressedMessageCount: Number.isFinite(Number(storedState?.compressedMessageCount))
-          ? Number(storedState.compressedMessageCount)
-          : fallbackState.compressedMessageCount,
-        keptMessageCount: Number.isFinite(Number(storedState?.keptMessageCount))
-          ? Number(storedState.keptMessageCount)
-          : fallbackState.keptMessageCount
-      }
-    } catch (error) {
-      audit(sessionId, 'error', {
-        scope: 'conversation_memory_read',
-        message: error instanceof Error ? error.message : String(error || '')
-      })
-      console.warn('[agent-runner] failed to read conversation memory:', error instanceof Error ? error.message : error)
-      return fallbackState
-    }
-  }
-
-  async function writeConversationMemoryState(sessionId, state = {}) {
-    if (!memoryStore || typeof memoryStore.writeConversationMemory !== 'function') {
-      return null
-    }
-
-    return memoryStore.writeConversationMemory({
-      sessionId,
-      summary: state.summary,
-      compressedThroughMessageId: state.compressedThroughMessageId,
-      compressedMessageCount: state.compressedMessageCount,
-      keptMessageCount: state.keptMessageCount,
-      compressedTurnCount: state.compressedTurnCount,
-      keptTurnCount: state.keptTurnCount,
-      reason: state.reason
-    })
-  }
-
   async function ensureConversationMemory({
     sessionId,
     session,
     aiConfig,
     selectedModel,
+    currentMessage,
     signal
   } = {}) {
     const maxChars = Math.max(1000, Number(aiRuntimeConfig?.contextMemoryMaxChars || 6000))
-    const existingMemoryState = await readConversationMemoryState(sessionId, session, maxChars)
-
-    if (!aiRuntimeConfig?.contextMemoryEnabled) {
-      return existingMemoryState.summary
+    const fallbackMessages = Array.isArray(session?.messages) ? session.messages : []
+    const fallbackState = {
+      summary: normalizeMemorySummary(session?.memorySummary, maxChars),
+      messages: fallbackMessages,
+      updatedAt: session?.memoryUpdatedAt || null
     }
 
-    const messages = Array.isArray(session?.messages) ? session.messages : []
-    const turns = groupMessagesIntoConversationTurns(messages)
-    const thresholdTurns = Math.max(1, Number(aiRuntimeConfig.contextMemoryThreshold || 20))
-    const keepTurns = Math.max(1, Number(aiRuntimeConfig.contextMemoryKeepMessages || 10))
-    const minBatchTurns = Math.max(1, Number(aiRuntimeConfig.contextMemoryMinBatchMessages || 4))
-    const compressedThroughTurnIndex = findConversationTurnIndexByMessageId(
-      turns,
-      existingMemoryState.compressedThroughMessageId
-    )
-    const currentTurnIndex = compressedThroughTurnIndex >= 0
-      ? compressedThroughTurnIndex + 1
-      : 0
-    const cutoffTurnIndex = Math.max(0, turns.length - keepTurns)
-    const turnsToCompress = turns.slice(currentTurnIndex, cutoffTurnIndex)
-    const keptTurns = turns.slice(cutoffTurnIndex)
-    const messagesToCompress = flattenConversationTurns(turnsToCompress)
-    const keptMessages = flattenConversationTurns(keptTurns)
-    const existingSummary = existingMemoryState.summary
-
-    if (
-      turns.length <= thresholdTurns
-      || cutoffTurnIndex <= currentTurnIndex
-      || turnsToCompress.length < minBatchTurns
-      || !messagesToCompress.length
-    ) {
-      return existingSummary
+    if (!aiRuntimeConfig?.contextMemoryEnabled || !conversationMemoryRuntime) {
+      return fallbackState
     }
 
     try {
-      const completion = await createStructuredCompletion({
-        aiConfig,
-        model: selectedModel,
-        messages: createMemorySummaryMessages({
-          existingSummary,
-          messagesToCompress,
-          maxChars
-        }),
-        requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
-        idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
-        streamResponses: false,
-        timeoutRetries: Math.min(1, Number(aiRuntimeConfig.timeoutRetries || 0)),
-        timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
-        signal
-      })
-      const nextSummary = normalizeMemorySummary(
-        completion?.json?.summary || completion?.json?.reply || completion?.rawText,
-        maxChars
-      )
+      const existingState = await conversationMemoryRuntime.getState(sessionId)
+      const summarize = async ({ existingSummary, messages, maxChars: summaryMaxChars }) => {
+        const completion = await createStructuredCompletion({
+          aiConfig,
+          model: selectedModel,
+          messages: createMemorySummaryMessages({
+            existingSummary,
+            messagesToCompress: messages,
+            maxChars: summaryMaxChars
+          }),
+          requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+          idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
+          streamResponses: false,
+          timeoutRetries: Math.min(1, Number(aiRuntimeConfig.timeoutRetries || 0)),
+          timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
+          signal
+        })
 
-      if (!nextSummary) {
-        return existingSummary
+        return normalizeMemorySummary(
+          completion?.json?.summary || completion?.json?.reply || completion?.rawText,
+          summaryMaxChars
+        )
       }
 
-      const lastCompressedMessage = messagesToCompress[messagesToCompress.length - 1]
-      const compressedThroughMessageId = normalizeTrimmedString(lastCompressedMessage?.messageId)
-      const keptMessageCount = keptMessages.length
-      const savedMemoryState = await writeConversationMemoryState(sessionId, {
-        summary: nextSummary,
-        compressedThroughMessageId,
-        compressedMessageCount: messagesToCompress.length,
-        keptMessageCount,
-        compressedTurnCount: turnsToCompress.length,
-        keptTurnCount: keptTurns.length,
-        reason: 'context_memory_threshold'
-      })
-      const memoryUpdatedAt = savedMemoryState?.updatedAt || nowIso()
+      let state = existingState
 
-      await sessionRepository.updateSession(sessionId, (draftSession) => {
-        draftSession.memorySummary = memoryStore && typeof memoryStore.readConversationMemory === 'function'
-          ? ''
-          : nextSummary
-        draftSession.memoryUpdatedAt = memoryUpdatedAt
-        draftSession.memoryMessageCount = 0
-        draftSession.memoryCompressedThroughMessageId = compressedThroughMessageId
-        draftSession.messages = keptMessages
-        draftSession.updatedAt = memoryUpdatedAt
-        return draftSession
-      })
+      if (!existingState) {
+        let initialSummary = fallbackState.summary
+
+        if (memoryStore && typeof memoryStore.readConversationMemory === 'function') {
+          const legacyState = await memoryStore.readConversationMemory(sessionId, { maxChars })
+          initialSummary = normalizeMemorySummary(legacyState?.summary, maxChars) || initialSummary
+        }
+
+        state = await conversationMemoryRuntime.initializeThread({
+          threadId: sessionId,
+          messages: fallbackMessages,
+          initialSummary,
+          summarize
+        })
+      } else {
+        const currentMessageId = normalizeTrimmedString(currentMessage?.messageId || currentMessage?.id)
+        const checkpointAlreadyContainsCurrentMessage = currentMessageId
+          && Array.isArray(existingState.messages)
+          && existingState.messages.some((message) => normalizeTrimmedString(message?.id) === currentMessageId)
+
+        if (!checkpointAlreadyContainsCurrentMessage && currentMessage?.content) {
+          state = await conversationMemoryRuntime.appendMessage(sessionId, currentMessage, summarize)
+        }
+      }
 
       audit(sessionId, 'system_action', {
-        action: 'memory_compacted',
-        compressedMessageCount: messagesToCompress.length,
-        compressedTurnCount: turnsToCompress.length,
-        keptMessageCount,
-        keptTurnCount: keptTurns.length,
-        thresholdTurns,
-        keepTurns,
-        countUnit: 'turn',
-        summaryLength: nextSummary.length,
-        storageType: savedMemoryState?.storageType || 'session',
-        model: selectedModel
+        action: 'conversation_memory_checkpointed',
+        threadId: sessionId,
+        messageCount: Array.isArray(state?.messages) ? state.messages.length : 0,
+        summaryLength: normalizeTrimmedString(state?.summary).length,
+        compressedTurnCount: state?.compressedTurnCount || 0,
+        keptTurnCount: state?.keptTurnCount || 0,
+        storageType: 'langgraph-sqlite-checkpoint'
       })
 
-      return nextSummary
+      return {
+        summary: normalizeMemorySummary(state?.summary, maxChars),
+        messages: toConversationHistory(state?.messages),
+        updatedAt: state?.updatedAt || nowIso(),
+        compressedTurnCount: Number(state?.compressedTurnCount || 0),
+        keptTurnCount: Number(state?.keptTurnCount || 0)
+      }
     } catch (error) {
       audit(sessionId, 'error', {
-        scope: 'memory_compaction',
+        scope: 'conversation_memory_checkpoint',
         message: error instanceof Error ? error.message : String(error || '')
       })
-      console.warn('[agent-runner] failed to compress conversation memory:', error instanceof Error ? error.message : error)
-      return existingSummary
+      console.warn('[agent-runner] failed to checkpoint conversation memory:', error instanceof Error ? error.message : error)
+      return fallbackState
     }
   }
 
@@ -2485,13 +2384,15 @@ export function createAgentRunner({
       embeddingAiId: requestedEmbeddingAiId,
       attachmentCount: requestedAttachments.length
     })
-    const conversationMemoryText = await ensureConversationMemory({
+    const conversationMemoryState = await ensureConversationMemory({
       sessionId,
       session,
       aiConfig,
       selectedModel,
+      currentMessage: latestUserMessage,
       signal: abortSignal
     })
+    const conversationMemoryText = conversationMemoryState.summary
     let userProfileText = ''
 
     if (aiRuntimeConfig?.userProfileMemoryEnabled && memoryStore && typeof memoryStore.readUserProfile === 'function') {
@@ -2506,9 +2407,10 @@ export function createAgentRunner({
       }
     }
 
-    const conversationHistory = toChatHistorySafe(
-      getRecentMessages(session.messages || [], aiRuntimeConfig.recentMessages)
-    )
+    const conversationMessages = aiRuntimeConfig?.contextMemoryEnabled
+      ? conversationMemoryState.messages
+      : getRecentMessages(session.messages || [], aiRuntimeConfig.recentMessages)
+    const conversationHistory = toChatHistorySafe(conversationMessages)
     const latestGoal = approvedPendingToolApproval?.goal
       ? String(approvedPendingToolApproval.goal)
       : String(latestUserMessage.content)
@@ -2619,9 +2521,7 @@ export function createAgentRunner({
     const skillMessageContent = createSkillMessageContent(activeSkills)
 
     if (skillMessageContent) {
-      await sessionRepository.appendToolMessage(sessionId, {
-        content: skillMessageContent
-      })
+      await appendConversationToolMessage(sessionId, skillMessageContent)
     }
 
     async function requestProtectedToolApproval(normalizedRequest, {
@@ -3104,14 +3004,12 @@ export function createAgentRunner({
         }
         taskSteps[taskSteps.length - 1] = failStep(toolStep, errorMessage)
 
-        await sessionRepository.appendToolMessage(sessionId, {
-          content: [
-            `Tool: ${executableRequest.name}`,
-            '状态：失败',
-            '',
-            errorMessage
-          ].join('\n')
-        })
+        await appendConversationToolMessage(sessionId, [
+          `Tool: ${executableRequest.name}`,
+          '状态：失败',
+          '',
+          errorMessage
+        ].join('\n'))
 
         pushSessionEvent(sessionId, 'tool.finished', {
           executionId: toolExecutionId,
@@ -3210,9 +3108,10 @@ export function createAgentRunner({
         })
       }
 
-      await sessionRepository.appendToolMessage(sessionId, {
-        content: createNormalizedToolMessageContent(toolExecution)
-      })
+      await appendConversationToolMessage(
+        sessionId,
+        createNormalizedToolMessageContent(toolExecution)
+      )
 
       pushSessionEvent(sessionId, 'tool.finished', {
         executionId: toolExecutionId,
@@ -3476,7 +3375,6 @@ export function createAgentRunner({
             workspaceContextText,
             attachmentContextText,
             ragContextText,
-            conversationMemoryText,
             userProfileText,
             currentDateContextText
           })
@@ -3498,6 +3396,7 @@ export function createAgentRunner({
             aiConfig,
             model: selectedModel,
             messages: loopMessages,
+            summary: conversationMemoryText,
             toolCatalog: langChainToolCatalog,
             maxToolIterations: remainingToolIterations,
             guardRound
@@ -3507,6 +3406,7 @@ export function createAgentRunner({
           aiConfig: agentAiConfig,
           model,
           messages,
+          summary,
           toolCatalog,
           maxToolIterations,
           guardRound
@@ -3514,6 +3414,7 @@ export function createAgentRunner({
           aiConfig: agentAiConfig,
           model,
           messages,
+          summary,
           toolCatalog,
           executeTool: executeToolRequest,
           requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,

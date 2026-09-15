@@ -1,6 +1,6 @@
 # Agent API
 
-`server/` 是 Agent Workspace 的独立 Node.js 20+ 后端服务，使用 LangGraph 显式状态图负责任务编排，并使用 LangChain Agent 作为单个 Agent 的模型与工具循环，同时保留项目原有的认证、会话持久化、工具安全边界、MCP、RAG 和 token 使用统计。
+`server/` 是 Agent Workspace 的独立 Node.js 22.5+ 后端服务，使用 LangGraph 显式状态图负责任务编排，并使用 LangChain Agent 作为单个 Agent 的模型与工具循环，同时保留项目原有的认证、会话持久化、工具安全边界、MCP、RAG 和 token 使用统计。
 
 ## 核心能力
 
@@ -14,6 +14,7 @@
 - AI 配置和 embedding 配置读取
 - token usage 持久化统计
 - LangGraph `agent -> tools -> agent` 状态图、LangChain Tool 适配、模型调用次数限制和工具调用次数限制
+- LangGraph SQLite Checkpoint 会话记忆：按 `thread_id` 持久化消息、滚动摘要和压缩状态；Checkpoint 是短期记忆的权威来源，应用会话记录仅用于界面、审计和首次迁移
 
 ## 主要接口
 
@@ -45,7 +46,7 @@
 
 ## 本地运行
 
-需要 Node.js 20 或更高版本。后端使用显式 LangGraph 状态图运行，不再提供旧的手写循环回退模式。
+需要 Node.js 22.5 或更高版本。后端使用显式 LangGraph 状态图运行，不再提供旧的手写循环回退模式。
 
 ```bash
 cd server

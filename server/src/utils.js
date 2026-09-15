@@ -160,7 +160,6 @@ export function createSessionRecord() {
     memorySummary: '',
     memoryUpdatedAt: null,
     memoryMessageCount: 0,
-    memoryCompressedThroughMessageId: '',
     workspaceFolder: `sessions/${sessionId}`,
     workspaceFiles: [],
     messages: [],

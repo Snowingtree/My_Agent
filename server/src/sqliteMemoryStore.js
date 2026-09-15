@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { normalizeTrimmedString, nowIso } from './utils.js'
@@ -66,6 +66,7 @@ export class SqliteMemoryStore {
     this.databasePath = normalizeTrimmedString(databasePath) || (this.memoryDir ? join(this.memoryDir, this.databaseFile) : '')
     this.legacyProfilePath = this.memoryDir ? join(this.memoryDir, this.profileFile) : ''
     this.didAttemptLegacyProfileMigration = false
+    this.pendingProfileWrite = Promise.resolve()
     this.db = null
 
     if (this.databasePath) {
@@ -233,6 +234,23 @@ export class SqliteMemoryStore {
       return ''
     }
 
+    if (this.legacyProfilePath) {
+      try {
+        const profileFromFile = sanitizeMemoryText(
+          await readFile(this.legacyProfilePath, 'utf8'),
+          this.maxProfileChars
+        )
+
+        if (profileFromFile) {
+          return profileFromFile
+        }
+      } catch (error) {
+        if (error?.code !== 'ENOENT') {
+          throw error
+        }
+      }
+    }
+
     await this.migrateLegacyProfileIfNeeded()
 
     const row = this.db.prepare('SELECT profile FROM user_profile_memory WHERE id = 1').get()
@@ -253,26 +271,39 @@ export class SqliteMemoryStore {
     const reason = normalizeTrimmedString(metadata?.reason)
     const timestamp = nowIso()
 
-    this.db.prepare(`
-      INSERT INTO user_profile_memory (id, profile, reason, created_at, updated_at)
-      VALUES (1, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        profile = excluded.profile,
-        reason = excluded.reason,
-        updated_at = excluded.updated_at
-    `).run(profile, reason, timestamp, timestamp)
+    this.pendingProfileWrite = this.pendingProfileWrite
+      .catch(() => {})
+      .then(async () => {
+        if (this.legacyProfilePath) {
+          await mkdir(dirname(this.legacyProfilePath), { recursive: true })
+          await writeFile(this.legacyProfilePath, `${profile}\n`, 'utf8')
+        }
 
-    this.recordEvent('user_profile_memory_updated', {
-      profileLength: profile.length,
-      reason
-    })
+        this.db.prepare(`
+          INSERT INTO user_profile_memory (id, profile, reason, created_at, updated_at)
+          VALUES (1, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            profile = excluded.profile,
+            reason = excluded.reason,
+            updated_at = excluded.updated_at
+        `).run(profile, reason, timestamp, timestamp)
+
+        this.recordEvent('user_profile_memory_updated', {
+          profileLength: profile.length,
+          reason,
+          profilePath: this.legacyProfilePath
+        })
+      })
+
+    await this.pendingProfileWrite
 
     return {
       ok: true,
       profile,
       updatedAt: timestamp,
       databasePath: this.databasePath,
-      storageType: 'sqlite',
+      profilePath: this.legacyProfilePath,
+      storageType: this.legacyProfilePath ? 'sqlite+markdown' : 'sqlite',
       reason
     }
   }
@@ -692,8 +723,9 @@ export class SqliteMemoryStore {
 
     return {
       enabled: true,
-      storageType: 'sqlite',
+      storageType: this.legacyProfilePath ? 'sqlite+markdown' : 'sqlite',
       databasePath: this.databasePath,
+      profilePath: this.legacyProfilePath,
       legacyProfilePath: this.legacyProfilePath,
       maxProfileChars: this.maxProfileChars,
       maxSummaryChars: this.maxSummaryChars,

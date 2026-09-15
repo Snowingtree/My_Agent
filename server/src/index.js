@@ -9,6 +9,7 @@ import { loadEnvFiles } from './env.js'
 import { createAuthToken, readBearerToken, verifyAuthToken } from './auth.js'
 import { getAiConfigById, insertAiConfig, loadAiConfigs, resolveModel, toPublicAiConfig, updateAiConfig } from './aiConfigs.js'
 import { createAgentRunner } from './agentRunner.js'
+import { createConversationMemoryRuntime } from './conversationMemoryRuntime.js'
 import { createMcpRegistry } from './mcpRegistry.js'
 import { createSqliteMemoryStore } from './sqliteMemoryStore.js'
 import { createRagStore } from './ragStore.js'
@@ -42,6 +43,12 @@ const auditLogger = createAuditLogger({
 const memoryStore = createSqliteMemoryStore({
   memoryDir: config.storage.memoryDir,
   maxProfileChars: config.ai.userProfileMemoryMaxChars,
+  maxSummaryChars: config.ai.contextMemoryMaxChars
+})
+const conversationMemoryRuntime = createConversationMemoryRuntime({
+  databasePath: join(config.storage.memoryDir, 'langgraph-checkpoints.sqlite'),
+  thresholdTurns: config.ai.contextMemoryThreshold,
+  keepTurns: config.ai.contextMemoryKeepMessages,
   maxSummaryChars: config.ai.contextMemoryMaxChars
 })
 
@@ -291,6 +298,7 @@ const agentRunner = createAgentRunner({
   toolRunner,
   ragStore,
   memoryStore,
+  conversationMemoryRuntime,
   auditLogger
 })
 
@@ -1182,16 +1190,23 @@ async function attachConversationMemoryState(item) {
     return item
   }
 
-  if (!memoryStore || typeof memoryStore.readConversationMemory !== 'function') {
-    return item
-  }
-
   try {
-    const memoryState = await memoryStore.readConversationMemory(item.sessionId, {
-      maxChars: config.ai.contextMemoryMaxChars
-    })
+    const checkpointState = conversationMemoryRuntime
+      ? await conversationMemoryRuntime.getState(item.sessionId)
+      : null
+    const memoryState = checkpointState
+      ? {
+          summary: checkpointState.summary || '',
+          updatedAt: checkpointState.updatedAt || null,
+          messageCount: Array.isArray(checkpointState.messages) ? checkpointState.messages.length : 0
+        }
+      : memoryStore && typeof memoryStore.readConversationMemory === 'function'
+        ? await memoryStore.readConversationMemory(item.sessionId, {
+            maxChars: config.ai.contextMemoryMaxChars
+          })
+        : null
 
-    if (!memoryState?.summary && !memoryState?.updatedAt) {
+    if (!memoryState?.summary && !memoryState?.updatedAt && !memoryState?.messageCount) {
       return item
     }
 
@@ -1199,8 +1214,7 @@ async function attachConversationMemoryState(item) {
       ...item,
       memorySummary: memoryState.summary || item.memorySummary || '',
       memoryUpdatedAt: memoryState.updatedAt || item.memoryUpdatedAt || null,
-      memoryCompressedThroughMessageId: memoryState.compressedThroughMessageId || item.memoryCompressedThroughMessageId || '',
-      memoryMessageCount: 0
+      memoryMessageCount: Number(memoryState.messageCount || 0)
     }
   } catch (error) {
     console.warn('[agent-api] failed to attach conversation memory:', error instanceof Error ? error.message : error)
@@ -2579,6 +2593,7 @@ async function handleRequest(request, response) {
         keepMessages: config.ai.contextMemoryKeepMessages,
         minBatchMessages: config.ai.contextMemoryMinBatchMessages,
         maxSummaryChars: config.ai.contextMemoryMaxChars,
+        checkpointStore: join(config.storage.memoryDir, 'langgraph-checkpoints.sqlite'),
         userProfileEnabled: Boolean(config.ai.userProfileMemoryEnabled),
         userProfile: memoryStatus
       },
@@ -2840,6 +2855,12 @@ async function shutdown(signal) {
     await auditLogger.shutdown()
   } catch (error) {
     console.warn('[agent-api] failed to flush audit logs:', error instanceof Error ? error.message : error)
+  }
+
+  try {
+    conversationMemoryRuntime.close()
+  } catch (error) {
+    console.warn('[agent-api] failed to close LangGraph checkpoint store:', error instanceof Error ? error.message : error)
   }
 
   server.close(() => {

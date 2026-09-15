@@ -203,7 +203,7 @@ export function createConfig() {
       streamResponses: normalizeBooleanEnv(process.env.AGENT_AI_STREAM_RESPONSES, true),
       recentMessages,
       contextMemoryEnabled: normalizeBooleanEnv(process.env.AGENT_CONTEXT_MEMORY_ENABLED, true),
-      contextMemoryThreshold: readNumberEnv('AGENT_CONTEXT_MEMORY_THRESHOLD', 20),
+      contextMemoryThreshold: readNumberEnv('AGENT_CONTEXT_MEMORY_THRESHOLD', 40),
       contextMemoryKeepMessages: readNumberEnv('AGENT_CONTEXT_MEMORY_KEEP_MESSAGES', 10),
       contextMemoryMinBatchMessages: readNumberEnv(
         'AGENT_CONTEXT_MEMORY_MIN_BATCH_TURNS',

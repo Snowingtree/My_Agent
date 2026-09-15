@@ -1,7 +1,7 @@
 import { BaseChatModel } from '@langchain/core/language_models/chat_models'
-import { AIMessage } from '@langchain/core/messages'
+import { AIMessage, SystemMessage } from '@langchain/core/messages'
 import { DynamicStructuredTool } from '@langchain/core/tools'
-import { END, START, MessagesAnnotation, StateGraph } from '@langchain/langgraph'
+import { Annotation, END, START, MessagesAnnotation, StateGraph } from '@langchain/langgraph'
 import { ToolNode, toolsCondition } from '@langchain/langgraph/prebuilt'
 import { createStructuredCompletion } from './llmClient.js'
 
@@ -10,6 +10,16 @@ const DEFAULT_TOOL_SCHEMA = {
   properties: {},
   additionalProperties: true
 }
+
+// Keep the conversation state explicit: recent messages plus the rolling
+// summary that represents older turns in the same session.
+const AgentState = Annotation.Root({
+  messages: MessagesAnnotation.spec.messages,
+  summary: Annotation({
+    reducer: (_, next) => normalizeString(next),
+    default: () => ''
+  })
+})
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -414,6 +424,7 @@ export async function runLangGraphAgent({
   timeoutRetryDelayMs,
   signal,
   maxToolIterations = 6,
+  summary = '',
   onDecision,
   structuredCompletion
 } = {}) {
@@ -447,7 +458,7 @@ export async function runLangGraphAgent({
   })
   const boundModel = chatModel.bindTools(tools)
   const toolNode = new ToolNode(tools)
-  const workflow = new StateGraph(MessagesAnnotation)
+  const workflow = new StateGraph(AgentState)
     .addNode('agent', async (state) => {
       if (runtimeState.stopped) {
         return {
@@ -468,7 +479,15 @@ export async function runLangGraphAgent({
         }
       }
 
-      const response = await boundModel.invoke(state.messages, { signal })
+      const modelMessages = state.summary
+        ? [
+            new SystemMessage({
+              content: `Short-term session summary:\n${state.summary}`
+            }),
+            ...state.messages
+          ]
+        : state.messages
+      const response = await boundModel.invoke(modelMessages, { signal })
       return { messages: [response] }
     })
     .addNode('tools', toolNode)
@@ -479,10 +498,14 @@ export async function runLangGraphAgent({
     })
     .addEdge('tools', 'agent')
     .compile()
-  const result = await workflow.invoke({ messages }, { signal })
+  const result = await workflow.invoke({
+    messages,
+    summary: normalizeString(summary)
+  }, { signal })
 
   return {
     messages: Array.isArray(result?.messages) ? result.messages : [],
+    summary: normalizeString(result?.summary),
     decision: runtimeState.lastDecision,
     stopped: runtimeState.stopped,
     limitReached: Boolean(runtimeState.limitReached),
