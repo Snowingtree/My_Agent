@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { appendFile, mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { Worker } from 'node:worker_threads'
 import { normalizeTrimmedString, nowIso } from './utils.js'
 
 const SENSITIVE_KEY_PATTERN = /(api[-_]?key|authorization|password|secret|access[-_]?token|refresh[-_]?token|auth[-_]?token|bearer|cookie|credential)/i
@@ -9,6 +10,40 @@ const DEFAULT_MAX_STRING_LENGTH = 1200
 const DEFAULT_MAX_QUEUE_SIZE = 5000
 const DEFAULT_BATCH_SIZE = 200
 const DEFAULT_FLUSH_INTERVAL_MS = 1000
+
+export const AUDIT_EVENT_CATEGORIES = Object.freeze([
+  'llm_input',
+  'tool_call',
+  'tool_result',
+  'ai_message',
+  'system_action'
+])
+
+function normalizeAuditEventCategory(eventName) {
+  const normalizedEventName = normalizeTrimmedString(eventName).toLowerCase()
+
+  if (normalizedEventName === 'llm_input') {
+    return 'llm_input'
+  }
+
+  if (
+    normalizedEventName === 'tool_call'
+    || normalizedEventName === 'mcp_call'
+    || normalizedEventName.startsWith('tool_approval_')
+  ) {
+    return 'tool_call'
+  }
+
+  if (normalizedEventName === 'tool_result' || normalizedEventName === 'mcp_result') {
+    return 'tool_result'
+  }
+
+  if (normalizedEventName === 'ai_message' || normalizedEventName === 'llm_final_text') {
+    return 'ai_message'
+  }
+
+  return 'system_action'
+}
 
 function toSafeFileName(value) {
   const normalized = normalizeTrimmedString(value)
@@ -95,7 +130,8 @@ function normalizeRecord(input = {}) {
     ts: nowIso(),
     ...sanitizedInput,
     sessionId,
-    event
+    event,
+    category: normalizeAuditEventCategory(event)
   }
 }
 
@@ -169,6 +205,11 @@ export class AuditLogger {
     this.closed = false
     this.dropCount = 0
     this.lastHashes = new Map()
+    this.writerWorker = null
+    this.writerRequestId = 0
+    this.pendingWriterRequests = new Map()
+
+    this.startWriterWorker()
 
     this.timer = setInterval(() => {
       this.scheduleFlush()
@@ -207,6 +248,85 @@ export class AuditLogger {
       event: 'user_message',
       contentPreview: createPreview(content),
       contentLength: String(content ?? '').length
+    })
+  }
+
+  startWriterWorker() {
+    try {
+      const worker = new Worker(new URL('./auditWriterWorker.js', import.meta.url), {
+        type: 'module',
+        execArgv: process.execArgv.filter((argument) => (
+          argument !== '--watch'
+          && argument !== '--watch-preserve-output'
+          && argument !== '--test'
+          && !argument.startsWith('--test-')
+        ))
+      })
+      worker.unref?.()
+      worker.on('message', (message) => {
+        const request = this.pendingWriterRequests.get(message?.requestId)
+
+        if (!request) {
+          return
+        }
+
+        this.pendingWriterRequests.delete(message.requestId)
+
+        if (message.type === 'error') {
+          request.reject(Object.assign(new Error(message.message || 'Audit writer failed.'), {
+            code: message.code
+          }))
+          return
+        }
+
+        request.resolve()
+      })
+      worker.on('error', (error) => {
+        for (const request of this.pendingWriterRequests.values()) {
+          request.reject(error)
+        }
+
+        this.pendingWriterRequests.clear()
+
+        if (this.writerWorker === worker) {
+          this.writerWorker = null
+        }
+      })
+      worker.on('exit', (code) => {
+        if (code !== 0 && this.writerWorker === worker) {
+          this.writerWorker = null
+        }
+      })
+      this.writerWorker = worker
+    } catch (error) {
+      console.warn('[audit] failed to start writer worker, using async file writes:', error instanceof Error ? error.message : error)
+    }
+  }
+
+  writeBatch(groupedLines) {
+    const writes = [...groupedLines.entries()].map(([filePath, lines]) => ({
+      filePath,
+      content: lines.join('')
+    }))
+
+    if (!writes.length) {
+      return Promise.resolve()
+    }
+
+    if (!this.writerWorker) {
+      return Promise.all(writes.map(({ filePath, content }) => appendFile(filePath, content, 'utf8')))
+        .then(() => undefined)
+    }
+
+    const requestId = ++this.writerRequestId
+
+    return new Promise((resolve, reject) => {
+      this.pendingWriterRequests.set(requestId, { resolve, reject })
+      this.writerWorker.postMessage({
+        type: 'append',
+        requestId,
+        writes
+      })
     })
   }
 
@@ -259,11 +379,7 @@ export class AuditLogger {
         groupedLines.set(filePath, lines)
       }
 
-      await Promise.all(
-        [...groupedLines.entries()].map(([filePath, lines]) => (
-          appendFile(filePath, lines.join(''), 'utf8')
-        ))
-      )
+      await this.writeBatch(groupedLines)
 
       for (const [filePath, hash] of pendingLastHashes) {
         this.lastHashes.set(filePath, hash)
@@ -331,6 +447,13 @@ export class AuditLogger {
 
     while (this.queue.length) {
       await this.flush()
+    }
+
+    const worker = this.writerWorker
+
+    if (worker) {
+      this.writerWorker = null
+      await worker.terminate()
     }
   }
 }

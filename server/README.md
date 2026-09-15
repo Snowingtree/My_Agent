@@ -15,6 +15,8 @@
 - token usage 持久化统计
 - LangGraph `agent -> tools -> agent` 状态图、LangChain Tool 适配、模型调用次数限制和工具调用次数限制
 - LangGraph SQLite Checkpoint 会话记忆：按 `thread_id` 持久化消息、滚动摘要和压缩状态；Checkpoint 是短期记忆的权威来源，应用会话记录仅用于界面、审计和首次迁移
+- 动态 Skill 两阶段凭证：`help` 读取当前说明并签发绑定会话、Skill 和说明版本的一次性 `help_token`，`run` 必须通过有效凭证校验
+- 5 类行为审计：`llm_input`、`tool_call`、`tool_result`、`ai_message`、`system_action`，JSONL 持久化由 Node Worker 线程异步写盘，并提供终端监控
 
 ## 主要接口
 
@@ -54,6 +56,17 @@ npm install
 cp .env.example .env
 npm run dev
 ```
+
+另开一个终端查看 Agent 行为日志：
+
+```bash
+cd server
+npm run audit:monitor
+# 只监控指定会话
+npm run audit:monitor -- session-id
+```
+
+日志记录会保留原始 `event` 名称，同时增加统一的 `category` 字段，因此现有审计页面仍能显示更细的事件，终端监控按 5 类行为聚合显示。
 
 生产环境建议使用 PM2 或 systemd：
 

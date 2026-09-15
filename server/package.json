@@ -19,6 +19,7 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "test": "node --test test"
+    "audit:monitor": "node src/auditMonitor.js",
+    "test": "node --test test/*.test.js"
   }
 }

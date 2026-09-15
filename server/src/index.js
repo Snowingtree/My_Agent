@@ -292,6 +292,7 @@ const agentRunner = createAgentRunner({
     publishSessionStreamEvent(sessionId, event)
   },
   skillRegistry,
+  skillHelpTokenTtlMs: config.skills.helpTokenTtlMs,
   sessionWorkspaces,
   runtimeConfig: config.runtime,
   workspaceConfig: config.workspace,
@@ -1270,6 +1271,7 @@ function parseAuditEventLine(line) {
     return {
       ts: '',
       event: 'parse_error',
+      category: 'system_action',
       message: 'Audit event line is not valid JSON.',
       raw: normalizedLine.slice(0, 500)
     }
@@ -1364,6 +1366,7 @@ async function handleListAuditSessions(response) {
       fileSizeBytes: fileStat.size,
       updatedAt: new Date(fileStat.mtimeMs).toISOString(),
       lastEvent: lastEvent?.event || '',
+      lastCategory: lastEvent?.category || '',
       lastEventAt: lastEvent?.ts || lastEvent?.time || ''
     })
   }
@@ -1376,6 +1379,7 @@ async function handleListAuditSessions(response) {
 async function handleListAuditEvents(response, requestUrl) {
   const sessionId = normalizeTrimmedString(requestUrl.searchParams.get('sessionId'))
   const eventFilter = normalizeTrimmedString(requestUrl.searchParams.get('event'))
+  const categoryFilter = normalizeTrimmedString(requestUrl.searchParams.get('category'))
   const limit = Math.max(
     1,
     Math.min(1000, Number.parseInt(requestUrl.searchParams.get('limit') || '300', 10) || 300)
@@ -1389,9 +1393,10 @@ async function handleListAuditEvents(response, requestUrl) {
   }
 
   const events = await readAuditEvents(sessionId)
-  const filteredEvents = eventFilter
-    ? events.filter((item) => normalizeTrimmedString(item?.event) === eventFilter)
-    : events
+  const filteredEvents = events.filter((item) => (
+    (!eventFilter || normalizeTrimmedString(item?.event) === eventFilter)
+    && (!categoryFilter || normalizeTrimmedString(item?.category) === categoryFilter)
+  ))
   const items = filteredEvents.slice(-limit)
   const eventTypes = [...new Set(events.map((item) => normalizeTrimmedString(item?.event)).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right))
@@ -1401,6 +1406,8 @@ async function handleListAuditEvents(response, requestUrl) {
     total: filteredEvents.length,
     returned: items.length,
     eventTypes,
+    eventCategories: [...new Set(events.map((item) => normalizeTrimmedString(item?.category)).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right)),
     items
   })
 }

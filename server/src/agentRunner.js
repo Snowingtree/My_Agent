@@ -5,6 +5,11 @@ import { runLangGraphAgent } from './langChainRuntime.js'
 import { createAgentTaskGraph } from './langGraphRuntime.js'
 import { createStructuredCompletion, createTextCompletion } from './llmClient.js'
 import {
+  consumeSkillHelpToken,
+  issueSkillHelpToken,
+  validateSkillHelpToken
+} from './skillHelpToken.js'
+import {
   createToolApprovalFingerprint,
   doesToolApprovalMatch,
   formatToolApprovalRequestMessage,
@@ -415,7 +420,7 @@ function buildActiveSkillPrompt(skills) {
       promptSections.push(`Skill purpose: ${skill.description}`)
     }
 
-    promptSections.push('Detailed Skill instructions are not loaded yet. If you need this Skill, call the skill tool with mode="help" first, then mode="run".')
+    promptSections.push('Detailed Skill instructions are not loaded yet. If you need this Skill, call the skill tool with mode="help" first, then call mode="run" with the help_token returned by help.')
 
     if (Array.isArray(skill.preferredTools) && skill.preferredTools.length) {
       promptSections.push(`After this Skill is running, prefer these tools or namespaces when relevant: ${skill.preferredTools.join(', ')}`)
@@ -511,11 +516,12 @@ function buildSkillCatalogPrompt(skills = [], selectedSkillIds = []) {
     '    "properties": {',
     '      "skillId": { "type": "string", "description": "The Skill ID to inspect or activate." },',
     '      "mode": { "type": "string", "enum": ["help", "run"], "description": "Use help first, then run." },',
+    '      "help_token": { "type": "string", "description": "The one-time token returned by help; required for run." },',
     '      "command": { "type": "string", "description": "Optional short natural-language instruction for how you intend to use this Skill." }',
     '    },',
     '    "required": ["skillId", "mode"]',
     '  }',
-    '  Usage rule: Skill summaries are visible initially, but detailed Skill instructions are lazy-loaded. A selected Skill is not active yet. If a Skill is selected or relevant, call skill with mode="help" first. Only after reading the help result may you call skill with mode="run". After run succeeds, continue with normal workspace tools under that Skill.',
+    '  Usage rule: Skill summaries are visible initially, but detailed Skill instructions are lazy-loaded. A selected Skill is not active yet. If a Skill is selected or relevant, call skill with mode="help" first. Only after reading the help result may you call skill with mode="run". The run call must include the exact help_token returned by help; never invent or reuse a token after it has been consumed. After run succeeds, continue with normal workspace tools under that Skill.',
     '  Available Skill summaries:',
     ...skillLines
   ].join('\n')
@@ -563,7 +569,7 @@ function buildLangChainToolCatalog({
   if (Array.isArray(skills) && skills.length) {
     catalog.unshift({
       name: SKILL_TOOL_NAME,
-      description: 'Load Skill instructions with mode="help", then activate that Skill with mode="run".',
+      description: 'Load Skill instructions with mode="help", then activate that Skill with mode="run" using the returned one-time help_token.',
       source: 'local',
       inputSchema: {
         type: 'object',
@@ -576,6 +582,10 @@ function buildLangChainToolCatalog({
             type: 'string',
             enum: ['help', 'run'],
             description: 'Use help before run.'
+          },
+          help_token: {
+            type: 'string',
+            description: 'The one-time token returned by help; required for run.'
           },
           command: {
             type: 'string',
@@ -1362,6 +1372,46 @@ function normalizeToolRequest(rawTool) {
   return { name, args }
 }
 
+function getSkillHelpToken(args = {}) {
+  return normalizeTrimmedString(args?.help_token || args?.helpToken)
+}
+
+function sanitizeToolArgsForAudit(toolName, args = {}) {
+  if (toolName !== SKILL_TOOL_NAME || !args || typeof args !== 'object' || Array.isArray(args)) {
+    return args
+  }
+
+  const sanitizedArgs = { ...args }
+
+  if (Object.hasOwn(sanitizedArgs, 'help_token')) {
+    sanitizedArgs.help_token = '[redacted]'
+  }
+
+  if (Object.hasOwn(sanitizedArgs, 'helpToken')) {
+    sanitizedArgs.helpToken = '[redacted]'
+  }
+
+  return sanitizedArgs
+}
+
+function sanitizeToolExecutionForAudit(toolExecution) {
+  if (toolExecution?.tool !== SKILL_TOOL_NAME) {
+    return toolExecution
+  }
+
+  return {
+    ...toolExecution,
+    args: sanitizeToolArgsForAudit(toolExecution.tool, toolExecution.args),
+    result: toolExecution.result && typeof toolExecution.result === 'object'
+      ? {
+          ...toolExecution.result,
+          ...(Object.hasOwn(toolExecution.result, 'help_token') ? { help_token: '[redacted]' } : {}),
+          ...(Object.hasOwn(toolExecution.result, 'helpToken') ? { helpToken: '[redacted]' } : {})
+        }
+      : toolExecution.result
+  }
+}
+
 function createToolTranscriptMessages(toolExecution, {
   thoughtSummary = ''
 } = {}) {
@@ -1851,6 +1901,7 @@ export function createAgentRunner({
   loadAiConfigs,
   publishSessionEvent,
   skillRegistry,
+  skillHelpTokenTtlMs = 300000,
   sessionWorkspaces,
   runtimeConfig,
   workspaceConfig,
@@ -2741,13 +2792,17 @@ export function createAgentRunner({
         || executableRequest.name === MCP_GATEWAY_TOOL_NAME
       ) && !virtualProtectedToolExecution
       const isMemoryTool = executableRequest.name === MEMORY_TOOL_NAME
+      const auditToolRequest = {
+        name: executableRequest.name,
+        args: sanitizeToolArgsForAudit(executableRequest.name, executableRequest.args)
+      }
       const auditArgs = isMemoryTool
         ? {
             action: normalizeTrimmedString(executableRequest.args?.action),
             reason: normalizeTrimmedString(executableRequest.args?.reason),
             profileLength: String(executableRequest.args?.profile || '').length
           }
-        : executableRequest.args
+        : auditToolRequest.args
       audit(sessionId, isMcpTool ? 'mcp_call' : 'tool_call', {
         executionId: toolExecutionId,
         tool: executableRequest.name,
@@ -2762,7 +2817,7 @@ export function createAgentRunner({
       )
       pushSessionEvent(sessionId, 'tool.started', {
         executionId: toolExecutionId,
-        content: createRunningToolMessageContent(executableRequest)
+        content: createRunningToolMessageContent(auditToolRequest)
       })
 
       const toolStep = createTaskStep({
@@ -2806,59 +2861,114 @@ export function createAgentRunner({
             throw new Error('Skill tool requires mode to be either "help" or "run".')
           }
 
+          const helpToken = getSkillHelpToken(executableRequest.args)
           const previousState = skillRuntimeState.get(skill.skillId) || {
             helped: false,
             running: false,
-            instructionLength: 0
+            instructionLength: 0,
+            helpToken: null
           }
 
-          if (mode === 'run' && !previousState.helped) {
-            toolExecution = {
-              tool: SKILL_TOOL_NAME,
-              args: {
-                skillId,
-                mode,
-                ...(command ? { command } : {})
-              },
-              result: {
-                skillId: skill.skillId,
-                name: skill.name,
-                description: skill.description,
-                mode,
-                command,
-                instruction: '',
-                instructionLength: 0,
-                helped: false,
-                running: false,
-                blocked: true,
-                reason: 'help_required'
-              },
-              summary: `Skill ${skill.name || skill.skillId} requires mode="help" before mode="run".`,
-              message: `Skill ${skill.name || skill.skillId} run was not activated because help has not been read yet.`,
-              status: 'success',
-              durationMs: Date.now() - toolStartedAt
+          if (mode === 'run') {
+            const instruction = normalizeTrimmedString(
+              typeof skillRegistry?.loadSkillInstruction === 'function'
+                ? skillRegistry.loadSkillInstruction(skill.skillId)
+                : ''
+            )
+            const tokenValidation = validateSkillHelpToken(previousState.helpToken, {
+              token: helpToken,
+              threadId: sessionId,
+              skillId: skill.skillId,
+              instruction
+            })
+
+            if (!tokenValidation.ok) {
+              toolExecution = {
+                tool: SKILL_TOOL_NAME,
+                args: {
+                  skillId,
+                  mode,
+                  ...(command ? { command } : {})
+                },
+                result: {
+                  skillId: skill.skillId,
+                  name: skill.name,
+                  description: skill.description,
+                  mode,
+                  command,
+                  instruction: '',
+                  instructionLength: 0,
+                  helped: previousState.helped,
+                  running: previousState.running,
+                  blocked: true,
+                  reason: tokenValidation.reason
+                },
+                summary: `Skill ${skill.name || skill.skillId} run was blocked: ${tokenValidation.reason}.`,
+                message: `Skill ${skill.name || skill.skillId} run requires a valid current help_token.`,
+                status: 'success',
+                durationMs: Date.now() - toolStartedAt
+              }
+            } else {
+              consumeSkillHelpToken(previousState.helpToken)
+              const nextState = {
+                ...previousState,
+                helped: true,
+                running: true,
+                instructionLength: instruction.length,
+                helpToken: null
+              }
+              skillRuntimeState.set(skill.skillId, nextState)
+
+              toolExecution = {
+                tool: SKILL_TOOL_NAME,
+                args: {
+                  skillId,
+                  mode,
+                  ...(command ? { command } : {})
+                },
+                result: {
+                  skillId: skill.skillId,
+                  name: skill.name,
+                  description: skill.description,
+                  mode,
+                  command,
+                  instruction: '',
+                  instructionLength: instruction.length,
+                  helpLength: 0,
+                  truncated: false,
+                  helped: nextState.helped,
+                  running: nextState.running
+                },
+                summary: `Skill ${skill.name || skill.skillId} is now running for this task.`,
+                message: `Skill ${skill.name || skill.skillId} run mode activated.`,
+                status: 'success',
+                durationMs: Date.now() - toolStartedAt
+              }
             }
           } else {
-            const instruction = mode === 'help'
-              ? normalizeTrimmedString(
-                typeof skillRegistry?.loadSkillInstruction === 'function'
-                  ? skillRegistry.loadSkillInstruction(skill.skillId)
-                  : ''
-              )
-              : ''
+            const instruction = normalizeTrimmedString(
+              typeof skillRegistry?.loadSkillInstruction === 'function'
+                ? skillRegistry.loadSkillInstruction(skill.skillId)
+                : ''
+            )
 
-            if (mode === 'help' && !instruction) {
+            if (!instruction) {
               throw new Error(`Skill "${skillId}" has no loadable instruction.`)
             }
 
-            const helpInstruction = mode === 'help' ? buildSkillHelpText(instruction) : ''
-            const instructionLength = mode === 'help'
-              ? instruction.length
-              : Number(previousState.instructionLength || 0)
+            const helpInstruction = buildSkillHelpText(instruction)
+            const tokenRecord = issueSkillHelpToken({
+              threadId: sessionId,
+              skillId: skill.skillId,
+              instruction,
+              ttlMs: skillHelpTokenTtlMs
+            })
             const nextState = {
-              helped: previousState.helped || mode === 'help',
-              running: previousState.running || mode === 'run',
-              instructionLength
+              ...previousState,
+              helped: true,
+              running: previousState.running,
+              instructionLength: instruction.length,
+              helpToken: tokenRecord
             }
             skillRuntimeState.set(skill.skillId, nextState)
 
@@ -2875,19 +2985,17 @@ export function createAgentRunner({
                 description: skill.description,
                 mode,
                 command,
-                instruction: mode === 'help' ? helpInstruction : '',
-                instructionLength,
-                helpLength: mode === 'help' ? helpInstruction.length : 0,
-                truncated: mode === 'help' ? helpInstruction.length < instruction.length : false,
+                instruction: helpInstruction,
+                instructionLength: instruction.length,
+                helpLength: helpInstruction.length,
+                truncated: helpInstruction.length < instruction.length,
+                help_token: tokenRecord.token,
+                help_token_expires_at: tokenRecord.expiresAt,
                 helped: nextState.helped,
                 running: nextState.running
               },
-              summary: mode === 'help'
-                ? `Loaded Skill help for ${skill.name || skill.skillId}.`
-                : `Skill ${skill.name || skill.skillId} is now running for this task.`,
-              message: mode === 'help'
-                ? `Skill ${skill.name || skill.skillId} help loaded.`
-                : `Skill ${skill.name || skill.skillId} run mode activated.`,
+              summary: `Loaded Skill help for ${skill.name || skill.skillId}.`,
+              message: `Skill ${skill.name || skill.skillId} help loaded. Use the returned help_token once with mode="run" before it expires.`,
               status: 'success',
               durationMs: Date.now() - toolStartedAt
             }
@@ -3049,7 +3157,7 @@ export function createAgentRunner({
         status: toolExecution.status || 'success',
         durationMs: toolExecution.durationMs,
         summary: toolExecution.summary,
-        result: toolExecution.result
+        result: sanitizeToolExecutionForAudit(toolExecution).result
       })
       if (protectedTool) {
         audit(sessionId, 'system_action', {
@@ -3439,7 +3547,12 @@ export function createAgentRunner({
               action: decision.action,
               thoughtSummary: decision.thoughtSummary,
               summary: decisionSummary,
-              tool: decision.tool,
+              tool: decision.tool
+                ? {
+                    ...decision.tool,
+                    args: sanitizeToolArgsForAudit(decision.tool.name, decision.tool.args)
+                  }
+                : decision.tool,
               usage: decision.usage
             })
 

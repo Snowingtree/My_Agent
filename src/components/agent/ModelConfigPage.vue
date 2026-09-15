@@ -335,6 +335,7 @@ const tokenUsageSummary = ref({
   outputTokens: 0,
   totalTokens: 0
 })
+
 const auditExplorerRef = ref(null)
 
 const isLoadingAi = ref(false)
@@ -693,6 +694,7 @@ async function ensureSectionLoaded(section, force = false) {
   if (section === 'settings-audit' && force) {
     await auditExplorerRef.value?.refresh?.()
   }
+
 }
 
 async function refreshActiveSection() {
