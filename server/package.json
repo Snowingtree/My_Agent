@@ -3,14 +3,20 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
+    "@langchain/core": "^1.2.9",
+    "langchain": "^1.5.10",
     "mammoth": "^1.11.0",
     "mysql2": "^3.20.0",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "zod": "^4.5.4"
   },
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "test": "node test/llmClient.test.js"
+    "test": "node --test test/*.test.js"
   }
 }

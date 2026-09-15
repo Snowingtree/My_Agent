@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { analyzeCommandPolicy } from './commandPolicy.js'
+import { runLangChainAgent } from './langChainRuntime.js'
 import { createStructuredCompletion, createTextCompletion } from './llmClient.js'
 import {
   createToolApprovalFingerprint,
@@ -587,6 +588,75 @@ function buildToolPromptWithSkillLoader(toolPromptText, skillCatalogPrompt, memo
     normalizeTrimmedString(memoryToolPrompt),
     normalizeTrimmedString(toolPromptText)
   ].filter(Boolean).join('\n')
+}
+
+function buildLangChainToolCatalog({
+  toolRunner,
+  mcpToolPrefixes = [],
+  skills = [],
+  memoryEnabled = false
+} = {}) {
+  const catalog = toolRunner.getToolCatalog({
+    skill: null,
+    mcpToolPrefixes
+  })
+
+  if (Array.isArray(skills) && skills.length) {
+    catalog.unshift({
+      name: SKILL_TOOL_NAME,
+      description: 'Load Skill instructions with mode="help", then activate that Skill with mode="run".',
+      source: 'local',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          skillId: {
+            type: 'string',
+            description: 'The Skill ID to inspect or activate.'
+          },
+          mode: {
+            type: 'string',
+            enum: ['help', 'run'],
+            description: 'Use help before run.'
+          },
+          command: {
+            type: 'string',
+            description: 'Optional short instruction describing how the Skill will be used.'
+          }
+        },
+        required: ['skillId', 'mode'],
+        additionalProperties: false
+      }
+    })
+  }
+
+  if (memoryEnabled) {
+    catalog.unshift({
+      name: MEMORY_TOOL_NAME,
+      description: 'Persist a complete merged long-term user profile when the user provides a durable preference or explicitly asks the agent to remember something.',
+      source: 'local',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['save_user_profile']
+          },
+          profile: {
+            type: 'string',
+            description: 'The complete updated profile in concise Markdown.'
+          },
+          reason: {
+            type: 'string',
+            description: 'Short reason for the update.'
+          }
+        },
+        required: ['action', 'profile'],
+        additionalProperties: false
+      }
+    })
+  }
+
+  return catalog
 }
 
 function isMcpToolName(toolName) {
@@ -3370,11 +3440,282 @@ export function createAgentRunner({
       return result.ok
     }
 
+    async function runLangChainTask() {
+      const allSkills = skillRegistry && typeof skillRegistry.listSkills === 'function'
+        ? skillRegistry.listSkills()
+        : activeSkills
+      const langChainToolCatalog = buildLangChainToolCatalog({
+        toolRunner,
+        mcpToolPrefixes: activeMcpToolPrefixes,
+        skills: allSkills,
+        memoryEnabled: Boolean(aiRuntimeConfig?.userProfileMemoryEnabled)
+      })
+      let remainingToolIterations = Math.max(1, runtimeConfig.maxToolIterations)
+      let lastDecision = null
+      let lastUsage = null
+
+      for (let guardRound = 0; guardRound < 3; guardRound += 1) {
+        throwIfCancelled()
+        throwIfTaskTimedOut()
+        const workspaceContextText = await buildWorkspaceSnapshotText({
+          sessionId,
+          latestGoal,
+          changedFiles: executionState.changedFiles,
+          sessionRepository,
+          sessionWorkspaces
+        })
+        const loopMessages = buildAgentLoopMessages({
+          latestGoal,
+          conversationHistory,
+          requireFileChanges: fileChangesRequired,
+          toolMessages,
+          toolPromptText: getAvailableToolPromptText(),
+          systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+          remainingIterations: remainingToolIterations,
+          workspaceContextText,
+          attachmentContextText,
+          ragContextText,
+          conversationMemoryText,
+          userProfileText,
+          currentDateContextText
+        })
+
+        audit(sessionId, 'llm_input', {
+          stage: 'langchain_agent',
+          guardRound,
+          model: selectedModel,
+          messageCount: loopMessages.length,
+          toolMessageCount: toolMessages.length,
+          toolCount: langChainToolCatalog.length,
+          ragContext: Boolean(ragContextText),
+          memoryContext: Boolean(conversationMemoryText),
+          userProfileMemoryContext: Boolean(userProfileText)
+        })
+
+        const langChainResult = await runLangChainAgent({
+          aiConfig,
+          model: selectedModel,
+          messages: loopMessages,
+          toolCatalog: langChainToolCatalog,
+          executeTool: executeToolRequest,
+          requestTimeoutMs: aiRuntimeConfig.requestTimeoutMs,
+          idleTimeoutMs: aiRuntimeConfig.idleTimeoutMs,
+          streamResponses: aiRuntimeConfig.streamResponses,
+          timeoutRetries: aiRuntimeConfig.timeoutRetries,
+          timeoutRetryDelayMs: aiRuntimeConfig.timeoutRetryDelayMs,
+          signal: abortSignal,
+          maxToolIterations: remainingToolIterations,
+          onDecision: async (decision) => {
+            lastDecision = decision
+            lastUsage = decision.usage || lastUsage
+            const decisionSummary = getDecisionProgressSummary({
+              summary: decision.summary,
+              thought_summary: decision.thoughtSummary
+            })
+
+            audit(sessionId, 'llm_decision', {
+              stage: 'langchain_agent',
+              guardRound,
+              model: selectedModel,
+              modelCall: decision.modelCall,
+              action: decision.action,
+              thoughtSummary: decision.thoughtSummary,
+              summary: decisionSummary,
+              tool: decision.tool,
+              usage: decision.usage
+            })
+
+            if (decision.action === 'tool') {
+              taskSteps[0] = completeStep(
+                taskSteps[0],
+                decisionSummary || '已分析目标，开始检查工作区。'
+              )
+            }
+          }
+        })
+
+        if (langChainResult.stopped) {
+          return
+        }
+
+        remainingToolIterations = Math.max(
+          0,
+          remainingToolIterations - Number(langChainResult.toolCalls || 0)
+        )
+        lastDecision = langChainResult.decision || lastDecision
+        lastUsage = langChainResult.usage.at(-1) || lastUsage
+
+        if (lastDecision?.action === 'ask_user') {
+          const reply = normalizeTrimmedString(lastDecision.reply) || '我还缺少一项关键信息，你可以再补充一点吗？'
+          const waitingSummary = getDecisionProgressSummary({
+            summary: lastDecision.summary,
+            thought_summary: lastDecision.thoughtSummary
+          }) || '当前目标还需要补充信息。'
+          const finalizedSteps = finalizeRunningSteps(taskSteps, waitingSummary)
+
+          await sessionRepository.updateSession(sessionId, (draftSession) => {
+            draftSession.task = {
+              ...draftSession.task,
+              taskId,
+              status: 'waiting_for_user',
+              summary: waitingSummary,
+              steps: finalizedSteps,
+              completedAt: nowIso(),
+              updatedAt: nowIso()
+            }
+
+            return draftSession
+          })
+
+          publishTaskProgress(sessionId, waitingSummary, selectedModel)
+          await appendAssistantReplyWithStreaming(sessionId, {
+            content: reply,
+            model: selectedModel,
+            usage: lastUsage
+          })
+          return
+        }
+
+        const autoVerification = await maybeRunAutoVerification()
+
+        if (autoVerification.failedTask || autoVerification.waitingForApproval) {
+          return
+        }
+
+        const manualSkillsNeedingRun = manualSkillIds.filter((skillId) => (
+          !skillRuntimeState.get(skillId)?.running
+        ))
+        let correctionMessage = ''
+
+        if (manualSkillsNeedingRun.length) {
+          correctionMessage = [
+            `The user manually selected Skill(s): ${manualSkillsNeedingRun.join(', ')}.`,
+            'Do not finish yet. For each selected Skill, call "skill" with mode="help" and then mode="run".'
+          ].join('\n')
+        } else if (
+          aiRuntimeConfig?.userProfileMemoryEnabled
+          && looksLikeUserProfileMemoryRequest(latestGoal)
+          && !executionState.updatedUserProfileMemory
+        ) {
+          correctionMessage = [
+            'The latest user message contains an explicit durable memory or preference request.',
+            'Do not finish yet. Call "memory" with action="save_user_profile" and a complete merged profile.'
+          ].join('\n')
+        } else if (
+          executionState.modifiedWorkspace
+          && verificationCommands.length
+          && executionState.verificationFailed
+          && !executionState.verifiedAfterModification
+        ) {
+          correctionMessage = [
+            'The latest verification command failed after the workspace change.',
+            'Inspect the previous tool result, apply the smallest fix, and verify again before finishing.'
+          ].join('\n')
+        } else if (fileChangesRequired && !executionState.modifiedWorkspace) {
+          correctionMessage = [
+            'The user asked for real file changes, but no file has been changed.',
+            'Inspect the workspace and use a write tool now, or ask one blocking clarification question.'
+          ].join('\n')
+        } else if (
+          executionState.modifiedWorkspace
+          && requiredCompanionExtensions.length
+          && !hasRequiredCompanionChanges(requiredCompanionExtensions, executionState.changedFiles)
+        ) {
+          correctionMessage = [
+            `The task requires companion files: ${requiredCompanionExtensions.join(', ')}.`,
+            'Create or update the missing companion file before finishing.'
+          ].join('\n')
+        }
+
+        if (correctionMessage && guardRound < 2 && remainingToolIterations > 0) {
+          toolMessages.push({
+            role: 'user',
+            content: correctionMessage
+          })
+          publishTaskProgress(sessionId, 'LangChain 正在根据执行约束继续处理任务。', selectedModel)
+          await sleep(runtimeConfig.stepDelayMs)
+          continue
+        }
+
+        if (correctionMessage) {
+          throw new Error(`LangChain agent stopped before satisfying the task guard: ${correctionMessage}`)
+        }
+
+        const completionSummary = getDecisionProgressSummary({
+          summary: lastDecision?.summary,
+          thought_summary: lastDecision?.thoughtSummary
+        }) || (executionState.modifiedWorkspace ? '已基于当前工作区结果完成答复。' : '任务已完成。')
+        const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
+        finalizedSteps.push(createFinalReplyStep(completionSummary))
+
+        await sessionRepository.updateSession(sessionId, (draftSession) => {
+          draftSession.task = {
+            ...draftSession.task,
+            taskId,
+            status: 'completed',
+            summary: completionSummary,
+            steps: finalizedSteps,
+            completedAt: nowIso(),
+            updatedAt: nowIso()
+          }
+
+          return draftSession
+        })
+        audit(sessionId, 'system_action', {
+          action: 'task_completed',
+          runtime: 'langchain',
+          taskId,
+          summary: completionSummary,
+          changedFiles: executionState.changedFiles,
+          verifiedAfterModification: executionState.verifiedAfterModification
+        })
+
+        publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
+
+        const finalWorkspaceContextText = await buildWorkspaceSnapshotText({
+          sessionId,
+          latestGoal,
+          changedFiles: executionState.changedFiles,
+          sessionRepository,
+          sessionWorkspaces
+        })
+        await appendAssistantReplyFromTextCompletion(sessionId, {
+          aiConfig,
+          model: selectedModel,
+          signal: abortSignal,
+          messages: buildFinalTextMessages({
+            latestGoal,
+            conversationHistory,
+            fileChangesRequired,
+            modifiedWorkspace: executionState.modifiedWorkspace,
+            toolMessages,
+            systemPrompt: [aiConfig.systemPrompt, activeSkillPrompt].filter(Boolean).join('\n\n'),
+            workspaceContextText: finalWorkspaceContextText,
+            attachmentContextText,
+            ragContextText,
+            conversationMemoryText,
+            userProfileText,
+            currentDateContextText
+          }),
+          fileChangesRequired,
+          modifiedWorkspace: executionState.modifiedWorkspace,
+          changedFiles: executionState.changedFiles,
+          verifiedAfterModification: executionState.verifiedAfterModification
+        })
+        return
+      }
+    }
+
     await sleep(runtimeConfig.stepDelayMs)
     throwIfCancelled()
     throwIfTaskTimedOut()
 
     try {
+      if (runtimeConfig.agentMode !== 'legacy') {
+        await runLangChainTask()
+        return
+      }
+
       for (let iteration = 0; iteration < runtimeConfig.maxToolIterations; iteration += 1) {
         throwIfCancelled()
         throwIfTaskTimedOut()

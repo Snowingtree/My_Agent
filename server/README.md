@@ -1,6 +1,6 @@
 # Agent API
 
-`server/` 是 Agent Workspace 的独立 Node.js 后端服务，负责认证、会话持久化、Agent 执行循环、文件工具、MCP、RAG 和 token 使用统计。
+`server/` 是 Agent Workspace 的独立 Node.js 20+ 后端服务，使用 LangChain.js `createAgent` 负责模型与工具执行循环，同时保留项目原有的认证、会话持久化、工具安全边界、MCP、RAG 和 token 使用统计。
 
 ## 核心能力
 
@@ -13,6 +13,7 @@
 - RAG 知识库、文档上传、向量化、检索
 - AI 配置和 embedding 配置读取
 - token usage 持久化统计
+- LangChain Tool 适配、模型调用次数限制和工具调用次数限制
 
 ## 主要接口
 
@@ -43,6 +44,8 @@
 - `GET /api/integrations/lark/chats`
 
 ## 本地运行
+
+需要 Node.js 20 或更高版本。默认执行模式是 `langchain`；如需临时排障，可以设置 `AGENT_RUNTIME_MODE=legacy` 回退到旧循环。
 
 ```bash
 cd server

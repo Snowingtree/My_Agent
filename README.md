@@ -16,7 +16,7 @@
 ## 技术栈
 
 - Frontend: Vue 3, Vite, Axios, highlight.js
-- Backend: Node.js HTTP server, mysql2, pg, mammoth
+- Backend: Node.js 20+, LangChain.js, mysql2, pg, mammoth
 - Storage: JSON session files, PostgreSQL + pgvector, MySQL model config table
 - Integrations: MCP stdio/HTTP client, Feishu/Lark MCP
 
@@ -44,7 +44,8 @@ Browser UI
   ▼
 Agent API
   ├─ Session store
-  ├─ Agent runner
+  ├─ LangChain createAgent runtime
+  ├─ Tool safety harness
   ├─ Built-in file tools
   ├─ Skill loader
   ├─ MCP registry
@@ -61,6 +62,8 @@ Agent API
 ## 快速开始
 
 ### 1. 安装依赖
+
+需要 Node.js 20 或更高版本。
 
 ```bash
 npm install
@@ -155,7 +158,7 @@ location ^~ /agent-api/ {
 
 可以写成：
 
-> Agent Workspace：一个支持多模型配置、会话级文件读写、Skills 扩展、MCP 工具调用和 RAG 知识库检索的 Web Agent 平台。项目实现了独立 Node.js Agent API、Vue 工作台界面、工具调用可视化、会话文件隔离、token 使用统计和 PostgreSQL pgvector 向量检索。
+> Agent Workspace：一个基于 LangChain.js 的 Web Agent 平台，支持多模型配置、会话级文件读写、Skills 扩展、MCP 工具调用和 RAG 知识库检索。项目使用 `createAgent` 组织模型与工具循环，并保留审批、文件隔离、审计、token 使用统计和 PostgreSQL pgvector 向量检索等工程化能力。
 
 ## License
 

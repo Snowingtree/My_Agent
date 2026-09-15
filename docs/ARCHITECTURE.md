@@ -25,13 +25,15 @@ src/components/agent/
 
 ## Backend
 
-The backend is a Node.js HTTP service. It avoids framework coupling and keeps the Agent logic in explicit modules.
+The backend is a Node.js HTTP service. LangChain.js owns the model/tool Agent loop, while the existing application modules remain the execution and security harness.
 
 Important modules:
 
 ```text
 server/src/index.js              # HTTP routes and bootstrap
-server/src/agentRunner.js        # Agent loop and model interaction
+server/src/agentRunner.js        # Session orchestration and safety harness
+server/src/langChainRuntime.js   # LangChain model adapter, tools, and createAgent loop
+server/src/llmClient.js          # OpenAI/Anthropic compatible model gateway
 server/src/toolRunner.js         # Built-in and MCP tool execution
 server/src/workspace.js          # Workspace file operations
 server/src/sessionStore.js       # Session persistence
@@ -50,12 +52,16 @@ User message
   -> frontend sends selected aiId/model/skills/mcp/rag/embedding
   -> backend loads session and workspace state
   -> optional RAG retrieval injects knowledge context
-  -> Agent runner asks model for structured action
+  -> LangChain createAgent asks the model for a structured tool call
+  -> LangChain Tool adapters delegate to the existing safety harness
   -> tool runner executes built-in or MCP tools
+  -> LangChain feeds the tool observation back to the model
   -> file changes update the session workspace
   -> final response and tool events stream to frontend
   -> session, token usage, and workspace metadata persist
 ```
+
+`AGENT_RUNTIME_MODE=langchain` is the default. `legacy` keeps the previous custom loop as a temporary rollback path. The LangChain-compatible chat model intentionally reuses `llmClient.js`, so existing OpenAI-compatible gateways and Anthropic Messages configurations continue to work without provider-specific rewrites.
 
 ## Storage
 
