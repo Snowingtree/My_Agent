@@ -13,6 +13,10 @@ const AgentTaskState = Annotation.Root({
     reducer: (_, next) => next,
     default: () => 0
   }),
+  preparedAgent: Annotation({
+    reducer: (_, next) => next,
+    default: () => null
+  }),
   lastDecision: Annotation({
     reducer: (_, next) => next,
     default: () => null
@@ -41,7 +45,7 @@ const AgentTaskState = Annotation.Root({
 
 function routeAfterAgent(state) {
   if (state.terminalReason === 'continue') {
-    return 'agent'
+    return 'prepare'
   }
 
   return 'finalize'
@@ -66,12 +70,19 @@ export function createAgentTaskGraph({
   }
 
   const graph = new StateGraph(AgentTaskState)
-    .addNode('agent', async (state) => {
-      const prepared = await prepareAgent({
+    .addNode('prepare', async (state) => {
+      const preparedAgent = await prepareAgent({
         guardRound: state.guardRound,
         remainingToolIterations: state.remainingToolIterations
       })
-      const agentResult = await runAgent(prepared)
+
+      return {
+        preparedAgent,
+        phase: 'agent'
+      }
+    })
+    .addNode('agent', async (state) => {
+      const agentResult = await runAgent(state.preparedAgent)
 
       return {
         agentResult,
@@ -120,14 +131,14 @@ export function createAgentTaskGraph({
 
       return { phase: 'done' }
     })
-    .addEdge(START, 'agent')
+    .addEdge(START, 'prepare')
+    .addEdge('prepare', 'agent')
     .addEdge('agent', 'inspect')
     .addConditionalEdges('inspect', routeAfterAgent, {
-      agent: 'agent',
+      prepare: 'prepare',
       finalize: 'finalize'
     })
     .addEdge('finalize', END)
 
   return graph.compile()
 }
-
