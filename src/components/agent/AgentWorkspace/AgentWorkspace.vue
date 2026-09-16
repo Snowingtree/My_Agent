@@ -3970,7 +3970,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: grid;
   align-content: start;
-  gap: 26px;
+  gap: 18px;
   overflow-y: auto;
   overflow-x: hidden;
   padding:
@@ -4107,6 +4107,10 @@ onBeforeUnmount(() => {
 .agent-message--tool .agent-message__bubble {
   padding: 0;
   background: transparent;
+}
+
+.agent-message--tool .agent-message__role {
+  display: none;
 }
 
 .agent-message--user .agent-message__bubble {
@@ -4760,7 +4764,7 @@ onBeforeUnmount(() => {
 /* Chat view: keep tool calls readable without the audit timeline styling. */
 .agent-tool-card {
   display: block;
-  padding: 10px 0;
+  padding: 6px 0;
   border: 0;
   border-bottom: 1px solid #edf0f4;
   border-radius: 0;
@@ -4775,7 +4779,7 @@ onBeforeUnmount(() => {
 
 .agent-tool-card__copy {
   display: grid;
-  gap: 5px;
+  gap: 2px;
 }
 
 .agent-tool-card__head {
@@ -4827,6 +4831,17 @@ onBeforeUnmount(() => {
 .agent-tool-card.is-status-failed.is-patch,
 .agent-tool-card.is-status-failed.is-skill {
   border-color: #f1d2d2;
+  background: transparent;
+}
+
+.agent-tool-card.is-read,
+.agent-tool-card.is-browse,
+.agent-tool-card.is-search,
+.agent-tool-card.is-command,
+.agent-tool-card.is-write,
+.agent-tool-card.is-patch,
+.agent-tool-card.is-skill {
+  border-color: #edf0f4;
   background: transparent;
 }
 
@@ -5820,7 +5835,7 @@ onBeforeUnmount(() => {
   }
 
   .agent-conversation__messages {
-    gap: 22px;
+    gap: 14px;
     padding: 18px 12px 162px;
   }
 
@@ -5952,7 +5967,7 @@ onBeforeUnmount(() => {
   }
 
   .agent-tool-card {
-    border-radius: 16px;
+    border-radius: 0;
   }
 
   .agent-composer {

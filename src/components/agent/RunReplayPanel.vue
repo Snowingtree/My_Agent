@@ -10,7 +10,7 @@
       <label>选择任务
         <select v-model="runId" :disabled="loading" @change="loadReplay()">
           <option v-for="run in runs" :key="run.runId" :value="run.runId">
-            {{ run.title || '未命名对话' }} · {{ statusLabel(run.interrupted ? 'interrupted' : run.status) }}
+            {{ run.displayTitle || run.title || '未命名对话' }}
           </option>
         </select>
       </label>

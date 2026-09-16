@@ -1371,7 +1371,7 @@ async function handleListAuditSessions(response) {
 
     items.push({
       sessionId: auditSessionId,
-      title: normalizeTrimmedString(knownSessions.get(auditSessionId)?.title) || '未命名对话',
+      title: buildAuditConversationTitle(knownSessions.get(auditSessionId), events),
       eventCount: events.length,
       fileSizeBytes: fileStat.size,
       updatedAt: new Date(fileStat.mtimeMs).toISOString(),
@@ -1384,6 +1384,15 @@ async function handleListAuditSessions(response) {
   items.sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')))
 
   sendJson(response, 200, { items })
+}
+
+function buildAuditConversationTitle(session, events = []) {
+  const sessionTitle = normalizeTrimmedString(session?.title)
+  if (sessionTitle && !['新对话', '未命名对话'].includes(sessionTitle)) return sessionTitle
+  const userMessage = events.find((item) => item?.event === 'user_message' && item?.contentPreview)
+  const preview = normalizeTrimmedString(userMessage?.contentPreview).replace(/\s+/g, ' ')
+  if (preview) return preview.length > 42 ? `${preview.slice(0, 42)}…` : preview
+  return sessionTitle || '未命名对话'
 }
 
 async function handleListAuditEvents(response, requestUrl) {
@@ -1440,8 +1449,10 @@ async function handleAuditRuns(response, requestUrl, replay = false) {
   }
   await auditLogger.drain()
   const records = await readAuditEvents(sessionId)
+  const conversationTitle = buildAuditConversationTitle(session, records)
   const items = listRunSummaries(records).map((item) => ({ ...item,
-    title: normalizeTrimmedString(session.title) || '未命名对话',
+    title: conversationTitle,
+    displayTitle: `${conversationTitle} · ${item.status === 'completed' ? '已完成' : item.status === 'failed' ? '失败' : item.status}`,
     interrupted: item.status === 'running'
       && !(agentRunner.isTaskActive(sessionId) && item.taskId === session.task?.taskId) }))
   if (!replay) {

@@ -141,20 +141,20 @@
               {{ eventSummary(event) }}
             </p>
 
-            <div class="settings-audit-event__actions">
-              <button type="button" @click="toggleExpanded(index)">
-                {{ expandedEventIndexes.has(index) ? '收起技术详情' : '查看技术详情' }}
-              </button>
-              <button type="button" @click="copyEvent(event)">
-                复制详情
-              </button>
+            <div v-if="expandedEventIndexes.has(index)" class="settings-audit-event__details">
+              <div class="settings-audit-event__details-head">
+                <span>原始事件 JSON</span>
+                <button type="button" class="settings-audit-event__copy" aria-label="复制 JSON" title="复制 JSON" @click="copyEvent(event)">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8.25A2.25 2.25 0 0 1 11.25 6.0h7.5A2.25 2.25 0 0 1 21 8.25v7.5A2.25 2.25 0 0 1 18.75 18h-7.5A2.25 2.25 0 0 1 9 15.75v-7.5Z"/><path d="M6 15.75H5.25A2.25 2.25 0 0 1 3 13.5V6.0a2.25 2.25 0 0 1 2.25-2.25h7.5A2.25 2.25 0 0 1 15 6v.75"/></svg>
+                </button>
+              </div>
+              <pre>{{ formatJson(event) }}</pre>
             </div>
 
-            <div v-if="expandedEventIndexes.has(index)" class="settings-audit-event__details">
-              <div v-for="item in eventDetailItems(event)" :key="item.label" class="settings-audit-event__detail">
-                <span>{{ item.label }}</span>
-                <strong>{{ item.value }}</strong>
-              </div>
+            <div class="settings-audit-event__actions">
+              <button type="button" @click="toggleExpanded(index)">
+                {{ expandedEventIndexes.has(index) ? '收起技术详情' : '展开技术详情' }}
+              </button>
             </div>
           </div>
         </article>
@@ -736,9 +736,8 @@ function toggleExpanded(index) {
 
 async function copyEvent(event) {
   try {
-    const detailText = eventDetailItems(event).map((item) => `${item.label}：${item.value}`).join('\n')
-    await navigator.clipboard?.writeText(detailText)
-    createMessage({ message: '已复制可读详情', type: 'success', duration: 1800, offset: 24 })
+    await navigator.clipboard?.writeText(formatJson(event))
+    createMessage({ message: '已复制 JSON', type: 'success', duration: 1800, offset: 24 })
   } catch {
     createMessage({ message: '复制失败', type: 'error', duration: 2200, offset: 24 })
   }
@@ -1236,18 +1235,50 @@ onMounted(() => {
 }
 
 .settings-audit-event__details {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 8px 14px;
   margin-top: 12px;
-  padding: 12px;
-  border: 1px solid #e4e9f2;
+  overflow: hidden;
+  border: 1px solid #dbe3f0;
   border-radius: 10px;
   background: #f8faff;
 }
-.settings-audit-event__detail { display: grid; gap: 3px; min-width: 0; }
-.settings-audit-event__detail span { color: #7a869f; font-size: .75rem; }
-.settings-audit-event__detail strong { color: #344054; font-size: .82rem; overflow-wrap: anywhere; }
+.settings-audit-event__details-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid #dbe3f0;
+  color: #7a869f;
+  font-size: .75rem;
+  font-weight: 700;
+}
+.settings-audit-event__copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #667085;
+  cursor: pointer;
+}
+.settings-audit-event__copy:hover { background: #eaf1ff; color: #3155c8; }
+.settings-audit-event__copy svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.settings-audit-event__details pre {
+  max-height: 340px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  color: #344054;
+  font-family: Consolas, 'SFMono-Regular', Menlo, Monaco, monospace;
+  font-size: .78rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 .settings-audit-event.is-error .settings-audit-event__rail span {
   border-color: #fee2e2;
