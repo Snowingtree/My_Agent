@@ -12,6 +12,7 @@
 - RAG：基于 PostgreSQL + pgvector 的知识库，支持多知识库、文档上传、向量化和检索注入。
 - 模型配置：普通对话模型和 embedding 模型统一配置，支持按会话选择；对话模型可自动识别 OpenAI Chat Completions 和 Anthropic Messages 协议。
 - 数据分析：统计 AI 和 embedding 的 token 使用情况。
+- 完成验证：通过稳定的完成契约、执行证据和有限修正循环，避免仅凭模型声明完成任务。
 
 ## 技术栈
 

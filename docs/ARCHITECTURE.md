@@ -32,6 +32,7 @@ Important modules:
 ```text
 server/src/index.js              # HTTP routes and bootstrap
 server/src/agentRunner.js        # Session orchestration and safety harness
+server/src/completionHarness.js  # Completion contracts, evidence, and result validation
 server/src/langChainRuntime.js   # LangChain model adapter, tools, and explicit agent/tools graph
 server/src/langGraphRuntime.js   # Task-level LangGraph graph and guard/finalize nodes
 server/src/llmClient.js          # OpenAI/Anthropic compatible model gateway
@@ -52,6 +53,7 @@ server/src/tokenUsageStore.js    # Token usage ledger
 User message
   -> frontend sends selected aiId/model/skills/mcp/rag/embedding
   -> backend loads session and workspace state
+  -> backend creates a stable completion contract for the task
   -> optional RAG retrieval injects knowledge context
   -> LangGraph agent node asks the LangChain model for a structured tool call
   -> LangGraph tools node executes LangChain Tool adapters
@@ -59,11 +61,22 @@ User message
   -> tool runner executes built-in or MCP tools
   -> LangGraph routes the tool observation back to the agent node
   -> file changes update the session workspace
+  -> tool outcomes update the completion evidence ledger
+  -> the completion harness validates the candidate result
+  -> repairable failures route back to the Agent within a bounded repair budget
   -> final response and tool events stream to frontend
   -> session, token usage, and workspace metadata persist
 ```
 
 The runtime is an explicit LangGraph state graph. The LangChain-compatible chat model intentionally reuses `llmClient.js`, so existing OpenAI-compatible gateways and Anthropic Messages configurations continue to work without provider-specific rewrites. The task graph leaves extension points for supervisor routing and sub-agent subgraphs.
+
+## Completion Harness
+
+An Agent `final` decision is treated as a candidate result, not proof that the task is complete. At task start, the server creates a stable completion contract from deterministic request signals such as required workspace changes, read-only inspection, selected Skills, companion files, durable memory updates, and available verification commands.
+
+Tool execution builds an evidence ledger containing workspace reads and writes, activated Skills, memory updates, and verification results. The `inspect` node evaluates that evidence against every contract criterion. A passing result may be finalized; repairable failures are returned to the Agent together and retried up to `AGENT_MAX_COMPLETION_REPAIRS`; non-repairable violations or exhausted repairs fail the task. Verification evidence must be at least as recent as the final workspace mutation.
+
+The compact contract status is persisted on the session task for observability. The full contract and evidence ledger are also carried through protected-tool approval pauses so resuming a task does not discard its completion state.
 
 ## Storage
 

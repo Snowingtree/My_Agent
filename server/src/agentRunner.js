@@ -1,5 +1,14 @@
 import { readFile } from 'node:fs/promises'
 import { analyzeCommandPolicy } from './commandPolicy.js'
+import {
+  COMPLETION_STATUS,
+  createCompletionContract,
+  createCompletionEvidence,
+  evaluateCompletion,
+  formatCompletionCorrection,
+  recordCompletionEvidence,
+  summarizeCompletionForSession
+} from './completionHarness.js'
 import { toConversationHistory } from './conversationMemoryRuntime.js'
 import { runLangGraphAgent } from './langChainRuntime.js'
 import { createAgentTaskGraph } from './langGraphRuntime.js'
@@ -283,20 +292,6 @@ function extractExplicitFilePaths(value) {
   }
 
   return paths
-}
-
-function hasRequiredCompanionChanges(requiredExtensions = [], changedFiles = []) {
-  if (!requiredExtensions.length) {
-    return true
-  }
-
-  const normalizedChangedFiles = (Array.isArray(changedFiles) ? changedFiles : [])
-    .map((item) => normalizeTrimmedString(item).toLowerCase())
-    .filter(Boolean)
-
-  return requiredExtensions.every((extension) => (
-    normalizedChangedFiles.some((filePath) => filePath.endsWith(extension))
-  ))
 }
 
 async function buildWorkspaceSnapshotText({
@@ -2508,6 +2503,7 @@ export function createAgentRunner({
       ? String(approvedPendingToolApproval.goal)
       : String(latestUserMessage.content)
     const fileChangesRequired = looksLikeFileChangeRequestSafe(latestGoal)
+    const readOnlyWorkspaceInspectionRequired = looksLikeReadOnlyFileInspectionRequest(latestGoal)
     const requiredCompanionExtensions = getRequiredCompanionExtensionsSafe(latestGoal)
     const explicitDelegationProfile = getExplicitDelegationProfile(latestGoal)
     const currentDateContextText = buildCurrentDateContext(runtimeConfig?.timezone)
@@ -2584,6 +2580,95 @@ export function createAgentRunner({
       inspectedWorkspace: Boolean(approvedExecutionState.inspectedWorkspace),
       updatedUserProfileMemory: Boolean(approvedExecutionState.updatedUserProfileMemory)
     }
+    const persistedCompletionContract = approvedExecutionState.completionContract
+    const persistedCompletionEvidence = approvedExecutionState.completionEvidence
+    const legacyEvidenceTimestamp = nowIso()
+    const completionContract = (
+      persistedCompletionContract
+      && typeof persistedCompletionContract === 'object'
+      && Array.isArray(persistedCompletionContract.criteria)
+    )
+      ? persistedCompletionContract
+      : createCompletionContract({
+          taskId,
+          goal: latestGoal,
+          createdAt: session.task?.startedAt || legacyEvidenceTimestamp,
+          requiresWorkspaceInspection: fileChangesRequired || readOnlyWorkspaceInspectionRequired,
+          requiresWorkspaceChange: fileChangesRequired,
+          enforceReadOnlyWorkspace: readOnlyWorkspaceInspectionRequired,
+          verificationAvailable: verificationCommands.length > 0,
+          requiredCompanionExtensions,
+          requiredSkillIds: manualSkillIds,
+          requiresUserProfileMemory: Boolean(
+            aiRuntimeConfig?.userProfileMemoryEnabled
+            && looksLikeUserProfileMemoryRequest(latestGoal)
+          ),
+          maxRepairAttempts: runtimeConfig?.maxCompletionRepairAttempts
+        })
+    let completionEvidence = createCompletionEvidence({
+      ...(persistedCompletionEvidence && typeof persistedCompletionEvidence === 'object'
+        ? persistedCompletionEvidence
+        : {}),
+      workspace: {
+        ...(persistedCompletionEvidence?.workspace || {}),
+        inspected: Boolean(persistedCompletionEvidence?.workspace?.inspected || executionState.inspectedWorkspace),
+        modified: Boolean(persistedCompletionEvidence?.workspace?.modified || executionState.modifiedWorkspace),
+        changedFiles: [
+          ...(persistedCompletionEvidence?.workspace?.changedFiles || []),
+          ...executionState.changedFiles
+        ],
+        lastMutationAt: persistedCompletionEvidence?.workspace?.lastMutationAt
+          || (executionState.modifiedWorkspace ? legacyEvidenceTimestamp : '')
+      },
+      verification: {
+        ...(persistedCompletionEvidence?.verification || {}),
+        available: verificationCommands.length > 0,
+        attempted: Boolean(
+          persistedCompletionEvidence?.verification?.attempted
+          || executionState.autoVerificationAttempted
+        ),
+        passed: Boolean(
+          persistedCompletionEvidence?.verification?.passed
+          || executionState.verifiedAfterModification
+        ),
+        failed: Boolean(
+          persistedCompletionEvidence?.verification?.failed
+          || executionState.verificationFailed
+        ),
+        lastAttemptAt: persistedCompletionEvidence?.verification?.lastAttemptAt
+          || (executionState.autoVerificationAttempted ? legacyEvidenceTimestamp : ''),
+        lastPassedAt: persistedCompletionEvidence?.verification?.lastPassedAt
+          || (executionState.verifiedAfterModification ? legacyEvidenceTimestamp : '')
+      },
+      activeSkillIds: persistedCompletionEvidence?.activeSkillIds || [],
+      userProfileUpdated: Boolean(
+        persistedCompletionEvidence?.userProfileUpdated
+        || executionState.updatedUserProfileMemory
+      )
+    })
+    let lastCompletionEvaluation = null
+    let lastCompletionRepairAttempts = 0
+    const recordEvidence = (event) => {
+      completionEvidence = recordCompletionEvidence(completionEvidence, event)
+      return completionEvidence
+    }
+
+    for (const skillId of completionEvidence.activeSkillIds) {
+      skillRuntimeState.set(skillId, {
+        helped: true,
+        running: true,
+        instructionLength: 0,
+        helpToken: null
+      })
+    }
+
+    audit(sessionId, 'system_action', {
+      action: 'completion_contract_created',
+      taskId,
+      contractVersion: completionContract.version,
+      criteria: completionContract.criteria.map((item) => item.id),
+      maxRepairAttempts: completionContract.maxRepairAttempts
+    })
     let subAgentDelegationCount = 0
     const analysisStep = createTaskStep({
       title: '理解目标',
@@ -2607,6 +2692,7 @@ export function createAgentRunner({
         steps: taskSteps,
         startedAt: draftSession.task?.startedAt || nowIso(),
         completedAt: null,
+        completion: summarizeCompletionForSession(completionContract),
         updatedAt: nowIso()
       }
 
@@ -2648,7 +2734,9 @@ export function createAgentRunner({
           autoVerificationAttempted: Boolean(executionState.autoVerificationAttempted),
           verificationFailed: Boolean(executionState.verificationFailed),
           inspectedWorkspace: Boolean(executionState.inspectedWorkspace),
-          updatedUserProfileMemory: Boolean(executionState.updatedUserProfileMemory)
+          updatedUserProfileMemory: Boolean(executionState.updatedUserProfileMemory),
+          completionContract,
+          completionEvidence
         },
         context: {
           requestedAiId: aiConfig.aiId,
@@ -2695,6 +2783,10 @@ export function createAgentRunner({
           status: 'waiting_for_user',
           summary: approvalStep.summary,
           steps: taskSteps,
+          completion: {
+            ...summarizeCompletionForSession(completionContract),
+            status: 'waiting_for_user'
+          },
           completedAt: nowIso(),
           updatedAt: nowIso()
         }
@@ -3260,6 +3352,12 @@ export function createAgentRunner({
       throwIfCancelled()
       throwIfTaskTimedOut()
       taskSteps[taskSteps.length - 1] = completeStep(toolStep, toolExecution.summary)
+      recordEvidence({
+        type: 'tool.completed',
+        at: nowIso(),
+        tool: toolExecution.tool,
+        status: toolExecution.status || 'success'
+      })
       toolMessages.push(...createToolTranscriptMessages(toolExecution, { thoughtSummary }))
       publishTaskProgress(sessionId, toolExecution.summary, selectedModel)
       audit(sessionId, isMcpTool ? 'mcp_result' : 'tool_result', {
@@ -3304,6 +3402,15 @@ export function createAgentRunner({
         })
       }
       if (toolExecution.tool === SKILL_TOOL_NAME) {
+        if (toolExecution.result?.running) {
+          recordEvidence({
+            type: 'skill.activated',
+            at: nowIso(),
+            skillId: toolExecution.result?.skillId,
+            tool: toolExecution.tool,
+            status: toolExecution.status || 'success'
+          })
+        }
         audit(sessionId, 'system_action', {
           action: toolExecution.result?.blocked
             ? 'skill_run_blocked'
@@ -3319,6 +3426,12 @@ export function createAgentRunner({
         })
       }
       if (toolExecution.tool === MEMORY_TOOL_NAME) {
+        recordEvidence({
+          type: 'user_profile.updated',
+          at: nowIso(),
+          tool: toolExecution.tool,
+          status: toolExecution.status || 'success'
+        })
         audit(sessionId, 'system_action', {
           action: 'user_profile_memory_updated',
           executionId: toolExecutionId,
@@ -3339,6 +3452,12 @@ export function createAgentRunner({
 
       if (isReadToolName(toolExecution.tool)) {
         executionState.inspectedWorkspace = true
+        recordEvidence({
+          type: 'workspace.inspected',
+          at: nowIso(),
+          tool: toolExecution.tool,
+          status: toolExecution.status || 'success'
+        })
         audit(sessionId, 'workspace_read', {
           executionId: toolExecutionId,
           tool: toolExecution.tool,
@@ -3362,6 +3481,14 @@ export function createAgentRunner({
         if (writtenPath) {
           executionState.changedFiles.push(writtenPath)
         }
+
+        recordEvidence({
+          type: 'workspace.modified',
+          at: nowIso(),
+          tool: toolExecution.tool,
+          status: toolExecution.status || 'success',
+          path: writtenPath
+        })
 
         audit(sessionId, 'workspace_write', {
           executionId: toolExecutionId,
@@ -3395,9 +3522,21 @@ export function createAgentRunner({
         if (!verificationCommands.length) {
           executionState.verifiedAfterModification = true
           executionState.verificationFailed = false
+          recordEvidence({
+            type: 'verification.passed',
+            at: nowIso(),
+            tool: toolExecution.tool,
+            status: 'success'
+          })
         } else if (verificationCommands.some((spec) => commandResultMatchesSpec(toolExecution.result, spec))) {
           executionState.verifiedAfterModification = true
           executionState.verificationFailed = false
+          recordEvidence({
+            type: 'verification.passed',
+            at: nowIso(),
+            tool: toolExecution.tool,
+            status: 'success'
+          })
         }
       }
 
@@ -3464,6 +3603,12 @@ export function createAgentRunner({
         }
       }
 
+      recordEvidence({
+        type: 'verification.started',
+        at: nowIso(),
+        status: 'running'
+      })
+
       publishTaskProgress(sessionId, '正在验证刚刚完成的文件修改。', selectedModel)
 
       for (const commandSpec of verificationCommands) {
@@ -3516,6 +3661,12 @@ export function createAgentRunner({
         if (result.toolExecution.result?.exitCode !== 0) {
           executionState.verifiedAfterModification = false
           executionState.verificationFailed = true
+          recordEvidence({
+            type: 'verification.failed',
+            at: nowIso(),
+            tool: 'run_command',
+            status: 'failed'
+          })
           return {
             ranVerification: true,
             failedTask: false
@@ -3524,6 +3675,13 @@ export function createAgentRunner({
       }
 
       executionState.verifiedAfterModification = true
+      executionState.verificationFailed = false
+      recordEvidence({
+        type: 'verification.passed',
+        at: nowIso(),
+        tool: 'run_command',
+        status: 'success'
+      })
 
       return {
         ranVerification: true,
@@ -3591,7 +3749,7 @@ export function createAgentRunner({
       })
 
       const taskGraph = createAgentTaskGraph({
-        maxGuardRounds: 3,
+        maxGuardRounds: completionContract.maxRepairAttempts + 1,
         prepareAgent: async ({ guardRound, remainingToolIterations }) => {
           throwIfCancelled()
           throwIfTaskTimedOut()
@@ -3728,6 +3886,14 @@ export function createAgentRunner({
                 status: 'waiting_for_user',
                 summary: waitingSummary,
                 steps: finalizedSteps,
+                completion: {
+                  ...summarizeCompletionForSession(
+                    completionContract,
+                    lastCompletionEvaluation,
+                    lastCompletionRepairAttempts
+                  ),
+                  status: 'waiting_for_user'
+                },
                 completedAt: nowIso(),
                 updatedAt: nowIso()
               }
@@ -3757,57 +3923,72 @@ export function createAgentRunner({
             }
           }
 
-          const manualSkillsNeedingRun = manualSkillIds.filter((skillId) => (
-            !skillRuntimeState.get(skillId)?.running
-          ))
-          let correctionMessage = ''
+          lastCompletionEvaluation = evaluateCompletion(completionContract, completionEvidence)
+          lastCompletionRepairAttempts = guardRound
+          const correctionMessage = formatCompletionCorrection(lastCompletionEvaluation)
+          const nextRepairAttempt = guardRound + 1
 
-          if (manualSkillsNeedingRun.length) {
-            correctionMessage = [
-              `The user manually selected Skill(s): ${manualSkillsNeedingRun.join(', ')}.`,
-              'Do not finish yet. For each selected Skill, call "skill" with mode="help" and then mode="run".'
-            ].join('\n')
-          } else if (
-            aiRuntimeConfig?.userProfileMemoryEnabled
-            && looksLikeUserProfileMemoryRequest(latestGoal)
-            && !executionState.updatedUserProfileMemory
-          ) {
-            correctionMessage = [
-              'The latest user message contains an explicit durable memory or preference request.',
-              'Do not finish yet. Call "memory" with action="save_user_profile" and a complete merged profile.'
-            ].join('\n')
-          } else if (
-            executionState.modifiedWorkspace
-            && verificationCommands.length
-            && executionState.verificationFailed
-            && !executionState.verifiedAfterModification
-          ) {
-            correctionMessage = [
-              'The latest verification command failed after the workspace change.',
-              'Inspect the previous tool result, apply the smallest fix, and verify again before finishing.'
-            ].join('\n')
-          } else if (fileChangesRequired && !executionState.modifiedWorkspace) {
-            correctionMessage = [
-              'The user asked for real file changes, but no file has been changed.',
-              'Inspect the workspace and use a write tool now, or ask one blocking clarification question.'
-            ].join('\n')
-          } else if (
-            executionState.modifiedWorkspace
-            && requiredCompanionExtensions.length
-            && !hasRequiredCompanionChanges(requiredCompanionExtensions, executionState.changedFiles)
-          ) {
-            correctionMessage = [
-              `The task requires companion files: ${requiredCompanionExtensions.join(', ')}.`,
-              'Create or update the missing companion file before finishing.'
-            ].join('\n')
+          audit(sessionId, 'system_action', {
+            action: 'completion_evaluated',
+            taskId,
+            status: lastCompletionEvaluation.status,
+            repairAttempts: guardRound,
+            passedCriteria: lastCompletionEvaluation.passedCriteriaIds,
+            failedCriteria: lastCompletionEvaluation.failedCriteriaIds,
+            evidenceEventCount: completionEvidence.events.length
+          })
+
+          await sessionRepository.updateSession(sessionId, (draftSession) => {
+            draftSession.task = {
+              ...draftSession.task,
+              completion: summarizeCompletionForSession(
+                completionContract,
+                lastCompletionEvaluation,
+                guardRound
+              ),
+              updatedAt: nowIso()
+            }
+            return draftSession
+          })
+
+          if (lastCompletionEvaluation.status === COMPLETION_STATUS.PASSED) {
+            return {
+              phase: 'stop',
+              terminalReason: 'complete',
+              verificationResult: {
+                ...autoVerification,
+                completion: lastCompletionEvaluation
+              }
+            }
           }
 
-          if (correctionMessage && guardRound < 2 && remainingToolIterations > 0) {
+          if (
+            lastCompletionEvaluation.status === COMPLETION_STATUS.REPAIRABLE
+            && guardRound < completionContract.maxRepairAttempts
+            && remainingToolIterations > 0
+          ) {
             toolMessages.push({
               role: 'user',
               content: correctionMessage
             })
             publishTaskProgress(sessionId, 'LangGraph 正在根据执行约束继续处理任务。', selectedModel)
+            await sessionRepository.updateSession(sessionId, (draftSession) => {
+              draftSession.task = {
+                ...draftSession.task,
+                status: 'running',
+                summary: '完成条件尚未全部满足，正在修正。',
+                completion: {
+                  ...summarizeCompletionForSession(
+                    completionContract,
+                    lastCompletionEvaluation,
+                    nextRepairAttempt
+                  ),
+                  status: 'repairing'
+                },
+                updatedAt: nowIso()
+              }
+              return draftSession
+            })
             await sleep(runtimeConfig.stepDelayMs)
             return {
               phase: 'continue',
@@ -3816,15 +3997,11 @@ export function createAgentRunner({
             }
           }
 
-          if (correctionMessage) {
-            throw new Error(`LangGraph agent stopped before satisfying the task guard: ${correctionMessage}`)
-          }
-
-          return {
-            phase: 'stop',
-            terminalReason: 'complete',
-            verificationResult: autoVerification
-          }
+          const failedCriteria = lastCompletionEvaluation.failedCriteriaIds.join(', ')
+          const failureReason = lastCompletionEvaluation.status === COMPLETION_STATUS.FAILED
+            ? 'The completion contract contains a non-repairable violation.'
+            : 'The completion repair budget was exhausted.'
+          throw new Error(`${failureReason} Failed criteria: ${failedCriteria || 'unknown'}.`)
         },
         finalize: async ({ phase, lastDecision }) => {
           if (phase !== 'complete') {
@@ -3845,6 +4022,11 @@ export function createAgentRunner({
               status: 'completed',
               summary: completionSummary,
               steps: finalizedSteps,
+              completion: summarizeCompletionForSession(
+                completionContract,
+                lastCompletionEvaluation,
+                lastCompletionRepairAttempts
+              ),
               completedAt: nowIso(),
               updatedAt: nowIso()
             }
@@ -3921,6 +4103,14 @@ export function createAgentRunner({
             status: 'cancelled',
             summary: cancelledSummary,
             steps: cancelledSteps,
+            completion: {
+              ...summarizeCompletionForSession(
+                completionContract,
+                lastCompletionEvaluation,
+                lastCompletionRepairAttempts
+              ),
+              status: 'cancelled'
+            },
             completedAt: nowIso(),
             updatedAt: nowIso()
           }
@@ -3948,6 +4138,14 @@ export function createAgentRunner({
           status: 'failed',
           summary: failureSummary,
           steps: failedSteps,
+          completion: {
+            ...summarizeCompletionForSession(
+              completionContract,
+              lastCompletionEvaluation,
+              lastCompletionRepairAttempts
+            ),
+            status: 'failed'
+          },
           completedAt: nowIso(),
           updatedAt: nowIso()
         }
