@@ -39,10 +39,16 @@
       <div class="settings-audit__panel-head settings-audit__panel-head--events">
         <div>
           <p class="settings-audit__eyebrow">Timeline</p>
-          <h3>{{ selectedSessionTitle || '选择一个审计会话' }}</h3>
-          <p v-if="selectedSessionId && activeAuditTab === 'events'" class="settings-audit__sub">
-            当前返回 {{ auditEvents.length }} 条事件，按发生顺序展示。
-          </p>
+          <h3 v-if="activeAuditTab === 'events'">当前共 {{ auditEvents.length }} 条事件</h3>
+          <h3 v-else>任务回放</h3>
+          <nav class="settings-audit__tabs" aria-label="审计视图">
+            <button type="button" :class="{ 'is-active': activeAuditTab === 'events' }" @click="activeAuditTab = 'events'">
+              审计事件
+            </button>
+            <button type="button" :class="{ 'is-active': activeAuditTab === 'replay' }" @click="activeAuditTab = 'replay'">
+              任务回放
+            </button>
+          </nav>
         </div>
 
         <div class="settings-audit__filters">
@@ -57,15 +63,6 @@
           </button>
         </div>
       </div>
-
-      <nav class="settings-audit__tabs" aria-label="审计视图">
-        <button type="button" :class="{ 'is-active': activeAuditTab === 'events' }" @click="activeAuditTab = 'events'">
-          审计事件
-        </button>
-        <button type="button" :class="{ 'is-active': activeAuditTab === 'replay' }" @click="activeAuditTab = 'replay'">
-          任务回放
-        </button>
-      </nav>
 
       <div class="settings-audit__events-body">
         <template v-if="activeAuditTab === 'replay'">
@@ -918,15 +915,14 @@ onMounted(() => {
 
 .settings-audit__events {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .settings-audit__tabs {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 18px 0;
-  border-bottom: 1px solid #eef1f6;
+  padding: 10px 0 0;
 }
 
 .settings-audit__tabs button {
@@ -962,7 +958,11 @@ onMounted(() => {
 }
 
 .settings-audit__panel-head--events {
-  align-items: center;
+  align-items: flex-start;
+}
+
+.settings-audit__panel-head--events > div:first-child {
+  min-width: 0;
 }
 
 .settings-audit__eyebrow,
