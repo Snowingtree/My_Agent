@@ -224,14 +224,9 @@
                     { 'is-expanded': isToolMessageExpanded(item.messageId) }
                   ]"
                 >
-                  <div class="agent-tool-card__rail" aria-hidden="true">
-                    <span class="agent-tool-card__dot"></span>
-                    <span class="agent-tool-card__line"></span>
-                  </div>
                   <div class="agent-tool-card__copy">
                     <div class="agent-tool-card__head">
                       <strong>{{ parseToolMessage(item.content).kind === 'skill' ? '技能调用' : '工具调用' }}</strong>
-                      <span class="agent-tool-card__icon" aria-hidden="true">{{ resolveToolVisual(parseToolMessage(item.content)).icon }}</span>
                       <span class="agent-tool-card__name">{{ parseToolMessage(item.content).tool || 'unknown_tool' }}</span>
                       <span
                         class="agent-tool-card__status"
@@ -4760,6 +4755,100 @@ onBeforeUnmount(() => {
 .agent-tool-card.is-status-failed.is-skill .agent-tool-card__name {
   background: #fdeaea;
   color: #b83434;
+}
+
+/* Chat view: keep tool calls readable without the audit timeline styling. */
+.agent-tool-card {
+  display: block;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid #edf0f4;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.agent-tool-card__rail,
+.agent-tool-card__icon {
+  display: none;
+}
+
+.agent-tool-card__copy {
+  display: grid;
+  gap: 5px;
+}
+
+.agent-tool-card__head {
+  gap: 8px;
+}
+
+.agent-tool-card__head strong {
+  color: #667085;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.agent-tool-card__name {
+  min-height: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent !important;
+  color: #344054 !important;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.agent-tool-card__status {
+  min-height: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #2e8b57;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.agent-tool-card__status.is-failed {
+  background: transparent;
+  color: #b42318;
+}
+
+.agent-tool-card__status.is-running {
+  background: transparent;
+  color: #667085;
+}
+
+.agent-tool-card.is-status-failed,
+.agent-tool-card.is-status-failed.is-read,
+.agent-tool-card.is-status-failed.is-browse,
+.agent-tool-card.is-status-failed.is-search,
+.agent-tool-card.is-status-failed.is-command,
+.agent-tool-card.is-status-failed.is-write,
+.agent-tool-card.is-status-failed.is-patch,
+.agent-tool-card.is-status-failed.is-skill {
+  border-color: #f1d2d2;
+  background: transparent;
+}
+
+.agent-tool-card__meta {
+  color: #667085;
+  font-size: 0.8rem;
+}
+
+.agent-tool-card__meta--duration {
+  min-height: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #98a2b3;
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.agent-tool-card__body {
+  margin-top: 4px;
+  padding: 8px 0 2px;
+  border-top: 1px solid #edf0f4;
 }
 
 .agent-lark-chat-list {

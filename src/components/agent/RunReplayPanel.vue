@@ -10,7 +10,7 @@
       <label>选择任务
         <select v-model="runId" :disabled="loading" @change="loadReplay()">
           <option v-for="run in runs" :key="run.runId" :value="run.runId">
-            {{ run.taskId }} · {{ statusLabel(run.interrupted ? 'interrupted' : run.status) }}
+            {{ run.title || '未命名对话' }} · {{ statusLabel(run.interrupted ? 'interrupted' : run.status) }}
           </option>
         </select>
       </label>
@@ -46,7 +46,14 @@
         <ul v-if="replay.evaluation?.failedCriteria?.length">
           <li v-for="criterion in replay.evaluation.failedCriteria" :key="criterion.id">{{ criterion.description }}</li>
         </ul>
-        <details><summary>查看技术详情</summary><pre>{{ JSON.stringify(currentEvent, null, 2) }}</pre></details>
+        <details>
+          <summary>查看技术详情</summary>
+          <div class="run-replay__details">
+            <div v-for="item in eventDetailItems(currentEvent)" :key="item.label">
+              <span>{{ item.label }}</span><strong>{{ item.value }}</strong>
+            </div>
+          </div>
+        </details>
       </template>
     </template>
   </section>
@@ -86,6 +93,35 @@ const statusLabel = (value) => ({ running: '执行中', completed: '已完成', 
   waiting_for_user: '等待用户', passed: '通过', repairable: '待修正', pending: '尚未验收', interrupted: '已中断' })[value] || value
 const formatBudget = (value, key) => key === 'activeMs' ? `${((value || 0) / 1000).toFixed(1)} 秒` : value ?? 0
 const eventLabel = (event) => eventLabels[String(event?.type || '').toLowerCase()] || '任务运行事件'
+const eventDetailItems = (event) => {
+  if (!event) return []
+  const items = []
+  const add = (label, value) => {
+    if (value !== undefined && value !== null && String(value).trim() !== '') items.push({ label, value: String(value) })
+  }
+  const failure = event.failure && typeof event.failure === 'object'
+    ? [event.failure.category, event.failure.message].filter(Boolean).join('：') : event.failure
+  add('事件', eventLabel(event))
+  add('发生时间', event.at ? new Date(event.at).toLocaleString('zh-CN') : '')
+  add('任务 ID', event.taskId)
+  add('运行 ID', event.runId)
+  add('序号', event.sequence)
+  add('状态', statusLabel(event.status))
+  add('工具', event.tool)
+  add('文件', event.path || event.evidence?.path)
+  add('命令', event.command ? [event.command, ...(event.args || [])].join(' ') : '')
+  add('工作目录', event.cwd)
+  add('退出码', event.exitCode)
+  add('预算项目', event.dimension)
+  add('失败原因', failure)
+  add('证据类型', event.evidence?.type)
+  add('验证项目', event.commandId != null ? `第 ${Number(event.commandId) + 1} 项` : '')
+  add('完成判断', event.evaluation?.status)
+  add('未通过条件', event.evaluation?.failedCriteriaIds?.join('、'))
+  add('变更文件', event.changedFiles?.join('、'))
+  add('预算快照', event.budget?.used ? `模型 ${event.budget.used.modelCalls} 次，工具 ${event.budget.used.toolCalls} 次，修正 ${event.budget.used.repairs} 次` : '')
+  return items
+}
 const eventSummary = (event) => {
   const type = String(event?.type || '').toLowerCase()
   if (type === 'run.started') return 'Harness 已建立运行记录并开始统计预算。'
@@ -150,6 +186,9 @@ button { cursor: pointer; } button:disabled { opacity: .5; cursor: default; }
 p, dd { overflow-wrap: anywhere; } dl > div { display: flex; gap: 12px; margin: 8px 0; }
 dt { flex-shrink: 0; } dd { margin: 0; }
 table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 6px; border-bottom: 1px solid #d9dde5; }
-pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 details { margin-top: 12px; }
+.run-replay__details { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 14px; margin-top: 10px; padding: 12px; border: 1px solid #e4e9f2; border-radius: 8px; background: #f8faff; }
+.run-replay__details div { display: grid; gap: 3px; min-width: 0; }
+.run-replay__details span { color: #7a869f; font-size: .75rem; }
+.run-replay__details strong { color: #344054; overflow-wrap: anywhere; }
 </style>

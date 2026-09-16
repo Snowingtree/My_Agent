@@ -1347,7 +1347,8 @@ async function handleListAuditSessions(response) {
   }
 
   const items = []
-  const knownSessionIds = new Set((await sessionRepository.listSummaries()).map((item) => item.sessionId))
+  const sessionSummaries = await sessionRepository.listSummaries()
+  const knownSessions = new Map(sessionSummaries.map((item) => [item.sessionId, item]))
 
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
@@ -1357,7 +1358,7 @@ async function handleListAuditSessions(response) {
     const auditSessionId = basename(entry.name, '.jsonl')
     const filePath = join(config.storage.auditDir, entry.name)
 
-    if (!knownSessionIds.has(auditSessionId)) {
+    if (!knownSessions.has(auditSessionId)) {
       await rm(filePath, { force: true })
       continue
     }
@@ -1370,6 +1371,7 @@ async function handleListAuditSessions(response) {
 
     items.push({
       sessionId: auditSessionId,
+      title: normalizeTrimmedString(knownSessions.get(auditSessionId)?.title) || '未命名对话',
       eventCount: events.length,
       fileSizeBytes: fileStat.size,
       updatedAt: new Date(fileStat.mtimeMs).toISOString(),
@@ -1439,6 +1441,7 @@ async function handleAuditRuns(response, requestUrl, replay = false) {
   await auditLogger.drain()
   const records = await readAuditEvents(sessionId)
   const items = listRunSummaries(records).map((item) => ({ ...item,
+    title: normalizeTrimmedString(session.title) || '未命名对话',
     interrupted: item.status === 'running'
       && !(agentRunner.isTaskActive(sessionId) && item.taskId === session.task?.taskId) }))
   if (!replay) {

@@ -28,9 +28,9 @@
           @click="selectAuditSession(item.sessionId)"
           @keydown="handleAuditSessionKeydown($event, item.sessionId)"
         >
-          <strong>{{ item.sessionId }}</strong>
+          <strong :title="item.sessionId">{{ item.title || '未命名对话' }}</strong>
           <span>{{ item.eventCount || 0 }} 条事件 · {{ formatDateTime(item.updatedAt) }}</span>
-          <small>{{ eventTypeOptionLabel(item.lastEvent) }}</small>
+          <small>{{ eventTypeOptionLabel(item.lastEvent) }} · {{ item.sessionId }}</small>
         </button>
       </div>
     </aside>
@@ -39,31 +39,44 @@
       <div class="settings-audit__panel-head settings-audit__panel-head--events">
         <div>
           <p class="settings-audit__eyebrow">Timeline</p>
-          <h3>{{ selectedSessionId || '选择一个审计会话' }}</h3>
-          <p v-if="selectedSessionId" class="settings-audit__sub">
+          <h3>{{ selectedSessionTitle || '选择一个审计会话' }}</h3>
+          <p v-if="selectedSessionId && activeAuditTab === 'events'" class="settings-audit__sub">
             当前返回 {{ auditEvents.length }} 条事件，按发生顺序展示。
           </p>
         </div>
 
         <div class="settings-audit__filters">
-          <select v-model="selectedEventType" :disabled="!selectedSessionId || isLoadingEvents" @change="loadAuditEvents">
+          <select v-if="activeAuditTab === 'events'" v-model="selectedEventType" :disabled="!selectedSessionId || isLoadingEvents" @change="loadAuditEvents">
             <option value="">全部事件</option>
             <option v-for="eventType in eventTypes" :key="eventType" :value="eventType">
               {{ eventTypeOptionLabel(eventType) }}
             </option>
           </select>
-          <button type="button" :disabled="!selectedSessionId || isLoadingEvents" @click="loadAuditEvents">
+          <button v-if="activeAuditTab === 'events'" type="button" :disabled="!selectedSessionId || isLoadingEvents" @click="loadAuditEvents">
             {{ isLoadingEvents ? '读取中' : '刷新事件' }}
           </button>
         </div>
       </div>
 
+      <nav class="settings-audit__tabs" aria-label="审计视图">
+        <button type="button" :class="{ 'is-active': activeAuditTab === 'events' }" @click="activeAuditTab = 'events'">
+          审计事件
+        </button>
+        <button type="button" :class="{ 'is-active': activeAuditTab === 'replay' }" @click="activeAuditTab = 'replay'">
+          任务回放
+        </button>
+      </nav>
+
       <div class="settings-audit__events-body">
-        <RunReplayPanel v-if="selectedSessionId" :session-id="selectedSessionId" />
-        <p v-if="eventError" class="settings-audit__status is-error">{{ eventError }}</p>
-        <p v-else-if="isLoadingEvents" class="settings-audit__status">正在读取事件时间线...</p>
-        <p v-else-if="!selectedSessionId" class="settings-audit__status">从左侧选择一个会话，查看 Agent 的决策和工具调用链路。</p>
-        <p v-else-if="!auditEvents.length" class="settings-audit__status">当前筛选条件下没有事件。</p>
+        <template v-if="activeAuditTab === 'replay'">
+          <RunReplayPanel v-if="selectedSessionId" :session-id="selectedSessionId" />
+          <p v-else class="settings-audit__status">从左侧选择一个审计会话，查看任务回放。</p>
+        </template>
+        <template v-else>
+          <p v-if="eventError" class="settings-audit__status is-error">{{ eventError }}</p>
+          <p v-else-if="isLoadingEvents" class="settings-audit__status">正在读取事件时间线...</p>
+          <p v-else-if="!selectedSessionId" class="settings-audit__status">从左侧选择一个会话，查看 Agent 的决策和工具调用链路。</p>
+          <p v-else-if="!auditEvents.length" class="settings-audit__status">当前筛选条件下没有事件。</p>
 
       <div v-else class="settings-audit__timeline">
         <article
@@ -133,21 +146,27 @@
                 {{ expandedEventIndexes.has(index) ? '收起技术详情' : '查看技术详情' }}
               </button>
               <button type="button" @click="copyEvent(event)">
-                复制
+                复制详情
               </button>
             </div>
 
-            <pre v-if="expandedEventIndexes.has(index)" class="settings-audit-event__json">{{ formatJson(event) }}</pre>
+            <div v-if="expandedEventIndexes.has(index)" class="settings-audit-event__details">
+              <div v-for="item in eventDetailItems(event)" :key="item.label" class="settings-audit-event__detail">
+                <span>{{ item.label }}</span>
+                <strong>{{ item.value }}</strong>
+              </div>
+            </div>
           </div>
         </article>
       </div>
+        </template>
       </div>
     </section>
   </section>
 </template>
 
 <script setup>
-import { nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { createMessage } from 'snowingress-my-components'
 import http from '../../http.js'
 import RunReplayPanel from './RunReplayPanel.vue'
@@ -157,12 +176,14 @@ const auditEvents = ref([])
 const eventTypes = ref([])
 const selectedSessionId = ref('')
 const selectedEventType = ref('')
+const activeAuditTab = ref('events')
 const expandedEventIndexes = ref(new Set())
 const isLoadingSessions = ref(false)
 const isLoadingEvents = ref(false)
 const sessionError = ref('')
 const eventError = ref('')
 const auditSessionItemRefs = new Map()
+const selectedSessionTitle = computed(() => auditSessions.value.find((item) => item.sessionId === selectedSessionId.value)?.title || '')
 
 const EVENT_LABELS = {
   harness_event: '任务运行记录',
@@ -666,6 +687,37 @@ function eventSummary(event) {
   ).trim()
 }
 
+function eventDetailItems(event) {
+  const type = auditEventType(event)
+  const items = []
+  const add = (label, value) => {
+    if (value !== undefined && value !== null && String(value).trim() !== '') items.push({ label, value: String(value) })
+  }
+  const formatFailure = (failure) => failure && typeof failure === 'object'
+    ? [failure.category, failure.message].filter(Boolean).join('：') : failure
+  add('事件', HARNESS_EVENT_LABELS[type] || EVENT_LABELS[type] || event?.event)
+  add('发生时间', formatDateTime(event?.at || event?.ts || event?.time))
+  add('任务 ID', event?.taskId)
+  add('运行 ID', event?.runId)
+  add('序号', event?.sequence)
+  add('状态', statusLabel(event?.status))
+  add('工具', eventToolLabel(event) || event?.tool)
+  add('文件', event?.path || event?.evidence?.path)
+  add('命令', event?.command ? [event.command, ...(event.args || [])].join(' ') : '')
+  add('工作目录', event?.cwd)
+  add('退出码', event?.exitCode)
+  add('预算项目', event?.dimension)
+  add('失败原因', formatFailure(event?.failure))
+  add('证据类型', event?.evidence?.type)
+  add('验证项目', event?.commandId != null ? `第 ${Number(event.commandId) + 1} 项` : '')
+  add('完成判断', event?.evaluation?.status ? statusLabel(event.evaluation.status) : '')
+  add('未通过条件', event?.evaluation?.failedCriteriaIds?.join('、'))
+  add('变更文件', event?.changedFiles?.join('、'))
+  add('模型用量', event?.usage ? usageText(event.usage) : '')
+  add('预算快照', event?.budget?.used ? `模型 ${event.budget.used.modelCalls} 次，工具 ${event.budget.used.toolCalls} 次，修正 ${event.budget.used.repairs} 次` : '')
+  return items
+}
+
 function formatJson(value) {
   return JSON.stringify(value, null, 2)
 }
@@ -684,8 +736,9 @@ function toggleExpanded(index) {
 
 async function copyEvent(event) {
   try {
-    await navigator.clipboard?.writeText(formatJson(event))
-    createMessage({ message: '已复制审计事件', type: 'success', duration: 1800, offset: 24 })
+    const detailText = eventDetailItems(event).map((item) => `${item.label}：${item.value}`).join('\n')
+    await navigator.clipboard?.writeText(detailText)
+    createMessage({ message: '已复制可读详情', type: 'success', duration: 1800, offset: 24 })
   } catch {
     createMessage({ message: '复制失败', type: 'error', duration: 2200, offset: 24 })
   }
@@ -865,7 +918,32 @@ onMounted(() => {
 
 .settings-audit__events {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.settings-audit__tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 18px 0;
+  border-bottom: 1px solid #eef1f6;
+}
+
+.settings-audit__tabs button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: #7a869f;
+  font-size: .82rem;
+  font-weight: 700;
+}
+
+.settings-audit__tabs button.is-active {
+  border-bottom-color: #3155c8;
+  color: #3155c8;
 }
 
 .settings-audit__events-body {
@@ -890,6 +968,15 @@ onMounted(() => {
 .settings-audit__eyebrow,
 .settings-audit__sub {
   margin: 0;
+}
+
+.settings-audit__session-id {
+  margin: 5px 0 0;
+  color: #98a2b3;
+  font-size: .72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-audit__eyebrow {
@@ -1148,20 +1235,19 @@ onMounted(() => {
   font-size: 0.78rem;
 }
 
-.settings-audit-event__json {
-  max-height: 340px;
-  overflow: auto;
-  margin: 12px 0 0;
-  border-radius: 12px;
-  background: #0f172a;
-  color: #dbeafe;
-  font-family: Consolas, 'SFMono-Regular', Menlo, Monaco, monospace;
-  font-size: 0.78rem;
-  line-height: 1.65;
+.settings-audit-event__details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 14px;
+  margin-top: 12px;
   padding: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
+  border: 1px solid #e4e9f2;
+  border-radius: 10px;
+  background: #f8faff;
 }
+.settings-audit-event__detail { display: grid; gap: 3px; min-width: 0; }
+.settings-audit-event__detail span { color: #7a869f; font-size: .75rem; }
+.settings-audit-event__detail strong { color: #344054; font-size: .82rem; overflow-wrap: anywhere; }
 
 .settings-audit-event.is-error .settings-audit-event__rail span {
   border-color: #fee2e2;
