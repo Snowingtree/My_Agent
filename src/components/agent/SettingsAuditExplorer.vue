@@ -58,7 +58,7 @@
               {{ eventTypeOptionLabel(eventType) }}
             </option>
           </select>
-          <button v-if="activeAuditTab === 'events'" type="button" :disabled="!selectedSessionId || isLoadingEvents" @click="loadAuditEvents">
+          <button v-if="activeAuditTab === 'events'" type="button" :disabled="!selectedSessionId || isLoadingEvents" @click="loadAuditEvents({ force: true })">
             {{ isLoadingEvents ? '读取中' : '刷新事件' }}
           </button>
         </div>
@@ -181,6 +181,9 @@ const isLoadingEvents = ref(false)
 const sessionError = ref('')
 const eventError = ref('')
 const auditSessionItemRefs = new Map()
+const auditEventCache = new Map()
+const auditEventRequests = new Map()
+let eventLoadVersion = 0
 const selectedSessionTitle = computed(() => auditSessions.value.find((item) => item.sessionId === selectedSessionId.value)?.title || '')
 
 const EVENT_LABELS = {
@@ -843,40 +846,73 @@ async function selectAuditSession(sessionId) {
   await loadAuditEvents()
 }
 
-async function loadAuditEvents() {
+async function loadAuditEvents({ force = false } = {}) {
   if (!selectedSessionId.value) {
+    return
+  }
+
+  const sessionId = selectedSessionId.value
+  const eventType = selectedEventType.value || ''
+  const cacheKey = `${sessionId}::${eventType}`
+  const applyCachedEvents = (value) => {
+    auditEvents.value = Array.isArray(value?.items) ? value.items : []
+    eventTypes.value = Array.isArray(value?.eventTypes) ? value.eventTypes : []
+    expandedEventIndexes.value = new Set()
+  }
+
+  if (!force && auditEventCache.has(cacheKey)) {
+    applyCachedEvents(auditEventCache.get(cacheKey))
+    eventError.value = ''
     return
   }
 
   isLoadingEvents.value = true
   eventError.value = ''
   expandedEventIndexes.value = new Set()
+  const loadVersion = ++eventLoadVersion
+  let request = null
 
   try {
-    const response = await http.get('/api/agent/audit/events', {
-      params: {
-        sessionId: selectedSessionId.value,
-        event: selectedEventType.value || undefined,
-        limit: 500
-      }
-    })
+    request = auditEventRequests.get(cacheKey)
+    if (!request || force) {
+      request = http.get('/api/agent/audit/events', {
+        params: {
+          sessionId,
+          event: eventType || undefined,
+          limit: 500
+        }
+      })
+      auditEventRequests.set(cacheKey, request)
+    }
 
-    auditEvents.value = Array.isArray(response?.items) ? response.items : []
-    eventTypes.value = Array.isArray(response?.eventTypes) ? response.eventTypes : []
+    const response = await request
+    auditEventCache.set(cacheKey, response)
+
+    if (selectedSessionId.value === sessionId && (selectedEventType.value || '') === eventType) {
+      applyCachedEvents(response)
+    }
   } catch (error) {
-    eventError.value = error instanceof Error ? error.message : '读取审计事件失败。'
-    auditEvents.value = []
+    if (selectedSessionId.value === sessionId && (selectedEventType.value || '') === eventType) {
+      eventError.value = error instanceof Error ? error.message : '读取审计事件失败。'
+      auditEvents.value = []
+    }
   } finally {
-    isLoadingEvents.value = false
+    if (auditEventRequests.get(cacheKey) === request) {
+      auditEventRequests.delete(cacheKey)
+    }
+    if (loadVersion === eventLoadVersion) {
+      isLoadingEvents.value = false
+    }
   }
 }
 
 async function refresh() {
   const previousSessionId = selectedSessionId.value
+  auditEventCache.clear()
   await loadAuditSessions()
 
   if (selectedSessionId.value && selectedSessionId.value === previousSessionId) {
-    await loadAuditEvents()
+    await loadAuditEvents({ force: true })
   }
 }
 
