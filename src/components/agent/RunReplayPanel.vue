@@ -9,8 +9,8 @@
     <template v-if="runs.length">
       <label>选择任务
         <select v-model="runId" :disabled="loading" @change="loadReplay()">
-          <option v-for="run in runs" :key="run.runId" :value="run.runId">
-            {{ run.displayTitle || run.title || '未命名对话' }}
+          <option v-for="(run, index) in runs" :key="run.runId" :value="run.runId">
+            {{ runDisplayLabel(run, index) }}
           </option>
         </select>
       </label>
@@ -22,7 +22,7 @@
           <button type="button" :disabled="loading || position >= sequences.length - 1" @click="seek(position + 1)">下一步</button>
         </div>
         <div class="run-replay__current-event">
-          <span>第 {{ replay.throughSequence }} 条</span>
+          <span>第 {{ selectedRunOrdinal }} 个任务 · 第 {{ replay.throughSequence }} / {{ replay.events.length }} 条</span>
           <strong>{{ eventLabel(currentEvent) }}</strong>
           <span>{{ statusLabel(replay.status) }}</span>
         </div>
@@ -72,6 +72,10 @@ const loading = ref(false)
 const error = ref('')
 let requestVersion = 0
 const currentEvent = computed(() => replay.value?.events.at(-1))
+const selectedRunOrdinal = computed(() => {
+  const index = runs.value.findIndex((run) => run.runId === runId.value)
+  return index >= 0 ? index + 1 : 0
+})
 const dimensions = [
   { key: 'modelCalls', label: '模型请求' }, { key: 'toolCalls', label: '工具请求' },
   { key: 'repairs', label: '修正次数' }, { key: 'totalTokens', label: 'Token' },
@@ -93,6 +97,11 @@ const statusLabel = (value) => ({ running: '执行中', completed: '已完成', 
   waiting_for_user: '等待用户', passed: '通过', repairable: '待修正', pending: '尚未验收', interrupted: '已中断' })[value] || value
 const formatBudget = (value, key) => key === 'activeMs' ? `${((value || 0) / 1000).toFixed(1)} 秒` : value ?? 0
 const eventLabel = (event) => eventLabels[String(event?.type || '').toLowerCase()] || '任务运行事件'
+function runDisplayLabel(run, index) {
+  const title = run.displayTitle || run.title || '未命名对话'
+  const ordinal = index + 1
+  return `第 ${ordinal} 个任务 · ${title} · ${run.eventCount || 0} 条事件`
+}
 const eventDetailItems = (event) => {
   if (!event) return []
   const items = []

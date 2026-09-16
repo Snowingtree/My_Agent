@@ -92,10 +92,16 @@
           <div class="settings-audit-event__card">
             <header class="settings-audit-event__head">
               <div>
+                <span class="settings-audit-event__sequence">第 {{ index + 1 }} 条</span>
                 <span class="settings-audit-event__type">{{ eventLabel(event) }}</span>
                 <strong>{{ eventTitle(event) }}</strong>
               </div>
-              <time>{{ formatDateTime(event.ts || event.time) }}</time>
+              <div class="settings-audit-event__head-actions">
+                <time>{{ formatDateTime(event.ts || event.time) }}</time>
+                <button type="button" class="settings-audit-event__details-toggle" @click="toggleExpanded(index)">
+                  {{ expandedEventIndexes.has(index) ? '收起详情' : '展开详情' }}
+                </button>
+              </div>
             </header>
 
             <dl class="settings-audit-event__meta">
@@ -151,11 +157,6 @@
               <pre>{{ formatJson(event) }}</pre>
             </div>
 
-            <div class="settings-audit-event__actions">
-              <button type="button" @click="toggleExpanded(index)">
-                {{ expandedEventIndexes.has(index) ? '收起技术详情' : '展开技术详情' }}
-              </button>
-            </div>
           </div>
         </article>
       </div>
@@ -1149,6 +1150,7 @@ onMounted(() => {
 
 .settings-audit-event__head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
@@ -1158,6 +1160,12 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.settings-audit-event__head-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 8px !important;
 }
 
 .settings-audit-event__head strong {
@@ -1184,6 +1192,13 @@ onMounted(() => {
   font-size: 0.72rem;
   font-weight: 800;
   padding: 4px 8px;
+}
+
+.settings-audit-event__sequence {
+  flex: 0 0 auto;
+  color: #98a2b3;
+  font-size: 0.72rem;
+  font-weight: 700;
 }
 
 .settings-audit-event__meta {
@@ -1222,13 +1237,7 @@ onMounted(() => {
   line-height: 1.7;
 }
 
-.settings-audit-event__actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.settings-audit-event__actions button {
+.settings-audit-event__details-toggle {
   min-height: 30px;
   padding: 0 10px;
   font-size: 0.78rem;
@@ -1252,21 +1261,21 @@ onMounted(() => {
   font-size: .75rem;
   font-weight: 700;
 }
-.settings-audit-event__copy {
+.settings-audit .settings-audit-event__copy {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: #667085;
   cursor: pointer;
 }
 .settings-audit-event__copy:hover { background: #eaf1ff; color: #3155c8; }
-.settings-audit-event__copy svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.settings-audit .settings-audit-event__copy svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
 .settings-audit-event__details pre {
   max-height: 340px;
   overflow: auto;
