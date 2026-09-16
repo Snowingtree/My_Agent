@@ -21,7 +21,12 @@
             :value="position" :disabled="loading" @change="seek(Number($event.target.value))" />
           <button type="button" :disabled="loading || position >= sequences.length - 1" @click="seek(position + 1)">下一步</button>
         </div>
-        <p>第 {{ replay.throughSequence }} 条 · {{ currentEvent?.type }} · {{ statusLabel(replay.status) }}</p>
+        <div class="run-replay__current-event">
+          <span>第 {{ replay.throughSequence }} 条</span>
+          <strong>{{ eventLabel(currentEvent) }}</strong>
+          <span>{{ statusLabel(replay.status) }}</span>
+        </div>
+        <p class="run-replay__event-summary">{{ eventSummary(currentEvent) }}</p>
         <p v-if="replay.incomplete" role="status">日志存在缺失或截断，只能查看部分过程，无法可靠复验。</p>
         <p v-if="replay.interrupted" role="status">本次运行没有结束记录，可能已中断。</p>
         <dl>
@@ -41,7 +46,7 @@
         <ul v-if="replay.evaluation?.failedCriteria?.length">
           <li v-for="criterion in replay.evaluation.failedCriteria" :key="criterion.id">{{ criterion.description }}</li>
         </ul>
-        <details><summary>当前事件详情</summary><pre>{{ JSON.stringify(currentEvent, null, 2) }}</pre></details>
+        <details><summary>查看技术详情</summary><pre>{{ JSON.stringify(currentEvent, null, 2) }}</pre></details>
       </template>
     </template>
   </section>
@@ -65,9 +70,38 @@ const dimensions = [
   { key: 'repairs', label: '修正次数' }, { key: 'totalTokens', label: 'Token' },
   { key: 'activeMs', label: '执行时长' }
 ]
+const eventLabels = {
+  'run.started': '任务开始', 'run.resumed': '任务恢复', 'run.finished': '任务结束',
+  'contract.created': '确定完成条件', 'verification.planned': '确定验证方案',
+  'verification.started': '开始验证修改', 'verification.command': '执行验证命令',
+  'verification.passed': '验证通过', 'verification.failed': '验证失败',
+  'evidence.recorded': '记录任务证据', 'budget.consumed': '消耗任务预算',
+  'budget.exhausted': '任务预算耗尽', 'model.started': '开始请求模型',
+  'model.completed': '模型请求完成', 'model.failed': '模型请求失败',
+  'model.usage': '记录模型用量', 'tool.requested': '请求调用工具',
+  'tool.completed': '工具调用完成', 'tool.failed': '工具调用失败',
+  'completion.evaluated': '检查完成条件', 'failure.observed': '记录任务失败'
+}
 const statusLabel = (value) => ({ running: '执行中', completed: '已完成', failed: '失败', cancelled: '已取消',
   waiting_for_user: '等待用户', passed: '通过', repairable: '待修正', pending: '尚未验收', interrupted: '已中断' })[value] || value
 const formatBudget = (value, key) => key === 'activeMs' ? `${((value || 0) / 1000).toFixed(1)} 秒` : value ?? 0
+const eventLabel = (event) => eventLabels[String(event?.type || '').toLowerCase()] || '任务运行事件'
+const eventSummary = (event) => {
+  const type = String(event?.type || '').toLowerCase()
+  if (type === 'run.started') return 'Harness 已建立运行记录并开始统计预算。'
+  if (type === 'run.resumed') return '任务恢复执行，之前的预算和证据已保留。'
+  if (type === 'run.finished') return `本次运行已结束，状态为“${statusLabel(event?.status)}”。`
+  if (type === 'contract.created') return '系统已把用户目标转换成可检查的完成条件。'
+  if (type === 'verification.command') return event?.status === 'success' ? '这项验证命令执行成功。' : '这项验证命令没有通过。'
+  if (type === 'verification.passed') return '最近一次文件修改后的验证已通过。'
+  if (type === 'verification.failed') return '至少一项验证没有通过，任务不能直接算完成。'
+  if (type === 'budget.exhausted') return `任务已停止，因为${event?.failure?.dimension || '执行'}预算达到上限。`
+  if (type === 'model.failed' || type === 'tool.failed' || type === 'failure.observed') return event?.failure?.message || '执行出现失败。'
+  if (type === 'completion.evaluated') return `当前完成条件状态为“${statusLabel(event?.evaluation?.status)}”。`
+  if (type === 'tool.requested') return `Agent 请求调用工具${event?.tool ? `“${event.tool}”` : ''}。`
+  if (type === 'tool.completed') return '工具调用完成，结果已纳入任务证据。'
+  return '这是一次任务运行状态记录。'
+}
 async function loadRuns() {
   const version = ++requestVersion
   loading.value = true
@@ -110,6 +144,9 @@ select { min-width: 0; max-width: 100%; flex: 1; }
 button, select { padding: 6px 8px; border: 1px solid #ccd1dc; border-radius: 6px; background: transparent; color: inherit; }
 button { cursor: pointer; } button:disabled { opacity: .5; cursor: default; }
 .run-replay__controls { margin-top: 16px; } input { flex: 1; min-width: 30px; }
+.run-replay__current-event { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; color: #667085; }
+.run-replay__current-event strong { color: #1d2939; }
+.run-replay__event-summary { color: #667085; }
 p, dd { overflow-wrap: anywhere; } dl > div { display: flex; gap: 12px; margin: 8px 0; }
 dt { flex-shrink: 0; } dd { margin: 0; }
 table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 6px; border-bottom: 1px solid #d9dde5; }

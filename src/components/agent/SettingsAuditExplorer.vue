@@ -58,11 +58,12 @@
         </div>
       </div>
 
-      <RunReplayPanel v-if="selectedSessionId" :session-id="selectedSessionId" />
-      <p v-if="eventError" class="settings-audit__status is-error">{{ eventError }}</p>
-      <p v-else-if="isLoadingEvents" class="settings-audit__status">正在读取事件时间线...</p>
-      <p v-else-if="!selectedSessionId" class="settings-audit__status">从左侧选择一个会话，查看 Agent 的决策和工具调用链路。</p>
-      <p v-else-if="!auditEvents.length" class="settings-audit__status">当前筛选条件下没有事件。</p>
+      <div class="settings-audit__events-body">
+        <RunReplayPanel v-if="selectedSessionId" :session-id="selectedSessionId" />
+        <p v-if="eventError" class="settings-audit__status is-error">{{ eventError }}</p>
+        <p v-else-if="isLoadingEvents" class="settings-audit__status">正在读取事件时间线...</p>
+        <p v-else-if="!selectedSessionId" class="settings-audit__status">从左侧选择一个会话，查看 Agent 的决策和工具调用链路。</p>
+        <p v-else-if="!auditEvents.length" class="settings-audit__status">当前筛选条件下没有事件。</p>
 
       <div v-else class="settings-audit__timeline">
         <article
@@ -129,7 +130,7 @@
 
             <div class="settings-audit-event__actions">
               <button type="button" @click="toggleExpanded(index)">
-                {{ expandedEventIndexes.has(index) ? '收起 JSON' : '展开 JSON' }}
+                {{ expandedEventIndexes.has(index) ? '收起技术详情' : '查看技术详情' }}
               </button>
               <button type="button" @click="copyEvent(event)">
                 复制
@@ -139,6 +140,7 @@
             <pre v-if="expandedEventIndexes.has(index)" class="settings-audit-event__json">{{ formatJson(event) }}</pre>
           </div>
         </article>
+      </div>
       </div>
     </section>
   </section>
@@ -260,6 +262,37 @@ const ACTION_EXPLANATIONS = {
   server_shutdown_requested: '服务收到退出信号，正在刷写审计日志并关闭。'
 }
 
+const HARNESS_EVENT_LABELS = {
+  'run.started': '任务开始',
+  'run.resumed': '任务恢复',
+  'run.finished': '任务结束',
+  'contract.created': '确定完成条件',
+  'verification.planned': '确定验证方案',
+  'verification.started': '开始验证修改',
+  'verification.command': '执行验证命令',
+  'verification.passed': '验证通过',
+  'verification.failed': '验证失败',
+  'evidence.initialized': '初始化任务证据',
+  'evidence.recorded': '记录任务证据',
+  'budget.consumed': '消耗任务预算',
+  'budget.exhausted': '任务预算耗尽',
+  'model.started': '开始请求模型',
+  'model.completed': '模型请求完成',
+  'model.failed': '模型请求失败',
+  'model.usage': '记录模型用量',
+  'tool.requested': '请求调用工具',
+  'tool.completed': '工具调用完成',
+  'tool.failed': '工具调用失败',
+  'completion.evaluated': '检查完成条件',
+  'failure.observed': '记录任务失败'
+}
+
+function auditEventType(event) {
+  return String(event?.event || '').toLowerCase() === 'harness_event'
+    ? String(event?.type || '').toLowerCase()
+    : String(event?.event || '').toLowerCase()
+}
+
 function formatDateTime(value) {
   const timestamp = Date.parse(String(value || ''))
 
@@ -277,7 +310,7 @@ function formatDateTime(value) {
 }
 
 function eventClass(event) {
-  const type = String(event?.event || '').toLowerCase()
+  const type = auditEventType(event)
 
   if (type.includes('error')) {
     return 'is-error'
@@ -308,7 +341,7 @@ function eventTypeOptionLabel(value) {
 }
 
 function eventLabel(event) {
-  const type = String(event?.event || '').toLowerCase()
+  const type = auditEventType(event)
   const action = String(event?.action || '').toLowerCase()
   const status = String(event?.status || '').toLowerCase()
   const mode = skillMode(event)
@@ -320,7 +353,7 @@ function eventLabel(event) {
   if (type === 'system_action' && ACTION_LABELS[action]) return ACTION_LABELS[action]
   if (type.includes('error')) return '错误'
 
-  return EVENT_LABELS[type] || event?.event || '事件'
+  return HARNESS_EVENT_LABELS[type] || EVENT_LABELS[type] || event?.type || event?.event || '事件'
 }
 
 function actionLabel(value) {
@@ -398,13 +431,22 @@ function usageText(usage) {
 }
 
 function createReadableEventTitle(event) {
-  const type = String(event?.event || '').toLowerCase()
+  const type = auditEventType(event)
   const action = String(event?.action || '').toLowerCase()
   const status = String(event?.status || '').toLowerCase()
   const mode = skillMode(event)
   const skillName = skillDisplayName(event)
   const requestPath = event?.path || event?.url || ''
   const actionLabelText = actionLabel(action)
+
+  if (String(event?.event || '').toLowerCase() === 'harness_event') {
+    const label = HARNESS_EVENT_LABELS[type] || '任务运行事件'
+    if (type === 'run.finished') return `${label}：${statusLabel(event?.status) || '未知状态'}`
+    if (type === 'verification.command') return `${label}：${event?.commandId != null ? `第 ${Number(event.commandId) + 1} 项` : '检查项'}`
+    if (type === 'budget.consumed') return `${label}：${event?.dimension || '运行资源'}`
+    if (type === 'model.failed' || type === 'tool.failed' || type === 'verification.failed') return `${label}：${event?.failure?.message || event?.message || '请查看技术详情'}`
+    return label
+  }
 
   if (type === 'api_request') return `收到接口请求：${event?.method || 'GET'} ${requestPath}`
   if (type === 'api_response') return `接口响应完成：${event?.method || 'GET'} ${requestPath}，状态 ${event?.statusCode ?? '未知'}`
@@ -468,9 +510,34 @@ function eventTitle(event) {
 }
 
 function createReadableEventSummary(event) {
-  const type = String(event?.event || '').toLowerCase()
+  const type = auditEventType(event)
   const action = String(event?.action || '').toLowerCase()
   const mode = skillMode(event)
+
+  if (String(event?.event || '').toLowerCase() === 'harness_event') {
+    if (type === 'run.started') return 'Harness 已为这次任务建立运行记录，并开始统计预算。'
+    if (type === 'run.resumed') return '任务在用户确认或服务恢复后继续，之前的预算和证据会保留。'
+    if (type === 'run.finished') return `本次运行已结束，状态为：${statusLabel(event?.status) || '未知'}。`
+    if (type === 'contract.created') return '系统已经把用户目标转换成可检查的完成条件。'
+    if (type === 'verification.planned') return `任务预先确定了 ${Array.isArray(event?.commands) ? event.commands.length : 0} 项验证命令。`
+    if (type === 'verification.started') return '文件修改完成后，系统开始执行预设验证。'
+    if (type === 'verification.command') return event?.status === 'success' ? '这一项验证命令执行成功。' : '这一项验证命令没有通过。'
+    if (type === 'verification.passed') return '最近一次文件修改之后的验证已经通过。'
+    if (type === 'verification.failed') return '至少一项验证没有通过，任务不能直接算完成。'
+    if (type === 'evidence.initialized') return '系统初始化了任务完成判断所需的证据状态。'
+    if (type === 'evidence.recorded') return `已记录：${event?.evidence?.type || '一条任务证据'}。`
+    if (type === 'budget.consumed') return `本次使用了 1 个${event?.dimension === 'modelCalls' ? '模型请求' : event?.dimension === 'toolCalls' ? '工具调用' : event?.dimension === 'repairs' ? '修正次数' : '预算单位'}。`
+    if (type === 'budget.exhausted') return `任务已停止，因为${event?.failure?.dimension || '执行'}预算达到上限。`
+    if (type === 'model.started') return 'Agent 正在请求模型决定下一步。'
+    if (type === 'model.completed') return '模型已经返回决定。'
+    if (type === 'model.failed') return `模型请求失败：${event?.failure?.message || '请查看技术详情'}。`
+    if (type === 'tool.requested') return `Agent 请求调用工具${event?.tool ? `“${event.tool}”` : ''}。`
+    if (type === 'tool.completed') return '工具调用已完成，结果已纳入任务证据。'
+    if (type === 'tool.failed') return `工具调用失败：${event?.failure?.message || '请查看技术详情'}。`
+    if (type === 'completion.evaluated') return `系统检查了完成条件，当前状态为“${statusLabel(event?.evaluation?.status) || '未完成'}”。`
+    if (type === 'failure.observed') return `系统记录了任务失败：${event?.failure?.message || '请查看技术详情'}。`
+    return '这是一次任务运行状态记录。'
+  }
 
   if (type === 'api_request') {
     return '前端或外部客户端访问了一个后端接口。这条记录用于追踪谁在什么时候触发了哪个入口。'
@@ -801,6 +868,12 @@ onMounted(() => {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
+.settings-audit__events-body {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
 .settings-audit__panel-head {
   display: flex;
   align-items: flex-start;
@@ -942,7 +1015,7 @@ onMounted(() => {
   display: grid;
   align-content: start;
   gap: 12px;
-  overflow: auto;
+  overflow: visible;
   padding: 16px 18px 18px;
 }
 
