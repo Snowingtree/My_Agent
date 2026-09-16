@@ -1,13 +1,16 @@
 <template>
   <section class="run-replay" aria-label="任务回放">
-    <header>
-      <strong>任务回放</strong>
+    <header class="run-replay__header">
+      <div>
+        <strong>任务回放</strong>
+        <p>按一次 Harness 运行查看任务过程</p>
+      </div>
       <button type="button" :disabled="loading" @click="loadRuns">{{ loading ? '读取中…' : '刷新任务' }}</button>
     </header>
     <p v-if="error" role="alert">{{ error }}</p>
     <p v-else-if="!runs.length && !loading">暂无第二阶段的任务记录。</p>
     <template v-if="runs.length">
-      <label>选择任务
+      <label class="run-replay__selector">选择运行
         <select v-model="runId" :disabled="loading" @change="loadReplay()">
           <option v-for="(run, index) in runs" :key="run.runId" :value="run.runId">
             {{ runDisplayLabel(run, index) }}
@@ -17,33 +20,49 @@
       <template v-if="replay">
         <div class="run-replay__controls">
           <button type="button" :disabled="loading || position <= 0" @click="seek(position - 1)">上一步</button>
-          <input aria-label="回放进度" type="range" min="0" :max="Math.max(0, sequences.length - 1)"
-            :value="position" :disabled="loading" @change="seek(Number($event.target.value))" />
+          <div class="run-replay__progress-track">
+            <input aria-label="回放进度" type="range" min="0" :max="Math.max(0, sequences.length - 1)"
+              :value="position" :disabled="loading" @change="seek(Number($event.target.value))" />
+            <span>事件 {{ replay.throughSequence }} / {{ replay.events.length }}</span>
+          </div>
           <button type="button" :disabled="loading || position >= sequences.length - 1" @click="seek(position + 1)">下一步</button>
         </div>
-        <div class="run-replay__current-event">
-          <span>第 {{ selectedRunOrdinal }} 个任务 · 第 {{ replay.throughSequence }} / {{ replay.events.length }} 条</span>
-          <strong>{{ eventLabel(currentEvent) }}</strong>
-          <span>{{ statusLabel(replay.status) }}</span>
+        <section class="run-replay__current-event">
+          <div class="run-replay__current-event-head">
+            <span>运行 {{ selectedRunOrdinal }} · Harness 事件 {{ replay.throughSequence }} / {{ replay.events.length }}</span>
+            <strong>{{ statusLabel(replay.status) }}</strong>
+          </div>
+          <h4>{{ eventLabel(currentEvent) }}</h4>
+          <p>{{ eventSummary(currentEvent) }}</p>
+        </section>
+        <p class="run-replay__mapping-hint">
+          回放中的 Harness 事件序号与上方“审计事件”列表独立计算，不是一一对应的审计事件序号。
+        </p>
+        <p v-if="replay.incomplete" class="run-replay__notice" role="status">日志存在缺失或截断，只能查看部分过程，无法可靠复验。</p>
+        <p v-if="replay.interrupted" class="run-replay__notice" role="status">本次运行没有结束记录，可能已中断。</p>
+        <div class="run-replay__overview">
+          <section class="run-replay__result-block">
+            <h4>任务结果</h4>
+            <dl>
+              <div><dt>文件变化</dt><dd>{{ replay.evidence.workspace.changedFiles.join('、') || '尚未记录' }}</dd></div>
+              <div><dt>证据复验</dt><dd>{{ statusLabel(replay.replayedEvaluation?.status || 'pending') }}</dd></div>
+              <div><dt>最近验收</dt><dd>{{ statusLabel(replay.evaluation?.status || 'pending') }}</dd></div>
+              <div v-if="replay.failure"><dt>失败原因</dt><dd>{{ replay.failure.category }}：{{ replay.failure.message }}</dd></div>
+            </dl>
+          </section>
+          <section v-if="replay.budget" class="run-replay__budget-block">
+            <h4>预算使用</h4>
+            <table>
+              <thead><tr><th>项目</th><th>已用</th><th>上限</th></tr></thead>
+              <tbody><tr v-for="dimension in dimensions" :key="dimension.key">
+                <td>{{ dimension.label }}</td><td>{{ formatBudget(replay.budget.used[dimension.key], dimension.key) }}</td>
+                <td>{{ replay.budget.limits[dimension.key] === 0 && dimension.key !== 'repairs' ? '未限制' : formatBudget(replay.budget.limits[dimension.key], dimension.key) }}</td>
+              </tr></tbody>
+            </table>
+          </section>
         </div>
-        <p class="run-replay__event-summary">{{ eventSummary(currentEvent) }}</p>
-        <p v-if="replay.incomplete" role="status">日志存在缺失或截断，只能查看部分过程，无法可靠复验。</p>
-        <p v-if="replay.interrupted" role="status">本次运行没有结束记录，可能已中断。</p>
-        <dl>
-          <div><dt>文件变化</dt><dd>{{ replay.evidence.workspace.changedFiles.join('、') || '尚未记录' }}</dd></div>
-          <div><dt>证据复验</dt><dd>{{ statusLabel(replay.replayedEvaluation?.status || 'pending') }}</dd></div>
-          <div><dt>最近验收</dt><dd>{{ statusLabel(replay.evaluation?.status || 'pending') }}</dd></div>
-          <div v-if="replay.failure"><dt>失败原因</dt><dd>{{ replay.failure.category }}：{{ replay.failure.message }}</dd></div>
-        </dl>
-        <table v-if="replay.budget">
-          <thead><tr><th>预算</th><th>已用</th><th>上限</th></tr></thead>
-          <tbody><tr v-for="dimension in dimensions" :key="dimension.key">
-            <td>{{ dimension.label }}</td><td>{{ formatBudget(replay.budget.used[dimension.key], dimension.key) }}</td>
-            <td>{{ replay.budget.limits[dimension.key] === 0 && dimension.key !== 'repairs' ? '未限制' : formatBudget(replay.budget.limits[dimension.key], dimension.key) }}</td>
-          </tr></tbody>
-        </table>
-        <p v-if="replay.budget?.used.unknownUsageCalls">有 {{ replay.budget.used.unknownUsageCalls }} 次请求未获得 Token 用量，统计不完整。</p>
-        <ul v-if="replay.evaluation?.failedCriteria?.length">
+        <p v-if="replay.budget?.used.unknownUsageCalls" class="run-replay__notice">有 {{ replay.budget.used.unknownUsageCalls }} 次请求未获得 Token 用量，统计不完整。</p>
+        <ul v-if="replay.evaluation?.failedCriteria?.length" class="run-replay__failed-list">
           <li v-for="criterion in replay.evaluation.failedCriteria" :key="criterion.id">{{ criterion.description }}</li>
         </ul>
         <details>
@@ -100,7 +119,7 @@ const eventLabel = (event) => eventLabels[String(event?.type || '').toLowerCase(
 function runDisplayLabel(run, index) {
   const title = run.displayTitle || run.title || '未命名对话'
   const ordinal = index + 1
-  return `第 ${ordinal} 个任务 · ${title} · ${run.eventCount || 0} 条事件`
+  return `运行 ${ordinal} · ${title} · ${run.eventCount || 0} 条 Harness 事件`
 }
 const eventDetailItems = (event) => {
   if (!event) return []
@@ -182,22 +201,224 @@ watch(() => props.sessionId, () => { runs.value = []; runId.value = ''; loadRuns
 </script>
 
 <style scoped>
-.run-replay { padding: 16px 0; margin: 16px 0; border-block: 1px solid #d9dde5; font-size: 13px; }
-header, .run-replay__controls { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
-label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-select { min-width: 0; max-width: 100%; flex: 1; }
-button, select { padding: 6px 8px; border: 1px solid #ccd1dc; border-radius: 6px; background: transparent; color: inherit; }
-button { cursor: pointer; } button:disabled { opacity: .5; cursor: default; }
-.run-replay__controls { margin-top: 16px; } input { flex: 1; min-width: 30px; }
-.run-replay__current-event { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 14px; color: #667085; }
-.run-replay__current-event strong { color: #1d2939; }
-.run-replay__event-summary { color: #667085; }
-p, dd { overflow-wrap: anywhere; } dl > div { display: flex; gap: 12px; margin: 8px 0; }
-dt { flex-shrink: 0; } dd { margin: 0; }
-table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 6px; border-bottom: 1px solid #d9dde5; }
-details { margin-top: 12px; }
-.run-replay__details { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 14px; margin-top: 10px; padding: 12px; border: 1px solid #e4e9f2; border-radius: 8px; background: #f8faff; }
+.run-replay {
+  padding: 18px 0 14px;
+  margin: 16px 0;
+  border-block: 1px solid #d9dde5;
+  color: #344054;
+  font-size: 13px;
+}
+
+.run-replay__header,
+.run-replay__controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.run-replay__header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.run-replay__header strong {
+  color: #1d2939;
+  font-size: 1rem;
+}
+
+.run-replay__header p {
+  margin: 0;
+  color: #98a2b3;
+  font-size: 0.76rem;
+}
+
+.run-replay button,
+.run-replay select {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid #ccd1dc;
+  border-radius: 7px;
+  background: #ffffff;
+  color: inherit;
+  font: inherit;
+}
+
+.run-replay button { cursor: pointer; }
+.run-replay button:disabled { opacity: .5; cursor: default; }
+
+.run-replay__selector {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.run-replay__selector select { min-width: 0; width: 100%; }
+
+.run-replay__controls {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin-top: 14px;
+}
+
+.run-replay__progress-track {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.run-replay__progress-track input {
+  width: 100%;
+  min-width: 30px;
+  accent-color: #1677ff;
+}
+
+.run-replay__progress-track span {
+  color: #98a2b3;
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.run-replay__current-event {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #dbe3f0;
+  border-radius: 10px;
+  background: #f8faff;
+}
+
+.run-replay__current-event-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #667085;
+  font-size: 0.76rem;
+}
+
+.run-replay__current-event-head strong {
+  color: #227a48;
+  font-size: 0.76rem;
+}
+
+.run-replay__current-event h4,
+.run-replay__result-block h4,
+.run-replay__budget-block h4 {
+  margin: 0;
+  color: #1d2939;
+  font-size: 0.92rem;
+}
+
+.run-replay__current-event p,
+.run-replay__mapping-hint,
+.run-replay__notice {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.run-replay__current-event p { color: #667085; line-height: 1.6; }
+
+.run-replay__mapping-hint {
+  margin-top: 8px;
+  color: #98a2b3;
+  font-size: 0.74rem;
+}
+
+.run-replay__notice {
+  margin-top: 10px;
+  color: #a15c00;
+  font-size: 0.78rem;
+}
+
+.run-replay__overview {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.78fr) minmax(360px, 1.22fr);
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.run-replay__result-block,
+.run-replay__budget-block {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid #e4e9f2;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.run-replay dl {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.run-replay dl > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  margin: 0;
+}
+
+.run-replay dt {
+  flex-shrink: 0;
+  color: #98a2b3;
+}
+
+.run-replay dd {
+  min-width: 0;
+  margin: 0;
+  color: #344054;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.run-replay table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+}
+
+.run-replay th,
+.run-replay td {
+  padding: 6px 4px;
+  border-bottom: 1px solid #edf0f4;
+  text-align: left;
+}
+
+.run-replay th { color: #667085; font-weight: 700; }
+.run-replay td { color: #344054; }
+
+.run-replay__failed-list {
+  margin: 12px 0 0;
+  padding: 10px 12px 10px 28px;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.run-replay details { margin-top: 14px; }
+.run-replay details summary { color: #3155c8; cursor: pointer; text-align: right; }
+
+.run-replay__details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 14px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid #e4e9f2;
+  border-radius: 8px;
+  background: #f8faff;
+}
+
 .run-replay__details div { display: grid; gap: 3px; min-width: 0; }
 .run-replay__details span { color: #7a869f; font-size: .75rem; }
 .run-replay__details strong { color: #344054; overflow-wrap: anywhere; }
+
+@media (max-width: 720px) {
+  .run-replay__overview { grid-template-columns: 1fr; }
+}
 </style>
