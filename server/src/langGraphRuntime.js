@@ -97,7 +97,7 @@ export function createAgentTaskGraph({
         lastDecision: state.lastDecision,
         lastUsage: state.lastUsage,
         guardRound: state.guardRound,
-        remainingToolIterations: state.remainingToolIterations,
+        remainingToolIterations: Math.max(0, state.remainingToolIterations - Number(state.agentResult?.toolCalls || 0)),
         maxGuardRounds
       })
 

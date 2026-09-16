@@ -129,6 +129,8 @@ function normalizeRecord(input = {}) {
   return {
     ts: nowIso(),
     ...sanitizedInput,
+    ...(event === 'harness_event' && JSON.stringify(sanitizedInput) !== JSON.stringify(input)
+      ? { dataTruncated: true } : {}),
     sessionId,
     event,
     category: normalizeAuditEventCategory(event)
@@ -441,13 +443,18 @@ export class AuditLogger {
     }
   }
 
+  async drain() {
+    // Wait for the in-flight batch as well as queued records; flush alone is not a barrier.
+    while (this.flushing || this.queue.length) {
+      if (this.flushing) await new Promise((resolve) => setTimeout(resolve, 10))
+      else await this.flush()
+    }
+  }
+
   async shutdown() {
     this.closed = true
     clearInterval(this.timer)
-
-    while (this.queue.length) {
-      await this.flush()
-    }
+    await this.drain()
 
     const worker = this.writerWorker
 

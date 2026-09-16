@@ -148,3 +148,16 @@ test('session summary exposes criteria without persisting repair instructions', 
   }])
   assert.equal(Object.hasOwn(summary.criteria[0], 'repairInstruction'), false)
 })
+
+test('latest command failure invalidates verification and mutation clears all command results', () => {
+  let evidence = createCompletionEvidence({ startedAt: T0 })
+  evidence = recordCompletionEvidence(evidence, { type: 'verification.command', commandId: '0', status: 'success', at: T1 })
+  evidence = recordCompletionEvidence(evidence, { type: 'verification.command', commandId: '1', status: 'success', at: T1 })
+  evidence = recordCompletionEvidence(evidence, { type: 'verification.passed', at: T1 })
+  evidence = recordCompletionEvidence(evidence, { type: 'verification.command', commandId: '1', status: 'failed', at: T2 })
+  assert.equal(evidence.verification.passed, false)
+  assert.equal(evidence.verification.commands['0'], true)
+  assert.equal(evidence.verification.commands['1'], false)
+  evidence = recordCompletionEvidence(evidence, { type: 'workspace.modified', path: 'page.js', at: T3 })
+  assert.deepEqual(evidence.verification.commands, {})
+})

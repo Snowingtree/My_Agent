@@ -258,6 +258,9 @@ export function createConfig() {
       commandTimeoutMs: readNumberEnv('AGENT_COMMAND_TIMEOUT_MS', 120000),
       maxToolIterations: readNumberEnv('AGENT_MAX_TOOL_ITERATIONS', 6),
       maxCompletionRepairAttempts: readNumberEnv('AGENT_MAX_COMPLETION_REPAIRS', 2),
+      maxModelCalls: readNumberEnv('AGENT_MAX_MODEL_CALLS', 40),
+      maxToolCalls: readNumberEnv('AGENT_MAX_TOOL_CALLS', 60),
+      maxTotalTokens: readNumberEnv('AGENT_MAX_TOTAL_TOKENS', 0),
       timezone: String(process.env.AGENT_TIMEZONE || 'Asia/Shanghai').trim() || 'Asia/Shanghai'
     },
     subagents: {

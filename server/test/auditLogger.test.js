@@ -42,3 +42,21 @@ test('audit logger writes five CyberClaw categories through JSONL', async () => 
   assert.equal(records[5].category, 'tool_call')
   assert.ok(records.every((record) => record.hash))
 })
+
+test('drain waits for in-flight records and marks lossy replay data', async () => {
+  const auditDir = await mkdtemp(join(tmpdir(), 'agent-audit-drain-'))
+  const logger = createAuditLogger({ auditDir, batchSize: 1 })
+  try {
+    logger.logEvent({ sessionId: 'session-1', event: 'harness_event', sequence: 1, path: 'x'.repeat(1300) })
+    const pending = logger.flush()
+    logger.logEvent({ sessionId: 'session-1', event: 'harness_event', sequence: 2, budget: { totalTokens: 12 }, apiKey: 'private' })
+    await logger.drain()
+    await pending
+    const records = (await readFile(join(auditDir, 'session-1.jsonl'), 'utf8')).trim().split(/\r?\n/).map(JSON.parse)
+    assert.equal(records.length, 2)
+    assert.equal(records[0].dataTruncated, true)
+    assert.equal(records[1].apiKey, '[redacted]')
+    assert.equal(records[1].budget.totalTokens, 12)
+    assert.equal(records[1].prevHash, records[0].hash)
+  } finally { await logger.shutdown() }
+})

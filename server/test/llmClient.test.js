@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createRunContext, withRun } from '../src/runContext.js'
 
 import {
   createStructuredCompletion,
@@ -40,6 +41,32 @@ function installFetchMock(t, handler) {
     globalThis.fetch = originalFetch
   })
 }
+
+test('compatibility retries consume actual request budget before dispatch', async (t) => {
+  let calls = 0
+  installFetchMock(t, async () => {
+    calls += 1
+    return jsonResponse({ error: { message: 'response_format not supported' } }, 500)
+  })
+  const run = createRunContext({ config: { maxModelCalls: 1 } })
+  await assert.rejects(withRun(run, () => createStructuredCompletion({
+    aiConfig: { baseURL: 'https://api.openai.com/v1', apiKey: 'test' }, model: 'gpt-test',
+    messages: [{ role: 'user', content: 'Hello' }], requestTimeoutMs: 1000
+  })), { code: 'BUDGET_EXHAUSTED' })
+  assert.equal(calls, 1)
+  assert.equal(run.snapshot().used.modelCalls, 1)
+})
+
+test('timeout retries consume request budget and stop before another transport attempt', async (t) => {
+  let calls = 0
+  installFetchMock(t, async () => { calls += 1; throw Object.assign(new Error('timeout'), { name: 'AbortError' }) })
+  const run = createRunContext({ config: { maxModelCalls: 1 } })
+  await assert.rejects(withRun(run, () => createTextCompletion({
+    aiConfig: { baseURL: 'https://example.invalid/v1', apiKey: 'test' }, model: 'test',
+    messages: [], requestTimeoutMs: 1000, timeoutRetries: 3
+  })), { code: 'BUDGET_EXHAUSTED' })
+  assert.equal(calls, 1)
+})
 
 test('protocol detection prefers endpoint and known gateway hints', () => {
   assert.equal(resolveAiProtocol({

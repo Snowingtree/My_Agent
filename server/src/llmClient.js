@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises'
+import { budgetedModelAttempt } from './runContext.js'
 
 const AI_PROTOCOL_OPENAI = 'openai'
 const AI_PROTOCOL_ANTHROPIC = 'anthropic'
@@ -1142,18 +1143,21 @@ async function runStructuredCompletionAttempt({
       const requestBody = requestBodies[index]
       const usedStructuredMode = Boolean(requestBody.response_format)
 
-      const response = await fetch(resolveEndpoint(aiConfig.baseURL, apiProtocol), {
-        method: 'POST',
-        headers: buildRequestHeaders(aiConfig, apiProtocol, streamResponses),
-        body: JSON.stringify(requestBody),
-        signal: controller.signal
-      })
+      const { response, streamedResult } = await budgetedModelAttempt({ model, kind: 'structured', variant: index }, async () => {
+        const response = await fetch(resolveEndpoint(aiConfig.baseURL, apiProtocol), {
+          method: 'POST',
+          headers: buildRequestHeaders(aiConfig, apiProtocol, streamResponses),
+          body: JSON.stringify(requestBody),
+          signal: controller.signal
+        })
 
-      const streamedResult = await readStreamedResponseBody(response, {
-        controller,
-        idleTimeoutMs,
-        onTextChunk
-      })
+        const streamedResult = await readStreamedResponseBody(response, {
+          controller,
+          idleTimeoutMs,
+          onTextChunk
+        })
+        return { response, streamedResult, usage: streamedResult.usage }
+      }, { signal })
       const { rawText, usage, responseText, payload, idleTimedOut } = streamedResult
 
       if (!response.ok) {
@@ -1313,23 +1317,26 @@ async function runTextCompletionAttempt({
 
   try {
     const apiProtocol = resolveAiProtocol({ aiConfig, model })
-    const response = await fetch(resolveEndpoint(aiConfig.baseURL, apiProtocol), {
-      method: 'POST',
-      headers: buildRequestHeaders(aiConfig, apiProtocol, streamResponses),
-      body: JSON.stringify(buildTextRequestBody({
-        aiConfig,
-        model,
-        messages,
-        streamResponses
-      })),
-      signal: controller.signal
-    })
+    const { response, streamedResult } = await budgetedModelAttempt({ model, kind: 'text' }, async () => {
+      const response = await fetch(resolveEndpoint(aiConfig.baseURL, apiProtocol), {
+        method: 'POST',
+        headers: buildRequestHeaders(aiConfig, apiProtocol, streamResponses),
+        body: JSON.stringify(buildTextRequestBody({
+          aiConfig,
+          model,
+          messages,
+          streamResponses
+        })),
+        signal: controller.signal
+      })
 
-    const streamedResult = await readStreamedResponseBody(response, {
-      controller,
-      idleTimeoutMs,
-      onTextChunk
-    })
+      const streamedResult = await readStreamedResponseBody(response, {
+        controller,
+        idleTimeoutMs,
+        onTextChunk
+      })
+      return { response, streamedResult, usage: streamedResult.usage }
+    }, { signal })
     const { rawText, usage, responseText, payload, idleTimedOut } = streamedResult
 
     if (idleTimedOut) {

@@ -58,6 +58,7 @@
         </div>
       </div>
 
+      <RunReplayPanel v-if="selectedSessionId" :session-id="selectedSessionId" />
       <p v-if="eventError" class="settings-audit__status is-error">{{ eventError }}</p>
       <p v-else-if="isLoadingEvents" class="settings-audit__status">正在读取事件时间线...</p>
       <p v-else-if="!selectedSessionId" class="settings-audit__status">从左侧选择一个会话，查看 Agent 的决策和工具调用链路。</p>
@@ -147,6 +148,7 @@
 import { nextTick, onMounted, ref } from 'vue'
 import { createMessage } from 'snowingress-my-components'
 import http from '../../http.js'
+import RunReplayPanel from './RunReplayPanel.vue'
 
 const auditSessions = ref([])
 const auditEvents = ref([])
@@ -161,6 +163,7 @@ const eventError = ref('')
 const auditSessionItemRefs = new Map()
 
 const EVENT_LABELS = {
+  harness_event: '任务运行记录',
   api_request: '接口请求',
   api_response: '接口响应',
   auth_success: '登录成功',

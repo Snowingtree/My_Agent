@@ -1,5 +1,6 @@
 import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve } from 'node:path'
+import { classifyRunFailure, runError } from './runFailure.js'
 import {
   cloneValue,
   createId,
@@ -35,6 +36,9 @@ function createSessionSummary(session) {
         title: session.task.title,
         status: session.task.status,
         summary: session.task.summary,
+        run: session.task.run,
+        failure: session.task.failure,
+        completion: session.task.completion,
         updatedAt: session.task.updatedAt,
         steps: Array.isArray(session.task.steps) ? session.task.steps : []
       }
@@ -589,6 +593,8 @@ export class SessionRepository {
           ...session.task,
           status: 'failed',
           summary: '助手服务已重启，之前的任务未能执行完成。',
+          failure: classifyRunFailure(runError('RUN_INTERRUPTED', '助手服务重启，任务已中断。')),
+          completion: { ...session.task.completion, status: 'failed' },
           steps: nextSteps,
           completedAt: timestamp,
           updatedAt: timestamp

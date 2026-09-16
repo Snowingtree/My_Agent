@@ -149,6 +149,10 @@ export function createCompletionEvidence(initial = {}) {
       type: normalizeString(event?.type),
       at: normalizeTimestamp(event?.at),
       tool: normalizeString(event?.tool),
+      executionId: normalizeString(event?.executionId),
+      commandId: normalizeString(event?.commandId),
+      skillId: normalizeString(event?.skillId),
+      failure: event?.failure || null,
       status: normalizeString(event?.status),
       path: normalizeString(event?.path)
     })).filter((event) => event.type),
@@ -163,6 +167,7 @@ export function createCompletionEvidence(initial = {}) {
       attempted: Boolean(verification.attempted),
       passed: Boolean(verification.passed),
       failed: Boolean(verification.failed),
+      commands: { ...(verification.commands || {}) },
       lastAttemptAt: normalizeTimestamp(verification.lastAttemptAt),
       lastPassedAt: normalizeTimestamp(verification.lastPassedAt)
     },
@@ -186,6 +191,10 @@ export function recordCompletionEvidence(evidence, event = {}) {
       type,
       at,
       tool: normalizeString(event.tool),
+      executionId: normalizeString(event.executionId),
+      commandId: normalizeString(event.commandId),
+      skillId: normalizeString(event.skillId),
+      failure: event.failure || null,
       status: normalizeString(event.status),
       path: normalizeString(event.path)
     }
@@ -203,6 +212,16 @@ export function recordCompletionEvidence(evidence, event = {}) {
     next.verification.passed = false
     next.verification.failed = false
     next.verification.lastPassedAt = ''
+    next.verification.commands = {}
+  } else if (type === 'verification.command') {
+    next.verification.available = true
+    next.verification.attempted = true
+    next.verification.lastAttemptAt = at
+    next.verification.commands[event.commandId] = event.status === 'success'
+    if (event.status !== 'success') {
+      next.verification.passed = false
+      next.verification.failed = true
+    }
   } else if (type === 'verification.started') {
     next.verification.available = true
     next.verification.attempted = true

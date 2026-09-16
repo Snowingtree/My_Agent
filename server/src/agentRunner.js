@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { analyzeCommandPolicy } from './commandPolicy.js'
+import { createRunContext, currentRun, withRun } from './runContext.js'
+import { classifyRunFailure, classifyToolResult, runError } from './runFailure.js'
 import {
   COMPLETION_STATUS,
   createCompletionContract,
@@ -1958,6 +1960,8 @@ export function createAgentRunner({
     auditLogger.logEvent({
       sessionId,
       event,
+      runId: currentRun()?.runId,
+      taskId: currentRun()?.taskId,
       ...payload
     })
   }
@@ -2341,11 +2345,13 @@ export function createAgentRunner({
   }) {
     const taskStartedAtMs = Date.now()
     const throwIfCancelled = () => {
+      if (currentRun()?.budgetError) throw currentRun().budgetError
       if (abortSignal?.aborted) {
         throw createCancellationError()
       }
     }
     const throwIfTaskTimedOut = () => {
+      currentRun()?.assertWithinBudget()
       const timeoutMs = Number(runtimeConfig?.taskTimeoutMs || 0)
 
       if (timeoutMs > 0 && Date.now() - taskStartedAtMs > timeoutMs) {
@@ -2562,7 +2568,7 @@ export function createAgentRunner({
       }
     }
     const toolMessages = []
-    const verificationCommands = await resolveVerificationCommands({
+    const verificationCommands = approvedPendingToolApproval?.state?.verificationCommands || await resolveVerificationCommands({
       workspaceConfig,
       sessionId,
       toolRunner
@@ -2647,10 +2653,18 @@ export function createAgentRunner({
       )
     })
     let lastCompletionEvaluation = null
-    let lastCompletionRepairAttempts = 0
+    let lastCompletionRepairAttempts = currentRun()?.snapshot().used.repairs || 0
     const recordEvidence = (event) => {
-      completionEvidence = recordCompletionEvidence(completionEvidence, event)
+      const recordedEvent = { ...event, at: event.at || nowIso() }
+      completionEvidence = recordCompletionEvidence(completionEvidence, recordedEvent)
+      currentRun()?.emit('evidence.recorded', { evidence: recordedEvent })
       return completionEvidence
+    }
+
+    if (approvedExecutionState.run?.runId !== currentRun()?.runId) {
+      currentRun()?.emit('contract.created', { contract: { ...completionContract, goal: '' } })
+      currentRun()?.emit('evidence.initialized', { evidence: completionEvidence })
+      currentRun()?.emit('verification.planned', { commands: verificationCommands })
     }
 
     for (const skillId of completionEvidence.activeSkillIds) {
@@ -2736,7 +2750,9 @@ export function createAgentRunner({
           inspectedWorkspace: Boolean(executionState.inspectedWorkspace),
           updatedUserProfileMemory: Boolean(executionState.updatedUserProfileMemory),
           completionContract,
-          completionEvidence
+          completionEvidence,
+          verificationCommands,
+          run: currentRun()?.snapshot()
         },
         context: {
           requestedAiId: aiConfig.aiId,
@@ -2814,6 +2830,8 @@ export function createAgentRunner({
 
       const normalizedRequest = normalizeToolRequest(toolRequest)
       const toolExecutionId = createId('tool')
+      currentRun()?.consume('toolCalls', { tool: normalizedRequest.name, executionId: toolExecutionId })
+      currentRun()?.emit('tool.requested', { tool: normalizedRequest.name, executionId: toolExecutionId })
       const protectedTool = isProtectedToolName(normalizedRequest.name)
       const requestedToolMode = protectedTool ? normalizeToolMode(normalizedRequest.args) : ''
       const strippedProtectedArgs = protectedTool
@@ -3035,6 +3053,7 @@ export function createAgentRunner({
               durationMs: delegatedResult.durationMs
             }
           } catch (error) {
+            if (currentRun()?.budgetError || error?.code === 'BUDGET_EXHAUSTED') throw currentRun()?.budgetError || error
             const errorMessage = normalizeTrimmedString(error?.message) || '子 Agent 未能完成委派任务。'
             toolExecution = {
               tool: DELEGATE_TASK_TOOL_NAME,
@@ -3276,11 +3295,15 @@ export function createAgentRunner({
           durationMs: Date.now() - toolStartedAt
         }
       } catch (error) {
+        recordEvidence({ type: 'tool.failed', tool: executableRequest.name, executionId: toolExecutionId,
+          status: 'failed', failure: classifyRunFailure(currentRun()?.budgetError || error, { source: 'tool' }) })
+        if (currentRun()?.budgetError || error?.code === 'BUDGET_EXHAUSTED') throw currentRun()?.budgetError || error
         if (isCancellationError(error) || abortSignal?.aborted) {
           taskSteps[taskSteps.length - 1] = cancelStep(toolStep, '已停止当前处理。')
           throw createCancellationError()
         }
         const errorMessage = normalizeTrimmedString(error?.message) || `工具 ${executableRequest.name} 执行失败。`
+        currentRun()?.fail(error, { source: 'tool' })
         audit(sessionId, isMcpTool ? 'mcp_result' : 'tool_result', {
           executionId: toolExecutionId,
           tool: executableRequest.name,
@@ -3351,9 +3374,15 @@ export function createAgentRunner({
 
       throwIfCancelled()
       throwIfTaskTimedOut()
-      taskSteps[taskSteps.length - 1] = completeStep(toolStep, toolExecution.summary)
+      const toolFailure = classifyToolResult(toolExecution)
+      if (toolFailure) toolExecution.status = 'failed'
+      taskSteps[taskSteps.length - 1] = toolFailure
+        ? failStep(toolStep, toolExecution.summary)
+        : completeStep(toolStep, toolExecution.summary)
       recordEvidence({
-        type: 'tool.completed',
+        type: toolFailure ? 'tool.failed' : 'tool.completed',
+        failure: toolFailure,
+        executionId: toolExecutionId,
         at: nowIso(),
         tool: toolExecution.tool,
         status: toolExecution.status || 'success'
@@ -3405,6 +3434,7 @@ export function createAgentRunner({
         if (toolExecution.result?.running) {
           recordEvidence({
             type: 'skill.activated',
+            executionId: toolExecutionId,
             at: nowIso(),
             skillId: toolExecution.result?.skillId,
             tool: toolExecution.tool,
@@ -3425,9 +3455,10 @@ export function createAgentRunner({
           running: toolExecution.result?.running
         })
       }
-      if (toolExecution.tool === MEMORY_TOOL_NAME) {
+      if (!toolFailure && toolExecution.tool === MEMORY_TOOL_NAME) {
         recordEvidence({
           type: 'user_profile.updated',
+          executionId: toolExecutionId,
           at: nowIso(),
           tool: toolExecution.tool,
           status: toolExecution.status || 'success'
@@ -3450,10 +3481,11 @@ export function createAgentRunner({
         status: toolExecution.status || 'success'
       })
 
-      if (isReadToolName(toolExecution.tool)) {
+      if (!toolFailure && isReadToolName(toolExecution.tool)) {
         executionState.inspectedWorkspace = true
         recordEvidence({
           type: 'workspace.inspected',
+          executionId: toolExecutionId,
           at: nowIso(),
           tool: toolExecution.tool,
           status: toolExecution.status || 'success'
@@ -3484,6 +3516,7 @@ export function createAgentRunner({
 
         recordEvidence({
           type: 'workspace.modified',
+          executionId: toolExecutionId,
           at: nowIso(),
           tool: toolExecution.tool,
           status: toolExecution.status || 'success',
@@ -3514,29 +3547,19 @@ export function createAgentRunner({
         }
       }
 
-      if (
-        toolExecution.tool === 'run_command'
-        && executionState.modifiedWorkspace
-        && toolExecution.result?.exitCode === 0
-      ) {
-        if (!verificationCommands.length) {
-          executionState.verifiedAfterModification = true
-          executionState.verificationFailed = false
-          recordEvidence({
-            type: 'verification.passed',
-            at: nowIso(),
-            tool: toolExecution.tool,
-            status: 'success'
-          })
-        } else if (verificationCommands.some((spec) => commandResultMatchesSpec(toolExecution.result, spec))) {
-          executionState.verifiedAfterModification = true
-          executionState.verificationFailed = false
-          recordEvidence({
-            type: 'verification.passed',
-            at: nowIso(),
-            tool: toolExecution.tool,
-            status: 'success'
-          })
+      if (toolExecution.tool === 'run_command' && executionState.modifiedWorkspace) {
+        verificationCommands.forEach((spec, index) => {
+          if (commandResultMatchesSpec(toolExecution.result, spec)) {
+            recordEvidence({ type: 'verification.command', commandId: String(index),
+              executionId: toolExecutionId, tool: 'run_command',
+              status: toolExecution.result?.exitCode === 0 && toolExecution.status === 'success' ? 'success' : 'failed' })
+          }
+        })
+        executionState.verifiedAfterModification = verificationCommands.length > 0
+          && verificationCommands.every((_, index) => completionEvidence.verification.commands[String(index)] === true)
+        executionState.verificationFailed = Object.values(completionEvidence.verification.commands).includes(false)
+        if (executionState.verifiedAfterModification) {
+          recordEvidence({ type: 'verification.passed', executionId: toolExecutionId, tool: 'run_command', status: 'success' })
         }
       }
 
@@ -3673,15 +3696,6 @@ export function createAgentRunner({
           }
         }
       }
-
-      executionState.verifiedAfterModification = true
-      executionState.verificationFailed = false
-      recordEvidence({
-        type: 'verification.passed',
-        at: nowIso(),
-        tool: 'run_command',
-        status: 'success'
-      })
 
       return {
         ranVerification: true,
@@ -3924,15 +3938,16 @@ export function createAgentRunner({
           }
 
           lastCompletionEvaluation = evaluateCompletion(completionContract, completionEvidence)
-          lastCompletionRepairAttempts = guardRound
+          currentRun()?.emit('completion.evaluated', { evaluation: lastCompletionEvaluation })
+          lastCompletionRepairAttempts = currentRun()?.snapshot().used.repairs ?? guardRound
           const correctionMessage = formatCompletionCorrection(lastCompletionEvaluation)
-          const nextRepairAttempt = guardRound + 1
+          const nextRepairAttempt = lastCompletionRepairAttempts + 1
 
           audit(sessionId, 'system_action', {
             action: 'completion_evaluated',
             taskId,
             status: lastCompletionEvaluation.status,
-            repairAttempts: guardRound,
+            repairAttempts: lastCompletionRepairAttempts,
             passedCriteria: lastCompletionEvaluation.passedCriteriaIds,
             failedCriteria: lastCompletionEvaluation.failedCriteriaIds,
             evidenceEventCount: completionEvidence.events.length
@@ -3944,7 +3959,7 @@ export function createAgentRunner({
               completion: summarizeCompletionForSession(
                 completionContract,
                 lastCompletionEvaluation,
-                guardRound
+                lastCompletionRepairAttempts
               ),
               updatedAt: nowIso()
             }
@@ -3964,9 +3979,11 @@ export function createAgentRunner({
 
           if (
             lastCompletionEvaluation.status === COMPLETION_STATUS.REPAIRABLE
-            && guardRound < completionContract.maxRepairAttempts
+            && lastCompletionRepairAttempts < completionContract.maxRepairAttempts
             && remainingToolIterations > 0
           ) {
+            currentRun()?.consume('repairs')
+            lastCompletionRepairAttempts = nextRepairAttempt
             toolMessages.push({
               role: 'user',
               content: correctionMessage
@@ -4001,7 +4018,7 @@ export function createAgentRunner({
           const failureReason = lastCompletionEvaluation.status === COMPLETION_STATUS.FAILED
             ? 'The completion contract contains a non-repairable violation.'
             : 'The completion repair budget was exhausted.'
-          throw new Error(`${failureReason} Failed criteria: ${failedCriteria || 'unknown'}.`)
+          throw runError('COMPLETION_REJECTED', `${failureReason} Failed criteria: ${failedCriteria || 'unknown'}.`)
         },
         finalize: async ({ phase, lastDecision }) => {
           if (phase !== 'complete') {
@@ -4013,13 +4030,12 @@ export function createAgentRunner({
             thought_summary: lastDecision?.thoughtSummary
           }) || (executionState.modifiedWorkspace ? '已基于当前工作区结果完成答复。' : '任务已完成。')
           const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
-          finalizedSteps.push(createFinalReplyStep(completionSummary))
 
           await sessionRepository.updateSession(sessionId, (draftSession) => {
             draftSession.task = {
               ...draftSession.task,
               taskId,
-              status: 'completed',
+              status: 'running',
               summary: completionSummary,
               steps: finalizedSteps,
               completion: summarizeCompletionForSession(
@@ -4027,21 +4043,12 @@ export function createAgentRunner({
                 lastCompletionEvaluation,
                 lastCompletionRepairAttempts
               ),
-              completedAt: nowIso(),
+              completedAt: null,
               updatedAt: nowIso()
             }
 
             return draftSession
           })
-          audit(sessionId, 'system_action', {
-            action: 'task_completed',
-            runtime: 'langgraph',
-            taskId,
-            summary: completionSummary,
-            changedFiles: executionState.changedFiles,
-            verifiedAfterModification: executionState.verifiedAfterModification
-          })
-
           publishTaskProgress(sessionId, '正在整理最终回复。', selectedModel)
           const finalWorkspaceContextText = await buildWorkspaceSnapshotText({
             sessionId,
@@ -4073,6 +4080,16 @@ export function createAgentRunner({
             changedFiles: executionState.changedFiles,
             verifiedAfterModification: executionState.verifiedAfterModification
           })
+          throwIfCancelled()
+          throwIfTaskTimedOut()
+          finalizedSteps.push(createFinalReplyStep(completionSummary))
+          await sessionRepository.updateSession(sessionId, (draftSession) => {
+            draftSession.task = { ...draftSession.task, status: 'completed', steps: finalizedSteps, completedAt: nowIso(), updatedAt: nowIso() }
+            return draftSession
+          })
+          audit(sessionId, 'system_action', { action: 'task_completed', runtime: 'langgraph', taskId,
+            summary: completionSummary, changedFiles: executionState.changedFiles,
+            verifiedAfterModification: executionState.verifiedAfterModification })
         }
       })
 
@@ -4092,6 +4109,8 @@ export function createAgentRunner({
       return
 
     } catch (error) {
+      if (currentRun()?.budgetError || error?.code === 'BUDGET_EXHAUSTED') throw currentRun()?.budgetError || error
+      currentRun()?.fail(error)
       if (isCancellationError(error) || abortSignal?.aborted) {
         const cancelledSummary = '已停止当前处理。'
         const cancelledSteps = cancelRunningSteps(taskSteps, cancelledSummary)
@@ -4174,10 +4193,65 @@ export function createAgentRunner({
     }
 
     const controller = new AbortController()
-    const taskPromise = runTask({
-      ...input,
-      abortSignal: controller.signal
-    })
+    const taskPromise = (async () => {
+      const initialSession = await sessionRepository.getSession(input.sessionId)
+      if (!initialSession) return
+      const approval = initialSession.pendingToolApproval
+      const restored = approval?.status === 'approved'
+        && (!input.approvedToolApprovalId || input.approvedToolApprovalId === approval.approvalId)
+        ? approval.state?.run : null
+      const taskId = initialSession.task?.taskId || createId('task')
+      if (!initialSession.task?.taskId) {
+        await sessionRepository.updateSession(input.sessionId, (draft) => {
+          draft.task = { ...draft.task, taskId }
+          return draft
+        })
+      }
+      const run = createRunContext({
+        sessionId: input.sessionId, taskId, config: runtimeConfig, restored,
+        onEvent: (event) => auditLogger?.logEvent({ ...event, event: 'harness_event' })
+      })
+      return withRun(run, async () => {
+        run.emit(restored?.runId === run.runId ? 'run.resumed' : 'run.started', { budget: run.snapshot() })
+        let timer
+        if (run.hasDeadline()) {
+          timer = setTimeout(() => controller.abort(run.exhaust('activeMs')), Math.min(run.remainingTime(), 2147483647))
+          timer.unref?.()
+        }
+        try {
+          run.assertWithinBudget()
+          await runTask({ ...input, abortSignal: controller.signal })
+        } catch (error) {
+          const failure = run.fail(run.budgetError || error)
+          const status = failure.category === 'cancelled' ? 'cancelled' : 'failed'
+          await sessionRepository.updateSession(input.sessionId, (draft) => {
+            draft.task = { ...draft.task, taskId, status, summary: failure.message,
+              steps: (draft.task?.steps || []).map((step) => isRunningTaskStatus(step.status)
+                ? (status === 'cancelled' ? cancelStep(step, failure.message) : failStep(step, failure.message)) : step),
+              completion: { ...draft.task?.completion, status }, completedAt: nowIso(), updatedAt: nowIso() }
+            return draft
+          })
+          if (status !== 'cancelled') await appendFailureAssistantMessage(input.sessionId, failure.message)
+        } finally {
+          clearTimeout(timer)
+          const finishedSession = await sessionRepository.getSession(input.sessionId)
+          if (finishedSession) {
+            const status = finishedSession.task?.status || 'failed'
+            const failure = ['failed', 'cancelled'].includes(status)
+              ? run.failure || classifyRunFailure(runError(status === 'cancelled' ? 'TASK_CANCELLED' : 'TASK_FAILED', finishedSession.task?.summary))
+              : null
+            const snapshot = run.finish(status, failure)
+            await sessionRepository.updateSession(input.sessionId, (draft) => {
+              draft.task = { ...draft.task, run: snapshot, failure }
+              if (draft.pendingToolApproval?.status === 'pending') {
+                draft.pendingToolApproval.state = { ...draft.pendingToolApproval.state, run: snapshot }
+              }
+              return draft
+            })
+          }
+        }
+      })
+    })()
       .finally(() => {
         activeRuns.delete(input.sessionId)
       })

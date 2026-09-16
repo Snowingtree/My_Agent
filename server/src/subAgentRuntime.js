@@ -1,4 +1,6 @@
 import { createTextCompletion } from './llmClient.js'
+import { currentRun } from './runContext.js'
+import { classifyRunFailure, classifyToolResult } from './runFailure.js'
 import { runLangGraphAgent } from './langChainRuntime.js'
 import { createId, normalizeTrimmedString } from './utils.js'
 
@@ -257,6 +259,8 @@ export function createSubAgentRuntime({
           }
 
           const executionId = createId('subtool')
+          currentRun()?.consume('toolCalls', { tool: toolName, executionId, subAgentId })
+          currentRun()?.emit('tool.requested', { tool: toolName, executionId, subAgentId })
           const startedAtMs = Date.now()
           log('tool_call', {
             executionId,
@@ -277,6 +281,9 @@ export function createSubAgentRuntime({
               signal: childSignal.signal
             })
             const observation = truncateText(toolExecution.message || toolExecution.summary, 4000)
+            const failure = classifyToolResult(toolExecution)
+            const status = failure ? 'failed' : 'success'
+            currentRun()?.emit(failure ? 'child.tool.failed' : 'child.tool.completed', { tool: toolName, executionId, subAgentId, status, failure })
             evidence.push(`Tool: ${toolExecution.tool}\n${observation}`)
             log('tool_result', {
               executionId,
@@ -285,7 +292,7 @@ export function createSubAgentRuntime({
               subAgentId,
               subAgentType: normalizedAgent,
               tool: toolExecution.tool,
-              status: 'success',
+              status,
               durationMs: Date.now() - startedAtMs,
               summary: toolExecution.summary
             })
@@ -294,11 +301,14 @@ export function createSubAgentRuntime({
               ok: true,
               toolExecution: {
                 ...toolExecution,
-                status: 'success',
+                status,
                 durationMs: Date.now() - startedAtMs
               }
             }
           } catch (error) {
+            currentRun()?.emit('child.tool.failed', { tool: toolName, executionId, subAgentId,
+              failure: classifyRunFailure(error, { source: 'tool' }) })
+            if (currentRun()?.budgetError || error?.code === 'BUDGET_EXHAUSTED') throw currentRun()?.budgetError || error
             const message = error instanceof Error ? error.message : String(error || 'Sub-agent tool failed.')
             log('error', {
               scope: 'subagent_tool',

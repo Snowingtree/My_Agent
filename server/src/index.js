@@ -3,6 +3,7 @@ import { readFile, readdir, rm, stat } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import mammoth from 'mammoth'
 import { createAuditLogger } from './auditLogger.js'
+import { listRunSummaries, replayRun } from './runReplay.js'
 import { createConfig } from './config.js'
 import { createEmbeddingClient } from './embeddingClient.js'
 import { loadEnvFiles } from './env.js'
@@ -1331,6 +1332,7 @@ async function deleteAuditSessionFile(sessionId) {
 }
 
 async function handleListAuditSessions(response) {
+  await auditLogger.drain()
   let entries = []
 
   try {
@@ -1398,6 +1400,7 @@ async function handleListAuditEvents(response, requestUrl) {
     return
   }
 
+  await auditLogger.drain()
   const events = await readAuditEvents(sessionId)
   const filteredEvents = events.filter((item) => (
     (!eventFilter || normalizeTrimmedString(item?.event) === eventFilter)
@@ -1416,6 +1419,38 @@ async function handleListAuditEvents(response, requestUrl) {
       .sort((left, right) => left.localeCompare(right)),
     items
   })
+}
+
+async function handleAuditRuns(response, requestUrl, replay = false) {
+  const sessionId = normalizeTrimmedString(requestUrl.searchParams.get('sessionId'))
+  const runId = normalizeTrimmedString(requestUrl.searchParams.get('runId'))
+  const cutoff = requestUrl.searchParams.get('throughSequence')
+  const sequence = cutoff === null ? Infinity : Number(cutoff)
+  if (!sessionId || sessionId !== normalizeAuditSessionFileName(sessionId)
+    || (replay && (!runId || (cutoff !== null && (!Number.isSafeInteger(sequence) || sequence < 1))))) {
+    sendJson(response, 400, { message: '有效的 sessionId、runId 和正整数 throughSequence 为必需参数。' })
+    return
+  }
+  const session = await sessionRepository.getSession(sessionId)
+  if (!session) {
+    sendJson(response, 404, { message: '会话不存在。' })
+    return
+  }
+  await auditLogger.drain()
+  const records = await readAuditEvents(sessionId)
+  const items = listRunSummaries(records).map((item) => ({ ...item,
+    interrupted: item.status === 'running'
+      && !(agentRunner.isTaskActive(sessionId) && item.taskId === session.task?.taskId) }))
+  if (!replay) {
+    sendJson(response, 200, { sessionId, items })
+    return
+  }
+  const result = replayRun(records, runId, sequence)
+  if (!result) {
+    sendJson(response, 404, { message: '没有找到对应的任务回放记录。' })
+    return
+  }
+  sendJson(response, 200, { ...result, interrupted: Boolean(items.find((item) => item.runId === runId)?.interrupted) })
 }
 
 async function handleGetUserMemoryProfile(response) {
@@ -2710,6 +2745,16 @@ async function handleRequest(request, response) {
 
   if (pathname === '/api/agent/audit/events' && request.method === 'GET') {
     await handleListAuditEvents(response, requestUrl)
+    return
+  }
+
+  if (pathname === '/api/agent/audit/runs' && request.method === 'GET') {
+    await handleAuditRuns(response, requestUrl)
+    return
+  }
+
+  if (pathname === '/api/agent/audit/replay' && request.method === 'GET') {
+    await handleAuditRuns(response, requestUrl, true)
     return
   }
 
