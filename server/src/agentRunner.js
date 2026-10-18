@@ -3375,9 +3375,12 @@ export function createAgentRunner({
     throwIfTaskTimedOut()
 
     try {
+      // ReAct 主循环（有界）：拼上下文 → 模型决策 → 执行动作 → 观察回灌，最多 maxToolIterations 轮。
       for (let iteration = 0; iteration < runtimeConfig.maxToolIterations; iteration += 1) {
+        // 1. 取消 / 任务超时检查
         throwIfCancelled()
         throwIfTaskTimedOut()
+        // 2. 生成本轮工作区快照
         const workspaceContextText = await buildWorkspaceSnapshotText({
           sessionId,
           latestGoal,
@@ -3386,6 +3389,7 @@ export function createAgentRunner({
           sessionWorkspaces
         })
 
+        // 3. 拼本轮完整 prompt：目标 + 最近对话 + 工具观察 + RAG + 会话摘要 + 用户画像 + 日期 + 附件
         const loopMessages = buildAgentLoopMessages({
           latestGoal,
           conversationHistory,
@@ -3412,6 +3416,7 @@ export function createAgentRunner({
           userProfileMemoryContext: Boolean(userProfileText)
         })
 
+        // 4. 调模型，拿一个 JSON 决策（action / tool / final / ask_user）
         let decision = null
 
         try {
@@ -3428,6 +3433,7 @@ export function createAgentRunner({
           })
         } catch (error) {
           if (isMalformedJsonModelResponseError(error) && iteration < runtimeConfig.maxToolIterations - 1) {
+            // JSON 坏了 → 追加纠正消息 → continue，消耗一轮
             const retrySummary = '模型返回的工具决策 JSON 格式无效，正在要求模型重新输出合法 JSON。'
             audit(sessionId, 'error', {
               scope: 'llm_decision',
@@ -3477,6 +3483,7 @@ export function createAgentRunner({
           usage: decision.usage
         })
 
+        // 5a. tool：执行工具，观察结果进 toolMessages，然后 continue
         if (action === 'tool') {
           taskSteps[0] = completeStep(
             taskSteps[0],
@@ -3496,6 +3503,7 @@ export function createAgentRunner({
           continue
         }
 
+        // 5b. ask_user：标记 waiting_for_user，输出问题并结束本轮任务
         if (action === 'ask_user') {
           const reply = normalizeTrimmedString(decisionJson.reply || decisionJson.question) || '我还缺少一项关键信息，你可以再补充一点吗？'
           const waitingSummary = decisionSummary || '当前目标还需要补充信息。'
@@ -3525,6 +3533,7 @@ export function createAgentRunner({
           return
         }
 
+        // 5c. final 前先自动验证：改过工作区就跑验证命令；跑过验证则 continue
         const autoVerification = await maybeRunAutoVerification()
 
         if (autoVerification.failedTask || autoVerification.waitingForApproval) {
@@ -3536,6 +3545,7 @@ export function createAgentRunner({
           continue
         }
 
+        // 守卫 1：手动选择的 Skill 必须完成 help → run 才算激活
         const manualSkillsNeedingRun = manualSkillIds.filter((skillId) => (
           !skillRuntimeState.get(skillId)?.running
         ))
@@ -3556,6 +3566,7 @@ export function createAgentRunner({
           continue
         }
 
+        // 守卫 2：用户要求记住偏好时，必须先写用户画像
         if (
           aiRuntimeConfig?.userProfileMemoryEnabled
           && looksLikeUserProfileMemoryRequest(latestGoal)
@@ -3575,6 +3586,7 @@ export function createAgentRunner({
           continue
         }
 
+        // 守卫 3：改过工作区且验证失败时，必须修复后重试
         if (
           executionState.modifiedWorkspace
           && verificationCommands.length
@@ -3595,6 +3607,7 @@ export function createAgentRunner({
           continue
         }
 
+        // 守卫 4：要求改文件但还没改，不许结束
         if (fileChangesRequired && !executionState.modifiedWorkspace) {
           toolMessages.push({
             role: 'user',
@@ -3610,6 +3623,7 @@ export function createAgentRunner({
           continue
         }
 
+        // 守卫 5：要求的配套文件（如 .css/.js）必须补齐
         if (
           executionState.modifiedWorkspace
           && requiredCompanionExtensions.length
@@ -3628,6 +3642,7 @@ export function createAgentRunner({
           continue
         }
 
+        // 所有守卫通过：标记任务完成，再单独生成最终自然语言回复
         const completionSummary = decisionSummary || '任务已完成。'
         const finalizedSteps = finalizeRunningSteps(taskSteps, completionSummary)
         finalizedSteps.push(createFinalReplyStep(completionSummary))
@@ -3681,6 +3696,7 @@ export function createAgentRunner({
         return
       }
 
+      // 循环耗尽：走兜底收尾；若仍有硬性条件未满足，这里会直接抛错
       const autoVerification = await maybeRunAutoVerification()
 
       if (autoVerification.failedTask || autoVerification.waitingForApproval) {
